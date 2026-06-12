@@ -37,7 +37,9 @@ cd Leuffenrrm
 docker compose up --build -d
 ```
 
-Open **http://localhost:8000** (or your `RMM_PUBLIC_URL`). In dev-auth mode you're
+Open **https://localhost:8000** (or your `RMM_PUBLIC_URL`). The server uses HTTPS
+by default with a self-signed cert, so your browser warns once — accept it, or set
+up a real certificate (see [HTTPS / TLS](#https--tls)). In dev-auth mode you're
 signed straight in; a **Default** organisation is created automatically.
 
 > Prefer no Docker? See [Run natively on Linux](#run-natively-on-linux-no-docker).
@@ -224,7 +226,10 @@ clear.
 | Variable | Default | Notes |
 |---|---|---|
 | `RMM_API_KEY` | `changeme` | Enrollment key for the seeded *Default* org |
-| `RMM_PUBLIC_URL` | `http://localhost:8000` | Baked into agent downloads |
+| `RMM_PUBLIC_URL` | `https://localhost:8000` | Baked into agent downloads / SSO |
+| `RMM_TLS_MODE` | `self-signed` | `self-signed` \| `file` \| `proxy` |
+| `RMM_TLS_CERT` / `RMM_TLS_KEY` | `<data>/tls/*` | Cert/key paths (self-signed/file) |
+| `RMM_HOST` / `RMM_PORT` | `0.0.0.0` / `8000` | Bind address/port |
 | `RMM_DB_PATH` | `server/data/rmm.db` | SQLite location (mount a volume) |
 | `RMM_OFFLINE_AFTER` | `120` | Seconds before a device is "offline" |
 | `RMM_METRIC_RETENTION` | `604800` | Metric retention (seconds) |
@@ -238,6 +243,56 @@ clear.
 | `RMM_SERVER_URL` | — | e.g. `http://server:8000` (also from `rmm_config.json`) |
 | `RMM_API_KEY` | — | Org enrollment key (also from `rmm_config.json`) |
 | `RMM_INTERVAL` | `30` | Metric report interval (seconds) |
+
+---
+
+## HTTPS / TLS
+
+The server speaks **HTTPS by default**. Choose a mode with `RMM_TLS_MODE`:
+
+| Mode | What it does | Use when |
+|---|---|---|
+| `self-signed` *(default)* | Generates a self-signed cert into the data volume on first boot and serves HTTPS. | Quick start, internal/LAN use. Browsers warn once; agents are auto-configured to trust it. |
+| `file` | Serves HTTPS using your own `RMM_TLS_CERT` / `RMM_TLS_KEY`. | You already have a real cert (e.g. from **Let's Encrypt**/certbot, or your CA). |
+| `proxy` | Serves plain HTTP and trusts `X-Forwarded-*`. | Behind a **reverse proxy** (Caddy/nginx/Traefik) that terminates TLS. |
+
+### Self-signed (default)
+Nothing to do — just open `https://YOUR_SERVER:8000`. Agents installed from this
+server are configured with `RMM_INSECURE_TLS=1` so they accept the self-signed
+cert; everything between agent and server is still encrypted.
+
+### Let's Encrypt — automatic, via the bundled Caddy proxy
+A ready-made deployment in `deploy/` uses **Caddy** to obtain and auto-renew a
+Let's Encrypt certificate and reverse-proxy to the server (which runs in `proxy`
+mode):
+
+```bash
+cd deploy
+export RMM_DOMAIN=rmm.example.com      # must resolve to this host; ports 80+443 open
+docker compose -f docker-compose.letsencrypt.yml up --build -d
+```
+
+Caddy fetches the cert on first request and renews it automatically. Agents
+enrolled from this server verify the real certificate normally.
+
+### Let's Encrypt — bring your own cert files
+If you run certbot yourself, mount the files and use `file` mode:
+
+```yaml
+environment:
+  RMM_TLS_MODE: "file"
+  RMM_TLS_CERT: "/certs/fullchain.pem"
+  RMM_TLS_KEY:  "/certs/privkey.pem"
+volumes:
+  - /etc/letsencrypt/live/rmm.example.com:/certs:ro
+```
+
+### Behind your own reverse proxy
+Set `RMM_TLS_MODE=proxy` and have nginx/Traefik/Caddy terminate TLS and forward
+to the server on port 8000 with `X-Forwarded-Proto`/`X-Forwarded-For` headers.
+
+> Always set `RMM_PUBLIC_URL` (and `MS_REDIRECT_URI` for SSO) to the **https://**
+> URL clients actually use, so agent downloads and SSO redirects are correct.
 
 ---
 

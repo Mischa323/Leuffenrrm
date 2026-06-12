@@ -33,6 +33,11 @@ BOOTSTRAP_ADMINS = {
 DEV_AUTH = os.environ.get("RMM_DEV_AUTH", "").lower() in ("1", "true", "yes") or not CLIENT_ID
 DEV_USER = (next(iter(BOOTSTRAP_ADMINS)) if BOOTSTRAP_ADMINS else "admin@localhost")
 
+# Mark session cookies Secure unless explicitly disabled (TLS is on by default).
+# Auto-off for plain-HTTP proxy mode without TLS termination.
+SECURE_COOKIES = os.environ.get("RMM_SECURE_COOKIES",
+                                "0" if os.environ.get("RMM_TLS_MODE") == "none" else "1") == "1"
+
 _serializer = URLSafeSerializer(SESSION_SECRET, salt="rmm-session")
 
 

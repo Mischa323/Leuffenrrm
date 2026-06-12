@@ -42,9 +42,15 @@ def _load_config() -> dict:
                 filecfg = json.load(f)
             cfg["server_url"] = cfg["server_url"] or filecfg.get("server_url")
             cfg["api_key"] = cfg["api_key"] or filecfg.get("api_key")
+            cfg["insecure_tls"] = cfg.get("insecure_tls", filecfg.get("insecure_tls", False))
         except Exception:
             pass
     cfg["interval"] = float(os.environ.get("RMM_INTERVAL", "30"))
+    # Env overrides file. Used to accept the server's self-signed certificate.
+    env_insecure = os.environ.get("RMM_INSECURE_TLS")
+    if env_insecure is not None:
+        cfg["insecure_tls"] = env_insecure.lower() in ("1", "true", "yes")
+    cfg["insecure_tls"] = bool(cfg.get("insecure_tls", False))
     return cfg
 
 
@@ -106,13 +112,30 @@ class Agent:
         self.ws = None
         self.screen: ScreenSession | None = None
 
+    def _ssl_context(self, url: str):
+        """SSL context for wss:// connections.
+
+        For a server with a self-signed cert (``insecure_tls``) verification is
+        disabled; with a real cert (Let's Encrypt / reverse proxy) it stays on.
+        """
+        if not url.startswith("wss://"):
+            return None
+        import ssl
+        ctx = ssl.create_default_context()
+        if self.cfg.get("insecure_tls"):
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
     async def run(self) -> None:
         _lower_priority()
         url = _ws_url(self.cfg["server_url"], self.cfg["api_key"])
+        ssl_ctx = self._ssl_context(url)
         backoff = 2
         while True:
             try:
-                async with websockets.connect(url, max_size=None, ping_interval=30) as ws:
+                async with websockets.connect(url, max_size=None, ping_interval=30,
+                                              ssl=ssl_ctx) as ws:
                     self.ws = ws
                     await self._register()
                     backoff = 2

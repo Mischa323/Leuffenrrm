@@ -32,6 +32,10 @@ OFFLINE_AFTER = float(os.environ.get("RMM_OFFLINE_AFTER", "120"))
 METRIC_RETENTION = float(os.environ.get("RMM_METRIC_RETENTION", str(7 * 24 * 3600)))
 ALERT_INTERVAL = float(os.environ.get("RMM_ALERT_INTERVAL", "60"))
 PUBLIC_URL = os.environ.get("RMM_PUBLIC_URL", "http://localhost:8000")
+TLS_MODE = os.environ.get("RMM_TLS_MODE", "self-signed").lower()
+# Agents should skip TLS verification only when the server presents a self-signed
+# cert. With a real (Let's Encrypt / proxy) cert, verification stays on.
+AGENT_INSECURE_TLS = TLS_MODE in ("self-signed", "self_signed", "selfsigned")
 
 app = FastAPI(title="Leuffen RMM", version="0.1.0")
 
@@ -84,7 +88,8 @@ def auth_login(request: Request):
         return RedirectResponse("/")
     state = secrets.token_urlsafe(16)
     resp = RedirectResponse(auth.login_url(state))
-    resp.set_cookie("oauth_state", state, httponly=True, max_age=600, samesite="lax")
+    resp.set_cookie("oauth_state", state, httponly=True, max_age=600,
+                    samesite="lax", secure=auth.SECURE_COOKIES)
     return resp
 
 
@@ -94,7 +99,8 @@ def auth_callback(request: Request, code: str = "", state: str = ""):
         raise HTTPException(status_code=400, detail="state mismatch")
     email = auth.exchange_code(code)
     resp = RedirectResponse("/")
-    resp.set_cookie(auth.COOKIE, auth.make_cookie(email), httponly=True, samesite="lax")
+    resp.set_cookie(auth.COOKIE, auth.make_cookie(email), httponly=True,
+                    samesite="lax", secure=auth.SECURE_COOKIES)
     resp.delete_cookie("oauth_state")
     return resp
 
@@ -484,11 +490,13 @@ def _org_from_request(org_id: str, user: dict) -> dict:
 @app.get("/api/orgs/{org_id}/install.sh", response_class=PlainTextResponse)
 def install_sh(org_id: str, user: dict = Depends(auth.current_user)):
     org = _org_from_request(org_id, user)
+    insecure = "1" if AGENT_INSECURE_TLS else "0"
     return f"""#!/usr/bin/env bash
 set -e
 # Leuffen RMM agent installer (Linux)
 export RMM_SERVER_URL="{PUBLIC_URL}"
 export RMM_API_KEY="{org['enroll_key']}"
+export RMM_INSECURE_TLS="{insecure}"
 TMP=$(mktemp -d)
 curl -fsSL "{PUBLIC_URL}/api/orgs/{org_id}/agent.zip" -o "$TMP/agent.zip"
 unzip -o "$TMP/agent.zip" -d /opt/leuffen-rmm
@@ -500,6 +508,7 @@ After=network-online.target
 [Service]
 Environment=RMM_SERVER_URL={PUBLIC_URL}
 Environment=RMM_API_KEY={org['enroll_key']}
+Environment=RMM_INSECURE_TLS={insecure}
 ExecStart=/usr/bin/python3 /opt/leuffen-rmm/agent.py
 Nice=10
 Restart=always
@@ -515,6 +524,7 @@ echo "Leuffen RMM agent installed and started."
 @app.get("/api/orgs/{org_id}/install.ps1", response_class=PlainTextResponse)
 def install_ps1(org_id: str, user: dict = Depends(auth.current_user)):
     org = _org_from_request(org_id, user)
+    insecure = "1" if AGENT_INSECURE_TLS else "0"
     return f"""# Leuffen RMM agent installer (Windows)
 $ErrorActionPreference = "Stop"
 $dest = "$env:ProgramFiles\\LeuffenRMM"
@@ -524,6 +534,7 @@ Expand-Archive -Force "$env:TEMP\\agent.zip" -DestinationPath $dest
 pip install -r "$dest\\requirements.txt"
 [Environment]::SetEnvironmentVariable("RMM_SERVER_URL", "{PUBLIC_URL}", "Machine")
 [Environment]::SetEnvironmentVariable("RMM_API_KEY", "{org['enroll_key']}", "Machine")
+[Environment]::SetEnvironmentVariable("RMM_INSECURE_TLS", "{insecure}", "Machine")
 $action = New-ScheduledTaskAction -Execute "python" -Argument "$dest\\agent.py"
 $trigger = New-ScheduledTaskTrigger -AtStartup
 Register-ScheduledTask -TaskName "LeuffenRMM" -Action $action -Trigger $trigger -RunLevel Highest -Force
@@ -549,7 +560,8 @@ def agent_zip(org_id: str, user: dict = Depends(auth.current_user)):
                 z.write(full, os.path.relpath(full, AGENT_DIR))
         # Inject ready-to-run config so the agent connects with no manual setup.
         z.writestr("rmm_config.json",
-                   f'{{"server_url": "{PUBLIC_URL}", "api_key": "{org["enroll_key"]}"}}')
+                   f'{{"server_url": "{PUBLIC_URL}", "api_key": "{org["enroll_key"]}", '
+                   f'"insecure_tls": {str(AGENT_INSECURE_TLS).lower()}}}')
     buf.seek(0)
     return Response(buf.read(), media_type="application/zip",
                     headers={"Content-Disposition": "attachment; filename=leuffen-rmm-agent.zip"})
