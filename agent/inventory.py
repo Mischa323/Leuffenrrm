@@ -1,0 +1,127 @@
+"""Cross-platform device inventory collection (Windows + Linux).
+
+Uses only ``psutil`` + the stdlib so the idle agent stays light. Manufacturer/
+model/serial come from WMI on Windows and ``/sys/class/dmi/id`` on Linux, both
+best-effort with graceful fallbacks.
+"""
+from __future__ import annotations
+
+import platform
+import socket
+import subprocess
+import uuid
+
+import psutil
+
+AGENT_VERSION = "0.1.0"
+
+
+def _primary_ip() -> str | None:
+    """Best-effort primary outbound IPv4 (no traffic actually sent)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return None
+
+
+def _nics() -> list[dict]:
+    out = []
+    addrs = psutil.net_if_addrs()
+    for name, snics in addrs.items():
+        ipv4, ipv6, mac = [], [], None
+        for a in snics:
+            if a.family == socket.AF_INET:
+                ipv4.append(a.address)
+            elif a.family == socket.AF_INET6:
+                ipv6.append(a.address.split("%")[0])
+            elif getattr(a, "family", None) == psutil.AF_LINK:
+                if a.address and a.address != "00:00:00:00:00:00":
+                    mac = a.address
+        if ipv4 or mac:
+            out.append({"name": name, "ipv4": ipv4, "ipv6": ipv6, "mac": mac})
+    return out
+
+
+def _primary_mac(nics: list[dict], primary_ip: str | None) -> str | None:
+    for n in nics:
+        if primary_ip and primary_ip in n["ipv4"] and n["mac"]:
+            return n["mac"]
+    for n in nics:
+        if n["mac"]:
+            return n["mac"]
+    # Fallback to uuid.getnode()
+    node = uuid.getnode()
+    return ":".join(f"{(node >> e) & 0xff:02x}" for e in range(40, -1, -8))
+
+
+def _hardware_linux() -> dict:
+    def read(path: str) -> str | None:
+        try:
+            with open(path) as f:
+                return f.read().strip()
+        except Exception:
+            return None
+    return {
+        "manufacturer": read("/sys/class/dmi/id/sys_vendor"),
+        "model": read("/sys/class/dmi/id/product_name"),
+        "serial": read("/sys/class/dmi/id/product_serial"),
+    }
+
+
+def _hardware_windows() -> dict:
+    info = {"manufacturer": None, "model": None, "serial": None, "is_server": False}
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "$c=Get-CimInstance Win32_ComputerSystem; $b=Get-CimInstance Win32_BIOS; "
+             "$o=Get-CimInstance Win32_OperatingSystem; "
+             "Write-Output $c.Manufacturer; Write-Output $c.Model; "
+             "Write-Output $b.SerialNumber; Write-Output $o.ProductType"],
+            capture_output=True, text=True, timeout=15,
+        )
+        lines = [l.strip() for l in out.stdout.splitlines() if l.strip()]
+        if len(lines) >= 3:
+            info["manufacturer"], info["model"], info["serial"] = lines[0], lines[1], lines[2]
+        if len(lines) >= 4:
+            # ProductType: 1=workstation, 2=domain controller, 3=server
+            info["is_server"] = lines[3] in ("2", "3")
+    except Exception:
+        pass
+    return info
+
+
+def collect() -> dict:
+    sysname = platform.system()
+    nics = _nics()
+    primary_ip = _primary_ip()
+    hw = _hardware_windows() if sysname == "Windows" else _hardware_linux()
+    try:
+        ram_total = psutil.virtual_memory().total
+    except Exception:
+        ram_total = None
+    inv = {
+        "os": f"{sysname} {platform.release()}".strip(),
+        "os_version": platform.version(),
+        "os_arch": platform.machine(),
+        "kernel": platform.release(),
+        "hostname": socket.gethostname(),
+        "fqdn": socket.getfqdn(),
+        "agent_version": AGENT_VERSION,
+        "cpu": platform.processor() or platform.machine(),
+        "cpu_cores_logical": psutil.cpu_count(),
+        "cpu_cores_physical": psutil.cpu_count(logical=False),
+        "ram_total": ram_total,
+        "ip": primary_ip,
+        "mac": _primary_mac(nics, primary_ip),
+        "nics": nics,
+        "manufacturer": hw.get("manufacturer"),
+        "model": hw.get("model"),
+        "serial": hw.get("serial"),
+        "is_server": hw.get("is_server", False),
+        "boot_time": psutil.boot_time(),
+    }
+    return inv

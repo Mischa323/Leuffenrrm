@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Leuffen RMM</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Leuffen <span>RMM</span></h1>
+    <nav id="crumbs"><a href="#" id="home-link">Global</a></nav>
+    <div class="spacer"></div>
+    <select id="org-select" class="hidden"></select>
+    <span id="user" class="muted"></span>
+    <a href="/auth/logout" class="ghost-link">Sign out</a>
+  </header>
+
+  <main>
+    <!-- Global dashboard -->
+    <section id="global-view">
+      <h2>Organisations</h2>
+      <div id="org-cards" class="cards"></div>
+    </section>
+
+    <!-- Org dashboard -->
+    <section id="org-view" class="hidden">
+      <div class="org-layout">
+        <aside class="sidebar">
+          <div class="tabs" id="org-tabs">
+            <button data-tab="devices" class="active">Devices</button>
+            <button data-tab="network">Network</button>
+            <button data-tab="nodes">Nodes</button>
+            <button data-tab="downloads">Downloads</button>
+          </div>
+          <div id="group-filter" class="group-filter"></div>
+        </aside>
+        <div class="content">
+          <div id="tab-devices">
+            <table class="grid">
+              <thead><tr>
+                <th>Status</th><th>Hostname</th><th>OS</th><th>IP</th>
+                <th>CPU</th><th>Mem</th><th>Disk</th><th>Compliance</th>
+              </tr></thead>
+              <tbody id="device-rows"></tbody>
+            </table>
+          </div>
+          <div id="tab-network" class="hidden">
+            <table class="grid">
+              <thead><tr><th>Status</th><th>IP</th><th>MAC</th><th>Hostname</th>
+                <th>Manufacturer</th><th></th></tr></thead>
+              <tbody id="network-rows"></tbody>
+            </table>
+          </div>
+          <div id="tab-nodes" class="hidden">
+            <div id="node-list"></div>
+          </div>
+          <div id="tab-downloads" class="hidden">
+            <h3>Install the agent</h3>
+            <p class="muted">One self-contained download — server URL &amp; key are baked in.</p>
+            <div id="download-cmds"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Device drawer -->
+  <div id="drawer" class="drawer hidden">
+    <div class="drawer-head">
+      <h2 id="drawer-title">Device</h2>
+      <button id="drawer-close" class="ghost">✕</button>
+    </div>
+    <div class="drawer-tabs">
+      <button data-dtab="overview" class="active">Overview</button>
+      <button data-dtab="terminal">Terminal</button>
+      <button data-dtab="actions">Actions</button>
+    </div>
+    <div class="drawer-body">
+      <div id="dtab-overview"><div id="inventory"></div></div>
+      <div id="dtab-terminal" class="hidden">
+        <pre id="term-output" class="terminal"></pre>
+        <form id="term-form"><input id="term-input" placeholder="type a command…" autocomplete="off" /></form>
+      </div>
+      <div id="dtab-actions" class="hidden">
+        <div class="actions-grid" id="actions-grid"></div>
+        <h4>Network node</h4>
+        <div id="node-controls"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

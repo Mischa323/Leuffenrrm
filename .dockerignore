@@ -1,0 +1,13 @@
+**/__pycache__/
+**/*.pyc
+.venv/
+venv/
+server/data/
+*.db
+*.db-wal
+*.db-shm
+.git/
+dist/
+build/
+agent/rmm_config.json
+agent/rmm_device_id

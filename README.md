@@ -1,1 +1,207 @@
-# Leuffenrrm
+# Leuffen RMM
+
+A simple, self-hosted **Remote Monitoring & Management** tool. It monitors system
+statistics across devices, gives you remote control (terminal, screen, power,
+files), wakes devices via **Wake-on-LAN** (including across LANs/VLANs through
+relay *nodes*), discovers devices on the network, and sends monitoring email
+alerts via Microsoft Graph. The dashboard is protected by **Office 365 SSO**.
+
+> Status: **Phase 1** (core RMM) is implemented and runnable. Phase 2 features
+> (monitors library + auto-response, scripts/scheduled jobs, patch management,
+> compliance evaluation, software audit, scheduled reports) are planned — see
+> [Roadmap](#roadmap).
+
+---
+
+## Architecture
+
+```
+ Agents / Nodes (Win/Linux) ──WS──► Server (FastAPI) ◄──WS/REST── Browser dashboard
+   psutil + control handlers          SQLite, alert engine,         polished vanilla UI
+   node: WoL relay + scan             MSAL SSO, Graph mailer         (global + per-org)
+```
+
+- **Server** — FastAPI + SQLite. Runs in **Docker** or natively on **Linux**.
+- **Agent** — one cross-platform Python agent (**Windows + Linux**) that holds a
+  single **outbound WebSocket** to the server (works through NAT/firewalls). It is
+  low-footprint: event-driven, cheap metrics, heavy screen deps loaded only on
+  demand, runs at below-normal priority.
+- **Nodes** — any agent can be **promoted to a node** from the dashboard to relay
+  Wake-on-LAN to its local subnets and scan the network for devices.
+- **Multi-org** — organisations are logical tenants inside your single Office 365
+  tenant; users are scoped to orgs by role. A **global dashboard** aggregates all
+  your orgs and drills into each org's own dashboard.
+- **Groups** — each org auto-creates **Windows**, **Linux**, and **Windows Server**
+  groups; devices are auto-assigned on enrollment by OS. Add custom groups too.
+
+---
+
+## Quick start (Docker)
+
+```bash
+# 1. Edit docker-compose.yml — at minimum change RMM_API_KEY and SESSION_SECRET.
+docker compose up --build
+# 2. Open http://localhost:8000
+```
+
+With no `MS_*` values set, the server runs in **dev-auth mode** (auto-signs in a
+local admin) so you can try it immediately. Configure SSO for real use (below).
+
+### Run natively on Linux (no Docker)
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r server/requirements.txt
+cd server
+RMM_API_KEY=change-me RMM_DEV_AUTH=1 \
+  uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+A systemd unit for the server:
+
+```ini
+# /etc/systemd/system/leuffen-rmm.service
+[Unit]
+Description=Leuffen RMM Server
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/leuffen-rmm/server
+Environment=RMM_API_KEY=change-me
+Environment=RMM_DB_PATH=/var/lib/leuffen-rmm/rmm.db
+ExecStart=/opt/leuffen-rmm/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+---
+
+## Installing the agent
+
+Open the **Downloads** tab in an organisation. The agent is a single,
+self-contained download with the **server URL + that org's enrollment key baked
+in**, so it connects and registers with no manual configuration and lands in its
+default OS group.
+
+```bash
+# Linux (one-liner)
+curl -fsSL http://YOUR_SERVER/api/orgs/<org>/install.sh | sudo bash
+```
+
+```powershell
+# Windows (PowerShell, as admin)
+iwr http://YOUR_SERVER/api/orgs/<org>/install.ps1 -UseBasicParsing | iex
+```
+
+Manual: download `…/api/orgs/<org>/agent.zip`, then `python agent.py` (the bundled
+`rmm_config.json` carries the connection settings). The agent needs Python 3 with
+`psutil` and `websockets`; screen control additionally uses `mss`, `Pillow`,
+`pynput` (installed from `agent/requirements.txt`, imported only when used).
+
+### Agent in Docker (Linux hosts)
+
+```bash
+docker run -d --name leuffen-agent --pid=host --network=host \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -e RMM_SERVER_URL=http://YOUR_SERVER -e RMM_API_KEY=<org-enroll-key> \
+  leuffen-rmm-agent
+```
+
+`--pid=host` + `--network=host` give the agent host visibility and let a **node**
+broadcast Wake-on-LAN. With the Docker socket mounted, the agent also reports the
+host's running containers.
+
+---
+
+## Wake-on-LAN across networks
+
+Wake-on-LAN is a layer-2 broadcast and cannot cross subnets on its own. Install
+the agent on a machine in the target LAN and **Promote it to a node** (device
+drawer → Actions). Add the LAN's **subnets/VLANs (CIDR)**; the server then sends
+the magic packet *through that node* onto the right broadcast address — so the
+server itself never needs to be on the target LAN. Nodes also **scan** their
+subnets and report discovered hosts (IP/MAC/hostname/manufacturer) under
+**Network**, where wake-able hosts get a Wake button.
+
+---
+
+## Office 365 SSO & Graph mail setup
+
+1. **App registration** (Entra admin center → App registrations):
+   - Redirect URI (Web): `https://YOUR_SERVER/auth/callback`
+   - Note the **Application (client) ID** and **Directory (tenant) ID**.
+   - Create a **client secret**.
+   - API permissions → **Microsoft Graph → Application → `Mail.Send`** → *Grant
+     admin consent* (used to send alert email from a service mailbox).
+2. **Server config** (env / compose):
+
+   | Variable | Purpose |
+   |---|---|
+   | `MS_TENANT_ID` | Your tenant id (single-tenant ⇒ only your org can sign in) |
+   | `MS_CLIENT_ID` / `MS_CLIENT_SECRET` | App registration credentials |
+   | `MS_REDIRECT_URI` | `https://YOUR_SERVER/auth/callback` |
+   | `RMM_BOOTSTRAP_ADMIN` | Comma-separated emails granted global admin |
+   | `GRAPH_SENDER` | Service mailbox to send alerts from |
+   | `SESSION_SECRET` | Random secret for signing session cookies |
+
+   When `MS_CLIENT_ID` is set, real SSO is enforced; otherwise dev-auth mode is
+   used. Set `RMM_DEV_AUTH=1` to force dev mode.
+
+### Alert thresholds
+
+Alerts (device offline, sustained high CPU, low disk, sustained high memory) come
+from each org's **Standard**. `ALERT_CPU_PCT`, `ALERT_DISK_FREE_PCT`,
+`ALERT_MEM_PCT`, `ALERT_OFFLINE_AFTER`, etc. seed defaults for new orgs. A
+per-device/per-rule state machine with cooldown emails once on raise and once on
+clear.
+
+---
+
+## Configuration reference
+
+**Server**
+
+| Variable | Default | Notes |
+|---|---|---|
+| `RMM_API_KEY` | `changeme` | Enrollment key for the seeded *Default* org |
+| `RMM_PUBLIC_URL` | `http://localhost:8000` | Baked into agent downloads |
+| `RMM_DB_PATH` | `server/data/rmm.db` | SQLite location (mount a volume) |
+| `RMM_OFFLINE_AFTER` | `120` | Seconds before a device is "offline" |
+| `RMM_METRIC_RETENTION` | `604800` | Metric retention (seconds) |
+| `RMM_ALERT_INTERVAL` | `60` | Alert evaluation interval (seconds) |
+| `MS_*`, `GRAPH_SENDER`, `SESSION_SECRET`, `RMM_BOOTSTRAP_ADMIN` | — | SSO / mail |
+
+**Agent**
+
+| Variable | Default | Notes |
+|---|---|---|
+| `RMM_SERVER_URL` | — | e.g. `http://server:8000` (also from `rmm_config.json`) |
+| `RMM_API_KEY` | — | Org enrollment key (also from `rmm_config.json`) |
+| `RMM_INTERVAL` | `30` | Metric report interval (seconds) |
+
+---
+
+## Security notes
+
+SSO protects the dashboard, REST and dashboard WebSockets, and scopes users to
+their orgs by role. Agents authenticate with a **per-org enrollment key** — keep
+each secret and rotatable. Remote shell/screen/files are powerful: run behind a
+reverse proxy with **TLS**, and don't expose enrollment keys publicly. The Graph
+permission is least-privilege (`Mail.Send` only).
+
+---
+
+## Roadmap
+
+- **Phase 1 (done):** monitoring, inventory, two-level dashboards, remote control,
+  Wake-on-LAN + nodes + discovery, orgs/groups/standards, SSO + alert mail,
+  Docker + native Linux, container monitoring.
+- **Phase 2:** monitors library + auto-response; scripts/components + scheduled
+  jobs with history; compliance baseline evaluation; installed-software audit;
+  patch management (scan/report/scheduled apply); scheduled & on-demand reports.
+- **Phase 3 (optional):** ransomware behavior monitor + auto-isolate;
+  user-configurable dashboard widgets.
+
+The full design lives in the approved implementation plan.
