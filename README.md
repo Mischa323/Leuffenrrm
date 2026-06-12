@@ -13,6 +13,64 @@ alerts via Microsoft Graph. The dashboard is protected by **Office 365 SSO**.
 
 ---
 
+## Installation
+
+The fastest way to get a working RMM is: **run the server with Docker**, open the
+dashboard, then **install the agent** on each machine you want to monitor.
+
+### Prerequisites
+- A host for the **server** with **Docker** + **Docker Compose** (or Python 3.11+
+  to run it natively on Linux).
+- Machines to monitor (**Windows or Linux**) with **Python 3.9+** for the agent.
+- *(Optional, for production)* a Microsoft **Entra/Office 365** app registration
+  for SSO + Graph alert email — see [SSO setup](#office-365-sso--graph-mail-setup).
+  Without it, the server starts in **dev-auth mode** so you can try it right away.
+
+### Step 1 — Start the server
+
+```bash
+git clone https://github.com/Mischa323/Leuffenrrm.git
+cd Leuffenrrm
+
+# Edit docker-compose.yml: at minimum set RMM_API_KEY, SESSION_SECRET and
+# RMM_PUBLIC_URL (the URL agents/browsers will use to reach the server).
+docker compose up --build -d
+```
+
+Open **http://localhost:8000** (or your `RMM_PUBLIC_URL`). In dev-auth mode you're
+signed straight in; a **Default** organisation is created automatically.
+
+> Prefer no Docker? See [Run natively on Linux](#run-natively-on-linux-no-docker).
+
+### Step 2 — Install an agent
+
+In the dashboard open an organisation → **Downloads**, then run the one-liner it
+shows (the server URL and that org's enrollment key are already baked in):
+
+```bash
+# Linux (run as root)
+curl -fsSL http://YOUR_SERVER:8000/api/orgs/default/install.sh | sudo bash
+```
+
+```powershell
+# Windows (PowerShell, as administrator)
+iwr http://YOUR_SERVER:8000/api/orgs/default/install.ps1 -UseBasicParsing | iex
+```
+
+The device appears under **Devices** within a few seconds, auto-placed in its OS
+group (Windows / Linux / Windows Server), streaming live CPU/RAM/disk stats.
+
+### Step 3 — Use it
+- Click a device for inventory, an interactive **terminal**, **power** actions and
+  **Wake-on-LAN**.
+- To wake or scan machines on a remote LAN, open a device → **Actions →
+  Promote to network node**, add its subnet(s), then use **Network**.
+
+Full details (native install, Docker agent, SSO/Graph, cross-LAN WoL, config
+reference) are below.
+
+---
+
 ## Architecture
 
 ```
