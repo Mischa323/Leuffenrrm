@@ -1,0 +1,53 @@
+# Production deployment: Caddy terminates TLS with an automatic Let's Encrypt
+# certificate and reverse-proxies to the RMM server.
+#
+# Usage (from the deploy/ directory):
+#   export RMM_DOMAIN=rmm.example.com
+#   docker compose -f docker-compose.letsencrypt.yml up --build -d
+#
+# Requirements: RMM_DOMAIN must point (DNS A/AAAA) at this host, and ports 80 + 443
+# must be reachable from the internet so Let's Encrypt can validate.
+services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      RMM_DOMAIN: "${RMM_DOMAIN:?set RMM_DOMAIN to your public domain}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - server
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    image: leuffen-rmm-server
+    environment:
+      # TLS is handled by Caddy; the app runs HTTP and trusts forwarded headers.
+      RMM_TLS_MODE: "proxy"
+      RMM_API_KEY: "change-me-please"
+      SESSION_SECRET: "change-me-too"
+      RMM_PUBLIC_URL: "https://${RMM_DOMAIN}"
+      # --- Office 365 SSO (optional) ---
+      MS_TENANT_ID: ""
+      MS_CLIENT_ID: ""
+      MS_CLIENT_SECRET: ""
+      MS_REDIRECT_URI: "https://${RMM_DOMAIN}/auth/callback"
+      RMM_BOOTSTRAP_ADMIN: "admin@example.com"
+      GRAPH_SENDER: ""
+    expose:
+      - "8000"
+    volumes:
+      - rmm-data:/data
+    restart: unless-stopped
+
+volumes:
+  rmm-data:
+  caddy-data:
+  caddy-config:

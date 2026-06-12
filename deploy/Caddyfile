@@ -1,0 +1,6 @@
+# Caddy automatically obtains & renews a Let's Encrypt certificate for $RMM_DOMAIN
+# (the domain must resolve to this host and ports 80/443 must be reachable), then
+# reverse-proxies to the RMM server which runs in plain-HTTP "proxy" mode.
+{$RMM_DOMAIN} {
+	reverse_proxy server:8000
+}
