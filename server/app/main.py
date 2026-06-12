@@ -31,11 +31,20 @@ AGENT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "agent")
 OFFLINE_AFTER = float(os.environ.get("RMM_OFFLINE_AFTER", "120"))
 METRIC_RETENTION = float(os.environ.get("RMM_METRIC_RETENTION", str(7 * 24 * 3600)))
 ALERT_INTERVAL = float(os.environ.get("RMM_ALERT_INTERVAL", "60"))
-PUBLIC_URL = os.environ.get("RMM_PUBLIC_URL", "http://localhost:8000")
-TLS_MODE = os.environ.get("RMM_TLS_MODE", "self-signed").lower()
-# Agents should skip TLS verification only when the server presents a self-signed
-# cert. With a real (Let's Encrypt / proxy) cert, verification stays on.
-AGENT_INSECURE_TLS = TLS_MODE in ("self-signed", "self_signed", "selfsigned")
+# TLS mode the process booted with (used to decide if a restart is needed after
+# the setup wizard changes it). Read live values via the helpers below.
+BOOT_TLS_MODE = os.environ.get("RMM_TLS_MODE", "self-signed").lower()
+
+
+def public_url() -> str:
+    """Public base URL, read live so the setup wizard applies without a restart."""
+    return os.environ.get("RMM_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+
+
+def agent_insecure_tls() -> bool:
+    """Agents skip TLS verification only against a self-signed server cert."""
+    mode = os.environ.get("RMM_TLS_MODE", "self-signed").lower()
+    return mode in ("self-signed", "self_signed", "selfsigned")
 
 app = FastAPI(title="Leuffen RMM", version="0.1.0")
 
@@ -46,19 +55,36 @@ app = FastAPI(title="Leuffen RMM", version="0.1.0")
 @app.on_event("startup")
 async def _startup() -> None:
     db.init_db()
+    _resolve_setup_state()
     _ensure_default_org()
     asyncio.create_task(_alert_loop())
     asyncio.create_task(_prune_loop())
 
 
+def _resolve_setup_state() -> None:
+    """Decide whether the first-run wizard is still needed.
+
+    Skip it when the operator clearly configured the server via the environment
+    (an explicit SESSION_SECRET) or set RMM_SKIP_SETUP — preserving the pure-env
+    workflow and not forcing the wizard on existing deployments.
+    """
+    if db.setup_complete():
+        return
+    env_configured = bool(os.environ.get("SESSION_SECRET")) or \
+        os.environ.get("RMM_SKIP_SETUP", "").lower() in ("1", "true", "yes")
+    if env_configured:
+        db.set_setting("SETUP_COMPLETE", "1")
+
+
 def _ensure_default_org() -> None:
-    """Seed a 'Default' org using RMM_API_KEY as its enrolment key (idempotent)."""
-    key = os.environ.get("RMM_API_KEY", "changeme")
-    if db.get_org_by_key(key) is None and not db.list_orgs():
-        org = db.create_org("Default", enroll_key=key, org_id="default")
-        for admin in auth.BOOTSTRAP_ADMINS or {auth.DEV_USER}:
-            db.add_org_user(org["id"], admin, "admin")
-        log.info("Seeded default organisation 'Default'")
+    """Seed a 'Default' org as enrolment target (idempotent)."""
+    if db.list_orgs():
+        return
+    key = os.environ.get("RMM_API_KEY") or None  # None → DB generates a random key
+    org = db.create_org("Default", enroll_key=key, org_id="default")
+    for admin in auth.BOOTSTRAP_ADMINS or {auth.DEV_USER}:
+        db.add_org_user(org["id"], admin, "admin")
+    log.info("Seeded default organisation 'Default'")
 
 
 async def _alert_loop() -> None:
@@ -490,15 +516,16 @@ def _org_from_request(org_id: str, user: dict) -> dict:
 @app.get("/api/orgs/{org_id}/install.sh", response_class=PlainTextResponse)
 def install_sh(org_id: str, user: dict = Depends(auth.current_user)):
     org = _org_from_request(org_id, user)
-    insecure = "1" if AGENT_INSECURE_TLS else "0"
+    pub = public_url()
+    insecure = "1" if agent_insecure_tls() else "0"
     return f"""#!/usr/bin/env bash
 set -e
 # Leuffen RMM agent installer (Linux)
-export RMM_SERVER_URL="{PUBLIC_URL}"
+export RMM_SERVER_URL="{pub}"
 export RMM_API_KEY="{org['enroll_key']}"
 export RMM_INSECURE_TLS="{insecure}"
 TMP=$(mktemp -d)
-curl -fsSL "{PUBLIC_URL}/api/orgs/{org_id}/agent.zip" -o "$TMP/agent.zip"
+curl -fsSL "{pub}/api/orgs/{org_id}/agent.zip" -o "$TMP/agent.zip"
 unzip -o "$TMP/agent.zip" -d /opt/leuffen-rmm
 pip3 install -r /opt/leuffen-rmm/requirements.txt
 cat >/etc/systemd/system/leuffen-rmm.service <<UNIT
@@ -506,7 +533,7 @@ cat >/etc/systemd/system/leuffen-rmm.service <<UNIT
 Description=Leuffen RMM Agent
 After=network-online.target
 [Service]
-Environment=RMM_SERVER_URL={PUBLIC_URL}
+Environment=RMM_SERVER_URL={pub}
 Environment=RMM_API_KEY={org['enroll_key']}
 Environment=RMM_INSECURE_TLS={insecure}
 ExecStart=/usr/bin/python3 /opt/leuffen-rmm/agent.py
@@ -524,15 +551,16 @@ echo "Leuffen RMM agent installed and started."
 @app.get("/api/orgs/{org_id}/install.ps1", response_class=PlainTextResponse)
 def install_ps1(org_id: str, user: dict = Depends(auth.current_user)):
     org = _org_from_request(org_id, user)
-    insecure = "1" if AGENT_INSECURE_TLS else "0"
+    pub = public_url()
+    insecure = "1" if agent_insecure_tls() else "0"
     return f"""# Leuffen RMM agent installer (Windows)
 $ErrorActionPreference = "Stop"
 $dest = "$env:ProgramFiles\\LeuffenRMM"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Invoke-WebRequest "{PUBLIC_URL}/api/orgs/{org_id}/agent.zip" -OutFile "$env:TEMP\\agent.zip"
+Invoke-WebRequest "{pub}/api/orgs/{org_id}/agent.zip" -OutFile "$env:TEMP\\agent.zip"
 Expand-Archive -Force "$env:TEMP\\agent.zip" -DestinationPath $dest
 pip install -r "$dest\\requirements.txt"
-[Environment]::SetEnvironmentVariable("RMM_SERVER_URL", "{PUBLIC_URL}", "Machine")
+[Environment]::SetEnvironmentVariable("RMM_SERVER_URL", "{pub}", "Machine")
 [Environment]::SetEnvironmentVariable("RMM_API_KEY", "{org['enroll_key']}", "Machine")
 [Environment]::SetEnvironmentVariable("RMM_INSECURE_TLS", "{insecure}", "Machine")
 $action = New-ScheduledTaskAction -Execute "python" -Argument "$dest\\agent.py"
@@ -560,8 +588,8 @@ def agent_zip(org_id: str, user: dict = Depends(auth.current_user)):
                 z.write(full, os.path.relpath(full, AGENT_DIR))
         # Inject ready-to-run config so the agent connects with no manual setup.
         z.writestr("rmm_config.json",
-                   f'{{"server_url": "{PUBLIC_URL}", "api_key": "{org["enroll_key"]}", '
-                   f'"insecure_tls": {str(AGENT_INSECURE_TLS).lower()}}}')
+                   f'{{"server_url": "{public_url()}", "api_key": "{org["enroll_key"]}", '
+                   f'"insecure_tls": {str(agent_insecure_tls()).lower()}}}')
     buf.seek(0)
     return Response(buf.read(), media_type="application/zip",
                     headers={"Content-Disposition": "attachment; filename=leuffen-rmm-agent.zip"})
@@ -572,15 +600,90 @@ def health():
     return {"status": "ok"}
 
 
-# Gate the dashboard index behind auth so unauthenticated users are redirected.
+# Gate the dashboard index behind setup + auth.
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    if not db.setup_complete():
+        return RedirectResponse("/setup")
     if not auth.DEV_AUTH:
         raw = request.cookies.get(auth.COOKIE)
         if not (raw and auth.read_cookie(raw)):
             return RedirectResponse("/auth/login")
     with open(os.path.join(STATIC_DIR, "index.html")) as f:
         return HTMLResponse(f.read())
+
+
+# --------------------------------------------------------------------------- #
+# First-run setup wizard
+# --------------------------------------------------------------------------- #
+@app.get("/setup", response_class=HTMLResponse)
+def setup_page():
+    if db.setup_complete():
+        return RedirectResponse("/")
+    with open(os.path.join(STATIC_DIR, "setup.html")) as f:
+        return HTMLResponse(f.read())
+
+
+@app.get("/api/setup/status")
+def setup_status():
+    return {"complete": db.setup_complete(), "public_url": public_url(),
+            "tls_mode": os.environ.get("RMM_TLS_MODE", "self-signed")}
+
+
+@app.post("/api/setup")
+async def do_setup(request: Request):
+    """Persist the first-run configuration. Only available until setup completes."""
+    if db.setup_complete():
+        raise HTTPException(status_code=403, detail="Setup already completed")
+    data = await request.json()
+
+    public = (data.get("public_url") or "").strip().rstrip("/")
+    admin = (data.get("admin_email") or "").strip().lower()
+    tls_mode = (data.get("tls_mode") or "self-signed").strip().lower()
+    auth_mode = (data.get("auth_mode") or "dev").strip().lower()
+    if tls_mode not in ("self-signed", "file", "proxy"):
+        raise HTTPException(status_code=400, detail="Invalid TLS mode")
+
+    settings: dict[str, str] = {"RMM_TLS_MODE": tls_mode}
+    if public:
+        settings["RMM_PUBLIC_URL"] = public
+    if admin:
+        settings["RMM_BOOTSTRAP_ADMIN"] = admin
+
+    if auth_mode == "sso":
+        for src, env in (("tenant_id", "MS_TENANT_ID"), ("client_id", "MS_CLIENT_ID"),
+                         ("client_secret", "MS_CLIENT_SECRET")):
+            val = (data.get(src) or "").strip()
+            if not val:
+                raise HTTPException(status_code=400, detail=f"Missing {src} for SSO")
+            settings[env] = val
+        settings["MS_REDIRECT_URI"] = (data.get("redirect_uri") or "").strip() or \
+            (public + "/auth/callback" if public else "")
+        settings["RMM_DEV_AUTH"] = "0"
+    else:
+        settings["RMM_DEV_AUTH"] = "1"
+
+    # Generate a stable session secret if one isn't already set.
+    new_secret = not (os.environ.get("SESSION_SECRET") or db.get_setting("SESSION_SECRET"))
+    if new_secret:
+        settings["SESSION_SECRET"] = secrets.token_urlsafe(48)
+
+    # Persist and live-apply to the environment (download URLs update immediately).
+    for key, value in settings.items():
+        db.set_setting(key, value)
+        os.environ[key] = value
+
+    if admin:
+        org = db.get_org("default") or (db.list_orgs() or [None])[0]
+        if org:
+            db.add_org_user(org["id"], admin, "admin")
+
+    db.set_setting("SETUP_COMPLETE", "1")
+
+    # These only take full effect on restart (modules read them at import).
+    restart_recommended = bool(
+        auth_mode == "sso" or new_secret or tls_mode != BOOT_TLS_MODE)
+    return {"ok": True, "restart_recommended": restart_recommended}
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

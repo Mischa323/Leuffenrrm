@@ -7,29 +7,16 @@ services:
     # host networking lets the server broadcast Wake-on-LAN on its own LAN and
     # keeps WebSocket/SSO redirects simple. Swap to a ports mapping if preferred.
     network_mode: host
+    # No configuration needed here: on first boot the server opens a web
+    # **setup wizard** (public URL, admin, TLS, sign-in) and saves it to the
+    # /data volume. Prefer env instead? Set SESSION_SECRET (and friends) and the
+    # wizard is skipped. HTTPS (self-signed) is on by default.
     environment:
-      # Agent enrolment key for the seeded "Default" org. CHANGE THIS.
-      RMM_API_KEY: "change-me-please"
-      # HTTPS by default. self-signed | file | proxy.
-      #   self-signed: auto-generates a cert into the volume (browsers warn once).
-      #   file:        use RMM_TLS_CERT/RMM_TLS_KEY (e.g. Let's Encrypt/certbot).
-      #   proxy:       plain HTTP behind a TLS-terminating reverse proxy.
       RMM_TLS_MODE: "self-signed"
-      # Use https:// here once TLS is on (and your real host/domain).
-      RMM_PUBLIC_URL: "https://localhost:8000"
-      SESSION_SECRET: "change-me-too"
-      # --- Office 365 SSO (leave blank to run in dev-auth mode) ---
-      MS_TENANT_ID: ""
-      MS_CLIENT_ID: ""
-      MS_CLIENT_SECRET: ""
-      MS_REDIRECT_URI: "http://localhost:8000/auth/callback"
-      RMM_BOOTSTRAP_ADMIN: "admin@example.com"
-      # --- Graph alert mail (optional) ---
-      GRAPH_SENDER: ""
-      # --- Alert thresholds (defaults for new orgs) ---
-      ALERT_CPU_PCT: "90"
-      ALERT_DISK_FREE_PCT: "10"
-      ALERT_MEM_PCT: "90"
+      # Uncomment to configure via env and skip the wizard:
+      # SESSION_SECRET: "change-me"
+      # RMM_PUBLIC_URL: "https://rmm.example.com:8000"
+      # RMM_BOOTSTRAP_ADMIN: "admin@example.com"
     volumes:
       - rmm-data:/data
     restart: unless-stopped

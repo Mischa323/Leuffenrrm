@@ -137,6 +137,11 @@ CREATE TABLE IF NOT EXISTS alert_state (
     last_email   REAL,
     PRIMARY KEY (device_id, rule)
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 # Default monitoring policy used to seed a new org's standard. Overridable per
@@ -154,6 +159,28 @@ DEFAULT_POLICY = {
 
 def _now() -> float:
     return time.time()
+
+
+# --------------------------------------------------------------------------- #
+# Settings (key/value) — backs the first-run setup wizard so configuration can
+# be entered in the UI instead of environment variables.
+# --------------------------------------------------------------------------- #
+def get_setting(key: str, default: str | None = None) -> str | None:
+    row = get_conn().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with write() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (key, value))
+
+
+def get_all_settings() -> dict[str, str]:
+    return {r["key"]: r["value"] for r in get_conn().execute("SELECT key, value FROM settings")}
+
+
+def setup_complete() -> bool:
+    return get_setting("SETUP_COMPLETE") == "1"
 
 
 def init_db() -> None:

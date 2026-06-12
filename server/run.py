@@ -20,7 +20,21 @@ def _data_dir() -> str:
     return os.path.dirname(os.path.abspath(db))
 
 
+def _load_db_settings() -> None:
+    """Pull settings saved by the setup wizard into the environment.
+
+    Explicit environment variables win (so container orchestration can still
+    override), and the DB fills in anything the operator configured via the UI.
+    """
+    from app import database
+    database.init_db()
+    for key, value in database.get_all_settings().items():
+        if value is not None and key not in os.environ:
+            os.environ[key] = value
+
+
 def main() -> None:
+    _load_db_settings()
     mode = os.environ.get("RMM_TLS_MODE", "self-signed").lower()
     host = os.environ.get("RMM_HOST", "0.0.0.0")
     port = int(os.environ.get("RMM_PORT", "8000"))
