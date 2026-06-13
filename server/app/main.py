@@ -1029,11 +1029,25 @@ MSI_URL = os.environ.get(
 
 
 @app.get("/api/orgs/{org_id}/install.msi")
-def install_msi(org_id: str, user: dict = Depends(auth.current_user)):
-    """Redirect to the prebuilt Windows MSI (configured at install via msiexec
-    properties — see the Downloads tab for the command)."""
+async def install_msi(org_id: str, user: dict = Depends(auth.current_user)):
+    """Stream the latest Windows MSI from the release, fresh each time.
+
+    Fetching server-side (rather than redirecting the browser to a fixed URL)
+    avoids stale browser/CDN copies, so you always get the newest build.
+    Configure it at install via msiexec properties — see the Downloads tab.
+    """
     _org_from_request(org_id, user)
-    return RedirectResponse(MSI_URL)
+    import httpx
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
+            r = await client.get(MSI_URL)
+        r.raise_for_status()
+    except Exception:
+        raise HTTPException(status_code=502,
+                            detail="MSI not available yet — build/publish a release first.")
+    return Response(r.content, media_type="application/x-msdownload",
+                    headers={"Content-Disposition": "attachment; filename=leuffen-rmm-agent.msi",
+                             "Cache-Control": "no-store"})
 
 
 @app.get("/api/orgs/{org_id}/agent.zip")
