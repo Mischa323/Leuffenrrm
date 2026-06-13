@@ -28,24 +28,40 @@ async def run_command(cmd: str, timeout: float = 60) -> dict:
         return {"output": f"error: {exc}", "code": 1}
 
 
-async def run_script(content: str, shell: str = "shell", timeout: float = 120) -> dict:
-    """Write a script to a temp file and execute it with the chosen interpreter."""
+async def run_script(content: str, shell: str = "shell", timeout: float = 120,
+                     env: dict | None = None, files: list | None = None) -> dict:
+    """Run a script in a temp working directory.
+
+    ``env`` values are exported as environment variables (policy variables) and
+    ``files`` ([{name, b64}]) are written alongside the script so it can use them.
+    """
+    import shutil
     import tempfile
+    workdir = tempfile.mkdtemp(prefix="rmm-")
     suffix = ".ps1" if shell == "powershell" else (".bat" if (IS_WIN and shell == "cmd") else ".sh")
-    path = None
+    script_path = os.path.join(workdir, "script" + suffix)
     try:
-        with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8") as f:
+        with open(script_path, "w", encoding="utf-8") as f:
             f.write(content)
-            path = f.name
+        for item in (files or []):
+            name = os.path.basename(item.get("name") or "")
+            if not name:
+                continue
+            with open(os.path.join(workdir, name), "wb") as f:
+                f.write(base64.b64decode(item.get("b64") or ""))
+        run_env = dict(os.environ)
+        for k, v in (env or {}).items():
+            run_env[str(k)] = str(v)
         if shell == "powershell":
-            argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path]
+            argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path]
         elif IS_WIN:
-            argv = ["cmd", "/c", path]
+            argv = ["cmd", "/c", script_path]
         else:
-            os.chmod(path, 0o700)
-            argv = ["/bin/sh", path]
+            os.chmod(script_path, 0o700)
+            argv = ["/bin/sh", script_path]
         proc = await asyncio.create_subprocess_exec(
             *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            cwd=workdir, env=run_env,
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return {"output": out.decode(errors="replace"), "code": proc.returncode}
@@ -54,11 +70,7 @@ async def run_script(content: str, shell: str = "shell", timeout: float = 120) -
     except Exception as exc:
         return {"output": f"error: {exc}", "code": 1}
     finally:
-        if path:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def power_action(action: str) -> dict:

@@ -63,3 +63,20 @@ class ScheduleRequest(BaseModel):
     trigger: str = "interval"         # interval | daily
     interval_minutes: int | None = None
     at_time: str | None = None        # 'HH:MM' for daily
+
+
+class ScriptFileRequest(BaseModel):
+    name: str
+    content_b64: str
+
+
+class MonitorRequest(BaseModel):
+    name: str
+    monitor_script_id: str
+    remediation_script_id: str | None = None
+    target_type: str = "all"
+    target_id: str | None = None
+    trigger: str = "interval"
+    interval_minutes: int | None = 15
+    at_time: str | None = None
+    variables: dict | None = None     # name -> value, passed as env to both scripts

@@ -11,6 +11,11 @@ alerts via Microsoft Graph. The dashboard is protected by **Office 365 SSO**.
 > settings, and a user account page — with a two-tier appearance system (workspace
 > default + per-user override). Dependency-free vanilla HTML/CSS/JS in `server/app/static/`.
 
+> Phase 2 (in progress): **scripts** (in-app editor, categories, attached files),
+> **scheduled jobs**, and Datto-style **monitoring policies** — a monitor script
+> that auto-runs a **remediation** script on failure, with policy **variables**
+> passed to both as environment.
+
 > Status: **Phase 1** (core RMM) is implemented and runnable. Phase 2 features
 > (monitors library + auto-response, scripts/scheduled jobs, patch management,
 > compliance evaluation, software audit, scheduled reports) are planned — see

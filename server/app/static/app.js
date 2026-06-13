@@ -75,6 +75,7 @@ async function init() {
   document.querySelectorAll(".dtabs button").forEach((b) => b.onclick = () => selectDrawerTab(b.dataset.dtab));
   $("term-form").onsubmit = onTerm;
   setupScriptModal();
+  setupMonitorModal();
   await showGlobal();
 }
 
@@ -146,21 +147,23 @@ function cycleOrg() {
   showOrg(next.id, next.name); toast("Switched to " + next.name);
 }
 async function refreshOrgCaches() {
-  const [devices, hosts, nodes, groups, scripts, schedules] = await Promise.all([
+  const [devices, hosts, nodes, groups, scripts, schedules, monitors] = await Promise.all([
     api(`/api/orgs/${state.org}/devices`),
     api(`/api/orgs/${state.org}/network/hosts`).catch(() => []),
     api(`/api/orgs/${state.org}/nodes`).catch(() => []),
     api(`/api/orgs/${state.org}/groups`).catch(() => []),
     api(`/api/orgs/${state.org}/scripts`).catch(() => []),
     api(`/api/orgs/${state.org}/schedules`).catch(() => []),
+    api(`/api/orgs/${state.org}/monitors`).catch(() => []),
   ]);
-  state.cache = { devices, hosts, nodes, groups, scripts, schedules };
+  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors };
 }
 function buildNav() {
   $("nav-devices-count").textContent = state.cache.devices.length;
   $("nav-network-count").textContent = state.cache.hosts.length;
   $("nav-nodes-count").textContent = state.cache.nodes.length;
   $("nav-scripts-count").textContent = state.cache.scripts.length;
+  $("nav-monitors-count").textContent = state.cache.monitors.length;
 }
 function buildGroups() {
   const groups = state.cache.groups, devs = state.cache.devices;
@@ -178,12 +181,13 @@ function buildGroups() {
 function selectTab(tab) {
   state.tab = tab;
   document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  ["devices", "network", "nodes", "scripts", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  ["devices", "network", "nodes", "scripts", "monitors", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
   clearRefresh();
   if (tab === "devices") { renderDevices(); state.refresh = setInterval(async () => { try { state.cache.devices = await api(`/api/orgs/${state.org}/devices`); renderDevices(); } catch {} }, 5000); }
   else if (tab === "network") renderNetwork();
   else if (tab === "nodes") renderNodes();
   else if (tab === "scripts") renderScripts();
+  else if (tab === "monitors") renderMonitors();
   else if (tab === "downloads") renderDownloads();
 }
 
@@ -312,6 +316,7 @@ function setupScriptModal() {
     if (e.key === "Tab") { e.preventDefault(); const t = e.target, s = t.selectionStart; t.value = t.value.slice(0, s) + "  " + t.value.slice(t.selectionEnd); t.selectionStart = t.selectionEnd = s + 2; }
   });
   $("sm-save").onclick = saveScript;
+  $("sm-file-add").onclick = uploadScriptFile;
 }
 function openScriptForm(existing) {
   editingScriptId = existing ? existing.id : null;
@@ -322,8 +327,34 @@ function openScriptForm(existing) {
   $("sm-desc").value = (existing && existing.description) || "";
   $("sm-code").value = existing ? existing.content : "#!/bin/sh\n";
   $("sm-save").textContent = existing ? "Save changes" : "Create script";
+  // File attachments only apply to a saved script.
+  $("sm-files-hint").classList.toggle("hidden", !!existing);
+  $("sm-file-input").parentElement.style.display = existing ? "flex" : "none";
+  $("sm-files").innerHTML = "";
+  if (existing) renderScriptFiles(existing.id);
   $("script-modal").classList.remove("hidden");
   setTimeout(() => $("sm-name").focus(), 30);
+}
+async function renderScriptFiles(scriptId) {
+  let files = [];
+  try { files = await api(`/api/scripts/${scriptId}/files`); } catch {}
+  const host = $("sm-files");
+  host.innerHTML = files.map((f) => `<div style="display:flex;align-items:center;gap:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 10px;font-size:13px"><span style="flex:1" class="mono">${escapeHtml(f.name)}</span><span class="h-sub">${(f.size / 1024).toFixed(1)} KB</span><button class="btn ghost sm" data-fid="${f.id}">${ICON.trash}</button></div>`).join("") || `<div class="h-sub">No files attached.</div>`;
+  host.querySelectorAll("[data-fid]").forEach((b) => b.onclick = async () => {
+    try { await api(`/api/scripts/files/${b.dataset.fid}`, { method: "DELETE" }); renderScriptFiles(scriptId); } catch (e) { toast(e.message); }
+  });
+}
+async function uploadScriptFile() {
+  if (!editingScriptId) return toast("Save the script first");
+  const inp = $("sm-file-input"); const file = inp.files[0];
+  if (!file) return toast("Choose a file");
+  const buf = await file.arrayBuffer();
+  let bin = ""; const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  try {
+    await api(`/api/scripts/${editingScriptId}/files`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: file.name, content_b64: btoa(bin) }) });
+    inp.value = ""; toast("File uploaded"); renderScriptFiles(editingScriptId);
+  } catch (e) { toast(e.message); }
 }
 async function saveScript() {
   const body = {
@@ -448,6 +479,82 @@ Run: python agent.py  <span style="color:#5f7088"># config bundled inside</span>
   $("downloads-body").querySelectorAll(".copy").forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.c); toast("Copied to clipboard"); });
 }
 
+/* ---------- monitors (policies) ---------- */
+function monStatusBadge(s) {
+  if (s === "ok") return `<span class="badge ok">${ICON.check} healthy</span>`;
+  if (s === "alert") return `<span class="badge bad">${ICON.alert} alerting</span>`;
+  if (s === "error") return `<span class="badge bad">error</span>`;
+  return `<span class="badge na">not run</span>`;
+}
+function scriptName(id) { const s = (state.cache.scripts || []).find((x) => x.id === id); return s ? s.name : "—"; }
+function renderMonitors() {
+  const mons = state.cache.monitors || [];
+  $("mon-sub").textContent = `${mons.length} polic${mons.length === 1 ? "y" : "ies"}`;
+  const body = $("mon-body");
+  body.innerHTML = mons.length ? "" : `<div class="empty"><div class="big">${ICON.shieldCheck}</div>No monitoring policies yet.<br><span class="muted">Run a monitor script on a schedule and auto-remediate on failure.</span></div>`;
+  for (const m of mons) {
+    const row = el("div", "tile"); row.style.marginBottom = "10px";
+    const rem = m.remediation_script_id ? " → fix: " + escapeHtml(scriptName(m.remediation_script_id)) : " · no remediation";
+    row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
+      <div class="os-ico">${ICON.shieldCheck}</div>
+      <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px">${escapeHtml(m.name)} ${monStatusBadge(m.last_status)}</div>
+        <div class="h-sub">monitor: ${escapeHtml(scriptName(m.monitor_script_id))}${rem} · ${cadenceText(m)} · ${escapeHtml(targetText(m))}${m.last_run ? " · last " + relTime(m.last_run) : ""}</div></div>
+      <span class="badge ${m.enabled ? "ok" : "na"}">${m.enabled ? "enabled" : "paused"}</span>
+      <button class="btn ghost sm run-now">${ICON.power} Run now</button>
+      <button class="btn ghost sm toggle">${m.enabled ? "Pause" : "Resume"}</button>
+      <button class="btn ghost sm del">${ICON.trash}</button></div>`;
+    row.querySelector(".run-now").onclick = async () => { try { const r = await api(`/api/monitors/${m.id}/run`, { method: "POST" }); toast("Monitor ran: " + r.status); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); loadRuns(); } catch (e) { toast(e.message); } };
+    row.querySelector(".toggle").onclick = async () => { try { await api(`/api/monitors/${m.id}/toggle`, { method: "POST" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); } catch (e) { toast(e.message); } };
+    row.querySelector(".del").onclick = async () => { if (!confirm("Delete policy “" + m.name + "”?")) return; try { await api(`/api/monitors/${m.id}`, { method: "DELETE" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); buildNav(); renderMonitors(); toast("Policy deleted"); } catch (e) { toast(e.message); } };
+    body.appendChild(row);
+  }
+  $("mon-new").onclick = openMonitorForm;
+}
+function setupMonitorModal() {
+  $("mm-close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
+  const close = () => $("monitor-modal").classList.add("hidden");
+  $("mm-close").onclick = close; $("mm-cancel").onclick = close;
+  $("monitor-modal").addEventListener("click", (e) => { if (e.target === $("monitor-modal")) close(); });
+  $("mm-save").onclick = saveMonitor;
+}
+function openMonitorForm() {
+  const scripts = state.cache.scripts || [];
+  if (!scripts.length) return toast("Create a script first");
+  const opts = scripts.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}${s.category && s.category !== "Script" ? " (" + s.category + ")" : ""}</option>`).join("");
+  $("mm-monitor").innerHTML = opts;
+  $("mm-remediation").innerHTML = `<option value="">— none —</option>` + opts;
+  const groups = (state.cache.groups || []).map((g) => `<option value="group:${g.id}">Group: ${escapeHtml(g.name)}</option>`).join("");
+  const devs = (state.cache.devices || []).map((d) => `<option value="device:${d.id}">${escapeHtml(d.hostname)}</option>`).join("");
+  $("mm-target").innerHTML = `<option value="all">All devices</option>` + groups + devs;
+  $("mm-name").value = ""; $("mm-vars").value = ""; $("mm-cadence").value = "15";
+  $("monitor-modal").classList.remove("hidden");
+  setTimeout(() => $("mm-name").focus(), 30);
+}
+async function saveMonitor() {
+  const name = $("mm-name").value.trim();
+  if (!name) { $("mm-name").focus(); return toast("Name the policy"); }
+  const tgt = $("mm-target").value;
+  let target_type = "all", target_id = null;
+  if (tgt.startsWith("group:")) { target_type = "group"; target_id = tgt.slice(6); }
+  else if (tgt.startsWith("device:")) { target_type = "device"; target_id = tgt.slice(7); }
+  const variables = {};
+  for (const line of $("mm-vars").value.split("\n")) {
+    const i = line.indexOf("="); if (i <= 0) continue;
+    variables[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  const body = {
+    name, monitor_script_id: $("mm-monitor").value,
+    remediation_script_id: $("mm-remediation").value || null,
+    target_type, target_id, trigger: "interval",
+    interval_minutes: parseInt($("mm-cadence").value, 10), variables,
+  };
+  try {
+    await api(`/api/orgs/${state.org}/monitors`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("monitor-modal").classList.add("hidden"); toast("Monitoring policy created");
+    state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); buildNav(); renderMonitors();
+  } catch (e) { toast(e.message); }
+}
+
 /* ---------- drawer ---------- */
 let termSocket = null;
 async function openDrawer(id) {
@@ -569,6 +676,7 @@ function clearRefresh() { if (state.refresh) { clearInterval(state.refresh); sta
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("script-modal").classList.contains("hidden")) $("script-modal").classList.add("hidden");
+  else if (!$("monitor-modal").classList.contains("hidden")) $("monitor-modal").classList.add("hidden");
   else if (!$("drawer").classList.contains("hidden")) closeDrawer();
 });
 init().catch((e) => { document.body.innerHTML = `<div style="padding:48px;font-family:sans-serif;color:#e9eef6;background:#0a0c11;min-height:100vh"><h2>Couldn't load the dashboard</h2><p style="color:#97a3b4">${e.message}</p><p><a href="/auth/login" style="color:#3b82f6">Sign in →</a></p></div>`; });

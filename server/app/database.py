@@ -204,6 +204,38 @@ CREATE TABLE IF NOT EXISTS schedules (
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
     FOREIGN KEY (script_id) REFERENCES scripts(id) ON DELETE CASCADE
 );
+
+-- Files attached to a script, delivered to the device's working directory.
+CREATE TABLE IF NOT EXISTS script_files (
+    id         TEXT PRIMARY KEY,
+    script_id  TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    content    TEXT NOT NULL,   -- base64
+    size       INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (script_id) REFERENCES scripts(id) ON DELETE CASCADE
+);
+
+-- Monitoring policies: a monitor script + optional remediation, with variables.
+CREATE TABLE IF NOT EXISTS monitors (
+    id               TEXT PRIMARY KEY,
+    org_id           TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    monitor_script_id     TEXT NOT NULL,
+    remediation_script_id TEXT,
+    target_type      TEXT NOT NULL DEFAULT 'all',
+    target_id        TEXT,
+    trigger          TEXT NOT NULL DEFAULT 'interval',
+    interval_minutes INTEGER,
+    at_time          TEXT,
+    variables_json   TEXT,
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    last_run         REAL,
+    next_run         REAL,
+    last_status      TEXT,
+    created_at       REAL NOT NULL,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
 """
 
 # Default monitoring policy used to seed a new org's standard. Overridable per
@@ -493,6 +525,95 @@ def mark_schedule_ran(schedule_id: str, next_run: float | None) -> None:
 def delete_schedule(schedule_id: str) -> None:
     with write() as conn:
         conn.execute("DELETE FROM schedules WHERE id=?", (schedule_id,))
+
+
+# --------------------------------------------------------------------------- #
+# Script file attachments
+# --------------------------------------------------------------------------- #
+def add_script_file(script_id: str, name: str, content_b64: str, size: int) -> dict:
+    fid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO script_files (id, script_id, name, content, size, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (fid, script_id, name, content_b64, size, _now()),
+        )
+    return {"id": fid, "name": name, "size": size}
+
+
+def list_script_files(script_id: str) -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT id, name, size, created_at FROM script_files WHERE script_id=? ORDER BY name",
+        (script_id,)).fetchall()]
+
+
+def files_payload(script_id: str) -> list[dict]:
+    """Name + base64 content for delivering attachments to an agent."""
+    return [{"name": r["name"], "b64": r["content"]} for r in get_conn().execute(
+        "SELECT name, content FROM script_files WHERE script_id=?", (script_id,)).fetchall()]
+
+
+def get_script_file(file_id: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM script_files WHERE id=?", (file_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_script_file(file_id: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM script_files WHERE id=?", (file_id,))
+
+
+# --------------------------------------------------------------------------- #
+# Monitoring policies
+# --------------------------------------------------------------------------- #
+def create_monitor(org_id: str, name: str, monitor_script_id: str,
+                   remediation_script_id: str | None, target_type: str, target_id: str | None,
+                   trigger: str, interval_minutes: int | None, at_time: str | None,
+                   variables_json: str | None, next_run: float) -> dict:
+    mid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute(
+            """INSERT INTO monitors (id, org_id, name, monitor_script_id, remediation_script_id,
+                   target_type, target_id, trigger, interval_minutes, at_time, variables_json,
+                   enabled, next_run, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+            (mid, org_id, name, monitor_script_id, remediation_script_id, target_type, target_id,
+             trigger, interval_minutes, at_time, variables_json, next_run, _now()),
+        )
+    return get_monitor(mid)
+
+
+def get_monitor(monitor_id: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM monitors WHERE id=?", (monitor_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_monitors(org_id: str) -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM monitors WHERE org_id=? ORDER BY created_at DESC", (org_id,)).fetchall()]
+
+
+def due_monitors() -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM monitors WHERE enabled=1 AND next_run IS NOT NULL AND next_run<=?",
+        (_now(),)).fetchall()]
+
+
+def set_monitor_enabled(monitor_id: str, enabled: bool, next_run: float | None = None) -> None:
+    with write() as conn:
+        conn.execute("UPDATE monitors SET enabled=?, next_run=? WHERE id=?",
+                     (1 if enabled else 0, next_run, monitor_id))
+
+
+def mark_monitor_ran(monitor_id: str, next_run: float | None, status: str) -> None:
+    with write() as conn:
+        conn.execute("UPDATE monitors SET last_run=?, next_run=?, last_status=? WHERE id=?",
+                     (_now(), next_run, status, monitor_id))
+
+
+def delete_monitor(monitor_id: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM monitors WHERE id=?", (monitor_id,))
 
 
 def list_runs(org_id: str, device_id: str | None = None, limit: int = 50) -> list[dict]:
