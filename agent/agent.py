@@ -31,11 +31,31 @@ log = logging.getLogger("rmm.agent")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _data_dir() -> str:
+    """Writable directory for config + device id (stable across runs).
+
+    When packaged as a PyInstaller exe, ``__file__`` is a temp extraction dir, so
+    use a fixed location (``RMM_DATA_DIR``, else %ProgramData%\\LeuffenRMM on
+    Windows, else the executable's folder)."""
+    env = os.environ.get("RMM_DATA_DIR")
+    if env:
+        os.makedirs(env, exist_ok=True)
+        return env
+    if getattr(sys, "frozen", False):
+        if os.name == "nt":
+            d = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "LeuffenRMM")
+        else:
+            d = os.path.dirname(sys.executable)
+        os.makedirs(d, exist_ok=True)
+        return d
+    return HERE
+
+
 def _load_config() -> dict:
     """Config precedence: env vars > bundled rmm_config.json."""
     cfg = {"server_url": os.environ.get("RMM_SERVER_URL"),
            "api_key": os.environ.get("RMM_API_KEY")}
-    path = os.path.join(HERE, "rmm_config.json")
+    path = os.path.join(_data_dir(), "rmm_config.json")
     if os.path.exists(path):
         try:
             with open(path) as f:
@@ -55,8 +75,8 @@ def _load_config() -> dict:
 
 
 def _device_id() -> str:
-    """Stable per-machine id, persisted next to the agent."""
-    path = os.path.join(HERE, "rmm_device_id")
+    """Stable per-machine id, persisted in the data directory."""
+    path = os.path.join(_data_dir(), "rmm_device_id")
     if os.path.exists(path):
         with open(path) as f:
             return f.read().strip()

@@ -87,6 +87,11 @@ iwr http://YOUR_SERVER:8000/api/orgs/default/install.ps1 -UseBasicParsing | iex
 The device appears under **Devices** within a few seconds, auto-placed in its OS
 group (Windows / Linux / Windows Server), streaming live CPU/RAM/disk stats.
 
+> **Windows MSI:** the Downloads tab also offers a standalone **MSI** (no Python
+> needed). It's built in CI (`.github/workflows/windows-agent-msi.yml`, Windows
+> runner) — push a `v*` tag to publish it to Releases — and configured at install
+> via `msiexec` properties (`RMM_SERVER_URL`, `RMM_API_KEY`, `RMM_INSECURE_TLS`).
+
 ### Step 4 — Use it
 - Click a device for inventory, an interactive **terminal**, **power** actions and
   **Wake-on-LAN**.
@@ -258,6 +263,8 @@ Explicit environment variables always take precedence over wizard-saved values.
 | `RMM_API_KEY` | *(random)* | Enrollment key for the seeded *Default* org |
 | `RMM_SKIP_SETUP` | `0` | Skip the first-run setup wizard |
 | `RMM_AUTH_MODE` | `hybrid` | Sign-in: `hybrid` (local + optional M365, default) \| `dev` |
+| `RMM_LOGIN_MAX_FAILS` | `5` | Failed local logins (per IP+user) before a temporary lock |
+| `RMM_LOGIN_WINDOW` | `300` | Rate-limit window / lock duration (seconds) |
 | `RMM_PUBLIC_URL` | `https://localhost:8000` | Baked into agent downloads / SSO |
 | `RMM_TLS_MODE` | `self-signed` | `self-signed` \| `file` \| `proxy` |
 | `RMM_TLS_CERT` / `RMM_TLS_KEY` | `<data>/tls/*` | Cert/key paths (self-signed/file) |

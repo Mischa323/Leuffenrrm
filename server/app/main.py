@@ -165,12 +165,43 @@ def auth_config():
     return {"mode": auth.AUTH_MODE, "local": auth.LOCAL_ENABLED, "sso": auth.SSO_ENABLED}
 
 
+# --- Login rate limiting (in-memory; single-process server) ------------------ #
+LOGIN_MAX_FAILS = int(os.environ.get("RMM_LOGIN_MAX_FAILS", "5"))
+LOGIN_WINDOW = float(os.environ.get("RMM_LOGIN_WINDOW", "300"))  # seconds
+_login_fails: dict[str, list[float]] = {}
+
+
+def _login_key(request: Request, username: str) -> str:
+    ip = request.client.host if request.client else "?"
+    return f"{ip}|{(username or '').lower()}"
+
+
+def _login_throttled(key: str) -> bool:
+    now = time.time()
+    arr = [t for t in _login_fails.get(key, []) if now - t < LOGIN_WINDOW]
+    _login_fails[key] = arr
+    return len(arr) >= LOGIN_MAX_FAILS
+
+
+def _record_login_fail(key: str) -> None:
+    _login_fails.setdefault(key, []).append(time.time())
+
+
 @app.post("/api/auth/local-login")
 async def local_login(request: Request):
     if not auth.LOCAL_ENABLED:
         raise HTTPException(status_code=403, detail="Local sign-in is disabled")
     data = await request.json()
-    u = auth.verify_local((data.get("username") or "").strip(), data.get("password") or "")
+    username = (data.get("username") or "").strip()
+    key = _login_key(request, username)
+    if _login_throttled(key):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts. Wait a few minutes and try again.")
+    try:
+        u = auth.verify_local(username, data.get("password") or "")
+    except HTTPException:
+        _record_login_fail(key)
+        raise
     # Second factor (TOTP, or a single-use recovery code) if enabled.
     if u.get("totp_enabled"):
         code = (data.get("code") or "").strip()
@@ -180,7 +211,9 @@ async def local_login(request: Request):
         ok = totp.verify(u.get("totp_secret") or "", code) or \
             db.consume_recovery_code(u["username"], code)
         if not ok:
+            _record_login_fail(key)
             raise HTTPException(status_code=401, detail="Invalid authentication or recovery code")
+    _login_fails.pop(key, None)
     db.touch_user(u["username"])
     resp = Response(status_code=204)
     resp.set_cookie(auth.COOKIE, auth.make_cookie(u["username"]), httponly=True,
@@ -286,6 +319,25 @@ def list_groups(org_id: str, user: dict = Depends(auth.current_user)):
 def create_group(org_id: str, req: GroupRequest, user: dict = Depends(auth.current_user)):
     auth.require_org(user, org_id)
     return db.create_group(org_id, req.name)
+
+
+@app.get("/api/orgs/{org_id}/enroll-key")
+def get_enroll_key(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    org = db.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    return {"enroll_key": org["enroll_key"], "insecure_tls": agent_insecure_tls()}
+
+
+@app.post("/api/orgs/{org_id}/rotate-key")
+def rotate_enroll_key(org_id: str, user: dict = Depends(auth.current_user)):
+    """Issue a new enrolment key. New installers use it; existing agents keep
+    working (they reconnect by device identity)."""
+    auth.require_org(user, org_id)
+    if not db.get_org(org_id):
+        raise HTTPException(status_code=404, detail="Org not found")
+    return {"enroll_key": db.rotate_org_key(org_id)}
 
 
 # --------------------------------------------------------------------------- #
@@ -796,10 +848,6 @@ def network_hosts(org_id: str, user: dict = Depends(auth.current_user)):
 # --------------------------------------------------------------------------- #
 @app.websocket("/api/agents/ws")
 async def agent_ws(ws: WebSocket, key: str = Query(...)):
-    org = db.get_org_by_key(key)
-    if org is None:
-        await ws.close(code=4401)
-        return
     await ws.accept()
     device_id: str | None = None
     try:
@@ -809,6 +857,15 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
             await ws.close(code=4400)
             return
         device_id = first["id"]
+        # New installs need a valid enrolment key; an already-registered device may
+        # reconnect by its identity even after the key was rotated.
+        org = db.get_org_by_key(key)
+        if org is None:
+            existing = db.get_device(device_id)
+            org = db.get_org(existing["org_id"]) if existing else None
+        if org is None:
+            await ws.close(code=4401)
+            return
         db.upsert_device(org["id"], first)
         await manager.register(device_id, org["id"], ws)
         if db.get_device(device_id).get("is_node"):
@@ -964,6 +1021,19 @@ Register-ScheduledTask -TaskName "LeuffenRMM" -Action $action -Trigger $trigger 
 Start-ScheduledTask -TaskName "LeuffenRMM"
 Write-Host "Leuffen RMM agent installed."
 """
+
+
+MSI_URL = os.environ.get(
+    "RMM_MSI_URL",
+    "https://github.com/Mischa323/Leuffenrrm/releases/latest/download/leuffen-rmm-agent.msi")
+
+
+@app.get("/api/orgs/{org_id}/install.msi")
+def install_msi(org_id: str, user: dict = Depends(auth.current_user)):
+    """Redirect to the prebuilt Windows MSI (configured at install via msiexec
+    properties — see the Downloads tab for the command)."""
+    _org_from_request(org_id, user)
+    return RedirectResponse(MSI_URL)
 
 
 @app.get("/api/orgs/{org_id}/agent.zip")
@@ -1166,6 +1236,19 @@ def list_app_users(user: dict = Depends(auth.current_user)):
         raise HTTPException(status_code=403, detail="Global admin required")
     return {"mode": auth.AUTH_MODE, "users": db.list_users(),
             "bootstrap_admins": sorted(auth.BOOTSTRAP_ADMINS)}
+
+
+@app.post("/api/admin/reset")
+def reset_config(user: dict = Depends(auth.current_user)):
+    """Wipe server configuration and re-show the setup wizard.
+
+    Clears the settings store (auth mode, TLS, public URL, secrets, …) so the
+    first-run wizard reappears. Devices, organisations and accounts are kept.
+    """
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    db.clear_settings()
+    return {"ok": True, "restart_recommended": True}
 
 
 @app.get("/api/account")

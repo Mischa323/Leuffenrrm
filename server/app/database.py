@@ -277,6 +277,12 @@ def setup_complete() -> bool:
     return get_setting("SETUP_COMPLETE") == "1"
 
 
+def clear_settings() -> None:
+    """Wipe all server configuration so the first-run setup wizard reappears."""
+    with write() as conn:
+        conn.execute("DELETE FROM settings")
+
+
 # --------------------------------------------------------------------------- #
 # Local accounts (username/password) — used when auth mode is "local".
 # Passwords are hashed with PBKDF2-HMAC-SHA256 (stdlib, no extra dependency).
@@ -710,6 +716,14 @@ def get_org_by_key(enroll_key: str) -> dict | None:
         "SELECT * FROM organizations WHERE enroll_key=?", (enroll_key,)
     ).fetchone()
     return dict(row) if row else None
+
+
+def rotate_org_key(org_id: str) -> str:
+    """Generate a new enrolment key for new installs (existing agents keep working)."""
+    new_key = secrets.token_urlsafe(24)
+    with write() as conn:
+        conn.execute("UPDATE organizations SET enroll_key=? WHERE id=?", (new_key, org_id))
+    return new_key
 
 
 def list_orgs() -> list[dict]:
