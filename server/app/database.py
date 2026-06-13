@@ -137,6 +137,29 @@ CREATE TABLE IF NOT EXISTS alert_state (
     last_email   REAL,
     PRIMARY KEY (device_id, rule)
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    username     TEXT PRIMARY KEY,
+    email        TEXT,
+    display_name TEXT,
+    pw_hash      TEXT NOT NULL,
+    is_admin     INTEGER NOT NULL DEFAULT 0,
+    created_at   REAL NOT NULL,
+    last_active  REAL
+);
+
+CREATE TABLE IF NOT EXISTS recovery_codes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    username   TEXT NOT NULL,
+    code_hash  TEXT NOT NULL,
+    used       INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
 """
 
 # Default monitoring policy used to seed a new org's standard. Overridable per
@@ -156,6 +179,158 @@ def _now() -> float:
     return time.time()
 
 
+# --------------------------------------------------------------------------- #
+# Settings (key/value) — backs the first-run setup wizard so configuration can
+# be entered in the UI instead of environment variables.
+# --------------------------------------------------------------------------- #
+def get_setting(key: str, default: str | None = None) -> str | None:
+    row = get_conn().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with write() as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (key, value))
+
+
+def get_all_settings() -> dict[str, str]:
+    return {r["key"]: r["value"] for r in get_conn().execute("SELECT key, value FROM settings")}
+
+
+def setup_complete() -> bool:
+    return get_setting("SETUP_COMPLETE") == "1"
+
+
+# --------------------------------------------------------------------------- #
+# Local accounts (username/password) — used when auth mode is "local".
+# Passwords are hashed with PBKDF2-HMAC-SHA256 (stdlib, no extra dependency).
+# --------------------------------------------------------------------------- #
+def _hash_pw(password: str, salt: bytes | None = None) -> str:
+    import base64
+    import hashlib
+    salt = salt or os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200_000)
+    return "pbkdf2$200000$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(dk).decode()
+
+
+def verify_pw(password: str, stored: str) -> bool:
+    import base64
+    import hashlib
+    import hmac
+    try:
+        _, iters, salt_b64, hash_b64 = stored.split("$")
+        salt = base64.b64decode(salt_b64)
+        expected = base64.b64decode(hash_b64)
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, int(iters))
+        return hmac.compare_digest(dk, expected)
+    except Exception:
+        return False
+
+
+def create_user(username: str, password: str, is_admin: bool = False,
+                email: str | None = None, display_name: str | None = None) -> None:
+    with write() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO users
+               (username, email, display_name, pw_hash, is_admin, created_at, last_active)
+               VALUES (?,?,?,?,?,?,?)""",
+            (username.lower(), email, display_name or username, _hash_pw(password),
+             1 if is_admin else 0, _now(), None),
+        )
+
+
+def get_user(username: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM users WHERE username=?", (username.lower(),)).fetchone()
+    return dict(row) if row else None
+
+
+def list_users() -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT username, email, display_name, is_admin, created_at, last_active "
+        "FROM users ORDER BY is_admin DESC, username").fetchall()]
+
+
+def set_user_password(username: str, password: str) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET pw_hash=? WHERE username=?",
+                     (_hash_pw(password), username.lower()))
+
+
+def touch_user(username: str) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET last_active=? WHERE username=?", (_now(), username.lower()))
+
+
+def delete_user(username: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM users WHERE username=?", (username.lower(),))
+
+
+def set_totp_secret(username: str, secret: str | None) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET totp_secret=? WHERE username=?", (secret, username.lower()))
+
+
+def set_totp_enabled(username: str, enabled: bool) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET totp_enabled=? WHERE username=?",
+                     (1 if enabled else 0, username.lower()))
+
+
+# --------------------------------------------------------------------------- #
+# 2FA recovery (backup) codes — single-use, stored as SHA-256 hashes.
+# --------------------------------------------------------------------------- #
+def _norm_code(code: str) -> str:
+    return code.strip().lower().replace("-", "").replace(" ", "")
+
+
+def _rc_hash(code: str) -> str:
+    import hashlib
+    return hashlib.sha256(_norm_code(code).encode()).hexdigest()
+
+
+def generate_recovery_codes(username: str, n: int = 10) -> list[str]:
+    """Replace any existing codes with ``n`` fresh ones; return the plaintext."""
+    alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+    codes, now = [], _now()
+    with write() as conn:
+        conn.execute("DELETE FROM recovery_codes WHERE username=?", (username.lower(),))
+        for _ in range(n):
+            raw = "".join(secrets.choice(alphabet) for _ in range(10))
+            codes.append(raw[:5] + "-" + raw[5:])
+            conn.execute(
+                "INSERT INTO recovery_codes (username, code_hash, used, created_at) VALUES (?,?,0,?)",
+                (username.lower(), _rc_hash(raw), now),
+            )
+    return codes
+
+
+def consume_recovery_code(username: str, code: str) -> bool:
+    """Spend a matching unused code; return True on success."""
+    h = _rc_hash(code)
+    with write() as conn:
+        row = conn.execute(
+            "SELECT id FROM recovery_codes WHERE username=? AND code_hash=? AND used=0",
+            (username.lower(), h),
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute("UPDATE recovery_codes SET used=1 WHERE id=?", (row["id"],))
+    return True
+
+
+def recovery_codes_remaining(username: str) -> int:
+    row = get_conn().execute(
+        "SELECT COUNT(*) AS n FROM recovery_codes WHERE username=? AND used=0", (username.lower(),)
+    ).fetchone()
+    return row["n"] if row else 0
+
+
+def clear_recovery_codes(username: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM recovery_codes WHERE username=?", (username.lower(),))
+
+
 def init_db() -> None:
     global _conn
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
@@ -164,7 +339,16 @@ def init_db() -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA foreign_keys=ON;")
     _conn.executescript(SCHEMA)
+    _migrate(_conn)
     _conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Lightweight additive migrations for existing databases."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+    for col, ddl in (("totp_secret", "TEXT"), ("totp_enabled", "INTEGER NOT NULL DEFAULT 0")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
 
 
 def get_conn() -> sqlite3.Connection:

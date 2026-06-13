@@ -6,6 +6,11 @@ files), wakes devices via **Wake-on-LAN** (including across LANs/VLANs through
 relay *nodes*), discovers devices on the network, and sends monitoring email
 alerts via Microsoft Graph. The dashboard is protected by **Office 365 SSO**.
 
+> Web UI: a modern dark/light dashboard (fleet overview, per-org devices, slide-in
+> device drawer with live rings/terminal/actions), a 5-step setup wizard, admin
+> settings, and a user account page — with a two-tier appearance system (workspace
+> default + per-user override). Dependency-free vanilla HTML/CSS/JS in `server/app/static/`.
+
 > Status: **Phase 1** (core RMM) is implemented and runnable. Phase 2 features
 > (monitors library + auto-response, scripts/scheduled jobs, patch management,
 > compliance evaluation, software audit, scheduled reports) are planned — see
@@ -31,20 +36,34 @@ dashboard, then **install the agent** on each machine you want to monitor.
 ```bash
 git clone https://github.com/Mischa323/Leuffenrrm.git
 cd Leuffenrrm
-
-# Edit docker-compose.yml: at minimum set RMM_API_KEY, SESSION_SECRET and
-# RMM_PUBLIC_URL (the URL agents/browsers will use to reach the server).
 docker compose up --build -d
 ```
 
-Open **https://localhost:8000** (or your `RMM_PUBLIC_URL`). The server uses HTTPS
-by default with a self-signed cert, so your browser warns once — accept it, or set
-up a real certificate (see [HTTPS / TLS](#https--tls)). In dev-auth mode you're
-signed straight in; a **Default** organisation is created automatically.
+No env editing needed — configuration happens in the browser (next step).
 
+### Step 2 — Run the setup wizard
+
+Open **https://localhost:8000**. The server uses HTTPS by default with a
+self-signed cert, so your browser warns once — accept it. On first boot you're
+taken to a **setup wizard** where you enter:
+
+- **Public URL** — what agents/browsers use to reach the server (baked into installers).
+- **Administrator email** — the global admin.
+- **HTTPS / TLS** — self-signed (default), your own cert files, or behind a reverse proxy.
+- **Sign-in** — *Dev mode* (no login, fastest), *Local accounts* (username/password,
+  PBKDF2-hashed on this server), or *Microsoft 365 SSO*.
+
+Settings are saved to the `/data` volume. Some (SSO, TLS, session secret) take
+effect after a quick `docker compose restart`. A **Default** organisation is
+created automatically.
+
+> Prefer environment variables and want to skip the wizard? Set `SESSION_SECRET`
+> (and any of `RMM_PUBLIC_URL`, `RMM_BOOTSTRAP_ADMIN`, `MS_*`) in
+> `docker-compose.yml` — the wizard is then bypassed. See [Configuration reference](#configuration-reference).
+>
 > Prefer no Docker? See [Run natively on Linux](#run-natively-on-linux-no-docker).
 
-### Step 2 — Install an agent
+### Step 3 — Install an agent
 
 In the dashboard open an organisation → **Downloads**, then run the one-liner it
 shows (the server URL and that org's enrollment key are already baked in):
@@ -62,7 +81,7 @@ iwr http://YOUR_SERVER:8000/api/orgs/default/install.ps1 -UseBasicParsing | iex
 The device appears under **Devices** within a few seconds, auto-placed in its OS
 group (Windows / Linux / Windows Server), streaming live CPU/RAM/disk stats.
 
-### Step 3 — Use it
+### Step 4 — Use it
 - Click a device for inventory, an interactive **terminal**, **power** actions and
   **Wake-on-LAN**.
 - To wake or scan machines on a remote LAN, open a device → **Actions →
@@ -221,11 +240,18 @@ clear.
 
 ## Configuration reference
 
+All server settings can be entered in the **first-run setup wizard** (saved to the
+DB) instead of via environment variables. The wizard is shown until completed;
+setting `SESSION_SECRET` in the environment (or `RMM_SKIP_SETUP=1`) bypasses it.
+Explicit environment variables always take precedence over wizard-saved values.
+
 **Server**
 
 | Variable | Default | Notes |
 |---|---|---|
-| `RMM_API_KEY` | `changeme` | Enrollment key for the seeded *Default* org |
+| `RMM_API_KEY` | *(random)* | Enrollment key for the seeded *Default* org |
+| `RMM_SKIP_SETUP` | `0` | Skip the first-run setup wizard |
+| `RMM_AUTH_MODE` | `dev`/`sso` | Sign-in mode: `dev` \| `local` \| `sso` |
 | `RMM_PUBLIC_URL` | `https://localhost:8000` | Baked into agent downloads / SSO |
 | `RMM_TLS_MODE` | `self-signed` | `self-signed` \| `file` \| `proxy` |
 | `RMM_TLS_CERT` / `RMM_TLS_KEY` | `<data>/tls/*` | Cert/key paths (self-signed/file) |

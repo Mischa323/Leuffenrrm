@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-density="comfortable" data-dataviz="on">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Leuffen RMM — Setup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="setup.css" />
+</head>
+<body>
+  <div class="setup-shell">
+    <!-- ===== Left rail ===== -->
+    <aside class="setup-aside">
+      <div class="setup-brand"><span class="logo" id="brand-logo"></span> Leuffen <span>RMM</span></div>
+      <div class="lede">
+        <h1>Let's get you set up</h1>
+        <p>A few steps to configure sign-in, security and your first administrator. Takes about two minutes.</p>
+      </div>
+      <div class="stepper" id="stepper"></div>
+      <div class="foot"><span id="foot-ico"></span> Self-hosted · your data never leaves this server</div>
+    </aside>
+
+    <!-- ===== Right content ===== -->
+    <div class="setup-main">
+      <div class="setup-scroll">
+        <div class="setup-card">
+
+          <!-- Step 1 — Welcome -->
+          <section class="panel-step on" data-step="0">
+            <div class="step-head">
+              <div class="eyebrow">Step 1 · Welcome</div>
+              <h2>Welcome to Leuffen RMM</h2>
+              <p>This wizard configures your self-hosted monitoring server. Before you continue, here's what you'll set up — and a quick check of the environment.</p>
+            </div>
+            <div class="fields">
+              <div class="callout info"><div class="ic" id="w-ic-1"></div><div><div class="ct">What you'll configure</div><div class="cd">Sign-in (Microsoft 365 SSO, local accounts, or a quick dev login), your global administrator, and how the server is secured with TLS.</div></div></div>
+              <div id="env-checks"></div>
+            </div>
+          </section>
+
+          <!-- Step 2 — Authentication -->
+          <section class="panel-step" data-step="1">
+            <div class="step-head">
+              <div class="eyebrow">Step 2 · Sign-in</div>
+              <h2>Authentication</h2>
+              <p>Choose how people sign in to Leuffen RMM. Pick what fits now — you can change the method later from the dashboard.</p>
+            </div>
+            <div class="fields">
+              <div class="segmented" id="auth-seg"></div>
+              <div id="auth-extra" class="fields"></div>
+            </div>
+          </section>
+
+          <!-- Step 3 — Administrators / Accounts -->
+          <section class="panel-step" data-step="2">
+            <div class="step-head">
+              <div class="eyebrow">Step 3 · Access</div>
+              <h2 id="admin-h2">Global administrators</h2>
+              <p id="admin-p">Global admins can see every organisation and manage all devices.</p>
+            </div>
+            <div class="fields" id="admin-body"></div>
+          </section>
+
+          <!-- Step 4 — Security -->
+          <section class="panel-step" data-step="3">
+            <div class="step-head">
+              <div class="eyebrow">Step 4 · Security</div>
+              <h2>TLS &amp; network</h2>
+              <p>How should the server terminate HTTPS? You can change this later from Settings.</p>
+            </div>
+            <div class="fields">
+              <div class="segmented" id="tls-seg"></div>
+              <div id="tls-extra" class="fields"></div>
+              <div class="fld row2">
+                <div class="fld" style="gap:7px"><label>Bind host</label><input class="inp mono" id="f-host" value="0.0.0.0" /></div>
+                <div class="fld" style="gap:7px"><label>Port</label><input class="inp mono" id="f-port" value="8000" /></div>
+              </div>
+              <div class="fld">
+                <label>Session secret</label>
+                <div class="with-btn"><input class="inp mono" id="f-secret-key" placeholder="leave blank to auto-generate" /><button class="btn ghost" id="gen-secret"><span id="gen-ico"></span> Generate</button></div>
+                <div class="hint">Signs session cookies. Keep it private; rotating it signs everyone out.</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Step 5 — Review -->
+          <section class="panel-step" data-step="4">
+            <div class="step-head">
+              <div class="eyebrow">Step 5 · Review</div>
+              <h2>Review &amp; launch</h2>
+              <p>Confirm your configuration. You can jump back to any step to make changes.</p>
+            </div>
+            <div class="review-list" id="review-list"></div>
+          </section>
+
+        </div>
+      </div>
+
+      <!-- footer nav -->
+      <div class="setup-foot">
+        <div class="progress-txt">Step <b id="cur-step">1</b> of <b>5</b></div>
+        <div class="nav-btns">
+          <button class="btn ghost" id="back-btn" style="visibility:hidden"><span id="back-ico"></span> Back</button>
+          <button class="btn" id="next-btn">Continue <span id="next-ico"></span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- launch overlay -->
+  <div class="launch" id="launch">
+    <div class="lc">
+      <div class="spin" id="launch-spin"></div>
+      <h2 id="launch-title">Saving your configuration…</h2>
+      <p id="launch-sub">Writing configuration and applying settings.</p>
+      <div class="log" id="launch-log"></div>
+      <div id="launch-actions" style="margin-top:22px;display:none"><a class="btn" href="/"><span id="go-ico"></span> Open dashboard</a></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"><span id="toast-ico"></span><span></span></div>
+
+  <script src="icons.js"></script>
+  <script src="appearance.js"></script>
+  <script src="setup.js"></script>
+</body>
+</html>

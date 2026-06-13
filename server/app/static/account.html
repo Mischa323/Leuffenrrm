@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-density="comfortable" data-dataviz="on">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Leuffen RMM — Account</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar" id="topbar"></header>
+    <main>
+      <div class="page-head"><div><h1>Your account</h1><p>Manage your profile, password and sessions</p></div></div>
+
+      <div class="settings-layout">
+        <aside class="settings-nav" id="settings-nav">
+          <div class="sn-label">Account</div>
+          <button data-sec="profile" class="active"></button>
+          <button data-sec="password"></button>
+          <button data-sec="sessions"></button>
+          <button data-sec="appearance"></button>
+        </aside>
+        <div class="settings-main" id="settings-main"></div>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"><span id="toast-ico"></span><span></span></div>
+
+  <script src="icons.js"></script>
+  <script src="appearance.js"></script>
+  <script src="chrome.js"></script>
+  <script src="account.js"></script>
+</body>
+</html>
