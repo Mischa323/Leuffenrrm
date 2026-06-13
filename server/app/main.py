@@ -327,7 +327,7 @@ def get_enroll_key(org_id: str, user: dict = Depends(auth.current_user)):
     org = db.get_org(org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Org not found")
-    return {"enroll_key": org["enroll_key"]}
+    return {"enroll_key": org["enroll_key"], "insecure_tls": agent_insecure_tls()}
 
 
 @app.post("/api/orgs/{org_id}/rotate-key")
@@ -1021,6 +1021,19 @@ Register-ScheduledTask -TaskName "LeuffenRMM" -Action $action -Trigger $trigger 
 Start-ScheduledTask -TaskName "LeuffenRMM"
 Write-Host "Leuffen RMM agent installed."
 """
+
+
+MSI_URL = os.environ.get(
+    "RMM_MSI_URL",
+    "https://github.com/Mischa323/Leuffenrrm/releases/latest/download/leuffen-rmm-agent.msi")
+
+
+@app.get("/api/orgs/{org_id}/install.msi")
+def install_msi(org_id: str, user: dict = Depends(auth.current_user)):
+    """Redirect to the prebuilt Windows MSI (configured at install via msiexec
+    properties — see the Downloads tab for the command)."""
+    _org_from_request(org_id, user)
+    return RedirectResponse(MSI_URL)
 
 
 @app.get("/api/orgs/{org_id}/agent.zip")

@@ -87,6 +87,11 @@ iwr http://YOUR_SERVER:8000/api/orgs/default/install.ps1 -UseBasicParsing | iex
 The device appears under **Devices** within a few seconds, auto-placed in its OS
 group (Windows / Linux / Windows Server), streaming live CPU/RAM/disk stats.
 
+> **Windows MSI:** the Downloads tab also offers a standalone **MSI** (no Python
+> needed). It's built in CI (`.github/workflows/windows-agent-msi.yml`, Windows
+> runner) — push a `v*` tag to publish it to Releases — and configured at install
+> via `msiexec` properties (`RMM_SERVER_URL`, `RMM_API_KEY`, `RMM_INSECURE_TLS`).
+
 ### Step 4 — Use it
 - Click a device for inventory, an interactive **terminal**, **power** actions and
   **Wake-on-LAN**.

@@ -1,0 +1,49 @@
+name: Build Windows agent MSI
+
+# Builds a standalone agent .exe (PyInstaller) and wraps it in an MSI (WiX v4).
+# Runs on a Windows runner — free for public repositories. The MSI is attached to
+# the workflow run and, on a tag push, to the GitHub Release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: pip install pyinstaller websockets psutil
+
+      - name: Build agent exe
+        working-directory: agent
+        run: pyinstaller --onefile --noconsole --name leuffen-rmm-agent --paths . agent.py
+
+      - name: Install WiX
+        run: dotnet tool install --global wix
+
+      - name: Build MSI
+        run: |
+          copy agent\dist\leuffen-rmm-agent.exe packaging\windows\leuffen-rmm-agent.exe
+          wix build packaging\windows\agent.wxs -o leuffen-rmm-agent.msi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: leuffen-rmm-agent-msi
+          path: leuffen-rmm-agent.msi
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: leuffen-rmm-agent.msi

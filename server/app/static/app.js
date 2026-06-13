@@ -466,13 +466,20 @@ function renderNodes() {
   }
 }
 
-function renderDownloads() {
+async function renderDownloads() {
   const base = location.origin;
+  let info = { enroll_key: "<enrollment-key>", insecure_tls: location.protocol === "https:" };
+  try { info = await api(`/api/orgs/${state.org}/enroll-key`); } catch {}
+  const msiCmd = (key) => `msiexec /i leuffen-rmm-agent.msi /qn RMM_SERVER_URL=${base} RMM_API_KEY=${key} RMM_INSECURE_TLS=${info.insecure_tls ? 1 : 0}`;
   $("downloads-body").innerHTML = `
-    <div class="dl-block"><div class="lab">${ICON.linux} Linux (one-liner)</div>
-      <div class="code"><button class="btn ghost sm copy" data-c="curl -fsSL ${base}/api/orgs/${state.org}/install.sh | sudo bash">${ICON.copy} Copy</button>curl -fsSL ${base}/api/orgs/${state.org}/install.sh | sudo bash</div></div>
+    <div class="dl-block"><div class="lab">${ICON.windows} Windows — MSI installer</div>
+      <div style="margin:6px 0 8px"><a class="btn sm" href="${base}/api/orgs/${state.org}/install.msi">${ICON.download} Download MSI</a></div>
+      <div class="code"><button class="btn ghost sm copy" data-c="${msiCmd(info.enroll_key)}">${ICON.copy} Copy</button>${msiCmd("&lt;enrollment-key&gt;")}</div>
+      <div class="h-sub" style="margin-top:6px">Silent install as SYSTEM; runs at startup. Download the MSI, then run the command (admin). Copy includes the key.</div></div>
     <div class="dl-block"><div class="lab">${ICON.windows} Windows (PowerShell, admin)</div>
       <div class="code"><button class="btn ghost sm copy" data-c="iwr ${base}/api/orgs/${state.org}/install.ps1 -UseBasicParsing | iex">${ICON.copy} Copy</button>iwr ${base}/api/orgs/${state.org}/install.ps1 -UseBasicParsing | iex</div></div>
+    <div class="dl-block"><div class="lab">${ICON.linux} Linux (one-liner)</div>
+      <div class="code"><button class="btn ghost sm copy" data-c="curl -fsSL ${base}/api/orgs/${state.org}/install.sh | sudo bash">${ICON.copy} Copy</button>curl -fsSL ${base}/api/orgs/${state.org}/install.sh | sudo bash</div></div>
     <div class="dl-block"><div class="lab">${ICON.download} Manual install</div>
       <div class="code">Download: ${base}/api/orgs/${state.org}/agent.zip
 Run: python agent.py  <span style="color:#5f7088"># config bundled inside</span></div></div>
