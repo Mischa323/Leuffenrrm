@@ -21,7 +21,8 @@ from . import alerts, auth, database as db, totp
 from . import wol as wol_local
 from .manager import manager
 from .models import (GroupRequest, MoveDeviceRequest, OrgRequest, OrgUserRequest,
-                     PowerRequest, ShellRequest, SubnetRequest, WakeRequest)
+                     PowerRequest, ScriptRequest, ScriptRunRequest, ShellRequest,
+                     SubnetRequest, WakeRequest)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
@@ -299,6 +300,67 @@ async def shell(device_id: str, req: ShellRequest, user: dict = Depends(auth.cur
     except Exception as exc:
         raise HTTPException(status_code=504, detail=str(exc))
     return res
+
+
+# --------------------------------------------------------------------------- #
+# Scripts (Phase 2): a per-org library + run-on-device with stored history.
+# --------------------------------------------------------------------------- #
+@app.get("/api/orgs/{org_id}/scripts")
+def list_scripts(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return db.list_scripts(org_id)
+
+
+@app.post("/api/orgs/{org_id}/scripts")
+def create_script(org_id: str, req: ScriptRequest, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    if req.shell not in ("shell", "powershell"):
+        raise HTTPException(status_code=400, detail="shell must be 'shell' or 'powershell'")
+    return db.create_script(org_id, req.name, req.content, req.shell, req.description)
+
+
+@app.delete("/api/scripts/{script_id}")
+def delete_script(script_id: str, user: dict = Depends(auth.current_user)):
+    script = db.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    auth.require_org(user, script["org_id"])
+    db.delete_script(script_id)
+    return {"status": "deleted"}
+
+
+@app.post("/api/scripts/{script_id}/run")
+async def run_script(script_id: str, req: ScriptRunRequest,
+                     user: dict = Depends(auth.current_user)):
+    script = db.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    auth.require_org(user, script["org_id"])
+    dev = _device_for_user(req.device_id, user)
+    if dev["org_id"] != script["org_id"]:
+        raise HTTPException(status_code=400, detail="Device is in a different organisation")
+    if not manager.is_online(req.device_id):
+        raise HTTPException(status_code=409, detail="Device offline")
+    run_id = db.create_run(script["org_id"], req.device_id, script["name"], script_id)
+    try:
+        res = await manager.request(req.device_id, {
+            "type": "script_run", "content": script["content"],
+            "shell": script["shell"], "timeout": req.timeout},
+            timeout=req.timeout + 10)
+    except Exception as exc:
+        db.finish_run(run_id, "failed", None, str(exc))
+        raise HTTPException(status_code=504, detail=str(exc))
+    code = res.get("code")
+    db.finish_run(run_id, "ok" if code == 0 else "failed", code, res.get("output", ""))
+    return {"run_id": run_id, "exit_code": code, "output": res.get("output", ""),
+            "status": "ok" if code == 0 else "failed"}
+
+
+@app.get("/api/orgs/{org_id}/runs")
+def list_runs(org_id: str, device_id: str | None = None,
+              user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return db.list_runs(org_id, device_id)
 
 
 # --------------------------------------------------------------------------- #

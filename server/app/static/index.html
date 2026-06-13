@@ -48,6 +48,7 @@
               <button data-tab="devices" class="active"><span class="ni" data-i="monitor"></span> Devices <span class="count" id="nav-devices-count">0</span></button>
               <button data-tab="network"><span class="ni" data-i="network"></span> Network <span class="count" id="nav-network-count">0</span></button>
               <button data-tab="nodes"><span class="ni" data-i="nodes"></span> Nodes <span class="count" id="nav-nodes-count">0</span></button>
+              <button data-tab="scripts"><span class="ni" data-i="terminal"></span> Scripts <span class="count" id="nav-scripts-count">0</span></button>
               <button data-tab="downloads"><span class="ni" data-i="download"></span> Downloads</button>
             </nav>
             <div class="side-label">Groups</div>
@@ -80,6 +81,21 @@
             <!-- Nodes -->
             <div id="tab-nodes" class="hidden">
               <div class="node-grid" id="node-grid"></div>
+            </div>
+            <!-- Scripts -->
+            <div id="tab-scripts" class="hidden">
+              <div class="panel">
+                <div class="panel-head"><h2>Scripts</h2><span class="sub" id="scripts-sub"></span><div class="spacer"></div>
+                  <button class="btn sm" id="script-new"><span class="hi" data-i="plus"></span> New script</button></div>
+                <div style="padding:18px" id="scripts-body"></div>
+              </div>
+              <div class="panel" style="margin-top:18px">
+                <div class="panel-head"><h2>Recent runs</h2><div class="spacer"></div><button class="btn ghost sm" id="runs-refresh"><span class="hi" data-i="refresh"></span> Refresh</button></div>
+                <div style="overflow-x:auto"><table class="grid">
+                  <thead><tr><th>Script</th><th>Device</th><th>Status</th><th>When</th></tr></thead>
+                  <tbody id="run-rows"></tbody>
+                </table></div>
+              </div>
             </div>
             <!-- Downloads -->
             <div id="tab-downloads" class="hidden">

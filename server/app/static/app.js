@@ -145,18 +145,20 @@ function cycleOrg() {
   showOrg(next.id, next.name); toast("Switched to " + next.name);
 }
 async function refreshOrgCaches() {
-  const [devices, hosts, nodes, groups] = await Promise.all([
+  const [devices, hosts, nodes, groups, scripts] = await Promise.all([
     api(`/api/orgs/${state.org}/devices`),
     api(`/api/orgs/${state.org}/network/hosts`).catch(() => []),
     api(`/api/orgs/${state.org}/nodes`).catch(() => []),
     api(`/api/orgs/${state.org}/groups`).catch(() => []),
+    api(`/api/orgs/${state.org}/scripts`).catch(() => []),
   ]);
-  state.cache = { devices, hosts, nodes, groups };
+  state.cache = { devices, hosts, nodes, groups, scripts };
 }
 function buildNav() {
   $("nav-devices-count").textContent = state.cache.devices.length;
   $("nav-network-count").textContent = state.cache.hosts.length;
   $("nav-nodes-count").textContent = state.cache.nodes.length;
+  $("nav-scripts-count").textContent = state.cache.scripts.length;
 }
 function buildGroups() {
   const groups = state.cache.groups, devs = state.cache.devices;
@@ -174,12 +176,80 @@ function buildGroups() {
 function selectTab(tab) {
   state.tab = tab;
   document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  ["devices", "network", "nodes", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  ["devices", "network", "nodes", "scripts", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
   clearRefresh();
   if (tab === "devices") { renderDevices(); state.refresh = setInterval(async () => { try { state.cache.devices = await api(`/api/orgs/${state.org}/devices`); renderDevices(); } catch {} }, 5000); }
   else if (tab === "network") renderNetwork();
   else if (tab === "nodes") renderNodes();
+  else if (tab === "scripts") renderScripts();
   else if (tab === "downloads") renderDownloads();
+}
+
+/* ---------- scripts (Phase 2) ---------- */
+function renderScripts() {
+  const scripts = state.cache.scripts || [];
+  $("scripts-sub").textContent = `${scripts.length} script${scripts.length === 1 ? "" : "s"}`;
+  const body = $("scripts-body");
+  body.innerHTML = scripts.length ? "" : `<div class="empty"><div class="big">${ICON.terminal}</div>No scripts yet.<br><span class="muted">Create one, then run it on any online device.</span></div>`;
+  for (const s of scripts) {
+    const card = el("div", "tile");
+    card.style.marginBottom = "12px";
+    const online = (state.cache.devices || []).filter((d) => d.online);
+    card.innerHTML = `
+      <div style="display:flex;align-items:flex-start;gap:11px">
+        <div class="os-ico">${ICON.terminal}</div>
+        <div style="flex:1"><div style="font-weight:650">${escapeHtml(s.name)}</div><div class="h-sub">${s.shell === "powershell" ? "PowerShell" : "Shell"}${s.description ? " · " + escapeHtml(s.description) : ""}</div></div>
+        <button class="btn ghost sm del">${ICON.trash}</button>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <select class="dev-sel">${online.length ? online.map((d) => `<option value="${d.id}">${escapeHtml(d.hostname)}</option>`).join("") : '<option value="">No online devices</option>'}</select>
+        <button class="btn run" ${online.length ? "" : "disabled"}>${ICON.power} Run</button>
+      </div>
+      <pre class="out hidden" style="margin-top:10px;background:var(--term-bg);border:1px solid var(--border);border-radius:var(--r-md);padding:12px;font-family:var(--font-mono);font-size:12.5px;max-height:260px;overflow:auto;white-space:pre-wrap"></pre>`;
+    card.querySelector(".del").onclick = async () => {
+      if (!confirm("Delete script “" + s.name + "”?")) return;
+      try { await api(`/api/scripts/${s.id}`, { method: "DELETE" }); toast("Script deleted"); state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`); buildNav(); renderScripts(); } catch (e) { toast(e.message); }
+    };
+    card.querySelector(".run").onclick = async () => {
+      const sel = card.querySelector(".dev-sel"), out = card.querySelector(".out"), btn = card.querySelector(".run");
+      if (!sel.value) return;
+      btn.disabled = true; out.classList.remove("hidden"); out.textContent = "Running…";
+      try {
+        const r = await api(`/api/scripts/${s.id}/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_id: sel.value }) });
+        out.textContent = (r.output || "(no output)") + `\n\n[exit ${r.exit_code} · ${r.status}]`;
+        toast(r.status === "ok" ? "Script finished" : "Script exited " + r.exit_code);
+        loadRuns();
+      } catch (e) { out.textContent = e.message; toast(e.message); }
+      btn.disabled = false;
+    };
+    body.appendChild(card);
+  }
+  $("script-new").onclick = openScriptForm;
+  $("runs-refresh").onclick = loadRuns;
+  loadRuns();
+}
+function openScriptForm() {
+  const name = prompt("Script name?"); if (!name) return;
+  const shell = confirm("OK = Shell (Linux/macOS)\nCancel = PowerShell (Windows)") ? "shell" : "powershell";
+  const content = prompt(`Script body (${shell}):`, shell === "shell" ? "#!/bin/sh\nuptime" : "Get-Date");
+  if (content == null) return;
+  api(`/api/orgs/${state.org}/scripts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, shell, content }) })
+    .then(async () => { toast("Script created"); state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`); buildNav(); renderScripts(); })
+    .catch((e) => toast(e.message));
+}
+async function loadRuns() {
+  let runs = [];
+  try { runs = await api(`/api/orgs/${state.org}/runs`); } catch {}
+  const tb = $("run-rows"); if (!tb) return;
+  tb.innerHTML = runs.length ? "" : `<tr><td colspan="4" class="muted" style="padding:20px;text-align:center">No runs yet.</td></tr>`;
+  const dmap = Object.fromEntries((state.cache.devices || []).map((d) => [d.id, d.hostname]));
+  for (const r of runs) {
+    const badge = r.status === "ok" ? `<span class="badge ok">${ICON.check} ok</span>` : r.status === "running" ? `<span class="badge na">running</span>` : `<span class="badge bad">${ICON.alert} failed</span>`;
+    const tr = el("tr");
+    tr.innerHTML = `<td>${escapeHtml(r.name || "—")}</td><td>${escapeHtml(dmap[r.device_id] || r.device_id.slice(0, 8))}</td><td>${badge}</td><td class="h-sub">${relTime(r.created_at)}</td>`;
+    if (r.output) { tr.style.cursor = "pointer"; tr.onclick = () => alert(r.output); }
+    tb.appendChild(tr);
+  }
 }
 
 function renderDevices() {
