@@ -36,7 +36,7 @@ jobs:
       - name: Build MSI
         run: |
           copy agent\dist\leuffen-rmm-agent.exe packaging\windows\leuffen-rmm-agent.exe
-          wix build packaging\windows\agent.wxs -o leuffen-rmm-agent.msi
+          wix build packaging\windows\agent.wxs -b packaging\windows -o leuffen-rmm-agent.msi
 
       - uses: actions/upload-artifact@v4
         with:
