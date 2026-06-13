@@ -107,15 +107,20 @@ function passwordCard() {
 function buildTwofa() {
   const wrap = $("twofa-wrap"); if (!wrap) return;
   if (acct.twofa_enabled) {
+    const rem = acct.recovery_remaining || 0;
+    const low = rem <= 2;
     wrap.innerHTML = `<div class="card-block">
       <div class="cb-head"><h3>Two-factor authentication</h3><p>An authenticator code is required at every sign-in.</p></div>
       <div class="cb-body">
         <div class="callout" style="border-color:var(--good);background:var(--good-soft)"><div class="ic" style="background:var(--good-soft);color:var(--good)">${ICON.shieldCheck}</div><div><div class="ct">Two-factor is on</div><div class="cd">To turn it off, confirm your password.</div></div></div>
+        <div class="toggle-row"><div class="tr-txt"><div class="t">Recovery codes</div><div class="d" style="${low ? "color:var(--warn)" : ""}">${rem} unused backup code${rem === 1 ? "" : "s"} remaining. Use one if you lose your authenticator.</div></div><button class="btn ghost" id="tf-regen">${ICON.refresh} Regenerate</button></div>
+        <div id="tf-codes"></div>
         <div class="frow"><label>Current password</label><div class="pw-wrap"><input class="inp mono" id="tf-off-pw" type="password" placeholder="••••••••" /><button class="reveal" data-rev="tf-off-pw" type="button">${ICON.eye}</button></div></div>
       </div>
       <div class="cb-foot"><span class="saved">${ICON.lock} TOTP · 6 digits · 30s</span><button class="btn danger" id="tf-disable">Turn off 2FA</button></div>
     </div>`;
     $("tf-disable").onclick = disableTwofa;
+    $("tf-regen").onclick = regenRecovery;
     wireReveals();
   } else {
     wrap.innerHTML = `<div class="card-block">
@@ -145,9 +150,37 @@ async function confirmTwofa() {
   const code = $("tf-code").value.trim();
   if (!/^\d{6}$/.test(code)) { $("tf-code").classList.add("err"); return toast("Enter the 6-digit code"); }
   try {
-    await api("/api/account/2fa/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
-    acct.twofa_enabled = true; buildTwofa(); toast("Two-factor enabled");
+    const res = await api("/api/account/2fa/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+    acct.twofa_enabled = true; acct.recovery_remaining = (res.recovery_codes || []).length;
+    buildTwofa(); toast("Two-factor enabled");
+    showRecoveryCodes(res.recovery_codes || []);
   } catch (e) { $("tf-code").classList.add("err"); toast(e.message); }
+}
+async function regenRecovery() {
+  if (!confirm("Generate a new set of recovery codes? Your old codes stop working.")) return;
+  try {
+    const res = await api("/api/account/2fa/recovery", { method: "POST" });
+    acct.recovery_remaining = (res.recovery_codes || []).length;
+    buildTwofa(); showRecoveryCodes(res.recovery_codes || []); toast("New recovery codes generated");
+  } catch (e) { toast(e.message); }
+}
+function showRecoveryCodes(codes) {
+  const host = $("tf-codes"); if (!host || !codes.length) return;
+  const text = codes.join("\n");
+  host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.key}</div><div style="flex:1">
+    <div class="ct">Save your recovery codes</div>
+    <div class="cd">Each code works once if you can't use your authenticator. They're shown only now.</div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:12px">${codes.map((c) => `<code style="font-family:var(--font-mono);background:var(--surface-3);border:1px solid var(--border);border-radius:var(--r-sm);padding:7px 10px;font-size:13px;letter-spacing:.04em;text-align:center">${esc(c)}</code>`).join("")}</div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn ghost sm" id="rc-copy">${ICON.copy} Copy</button>
+      <button class="btn ghost sm" id="rc-dl">${ICON.download} Download</button>
+    </div></div></div>`;
+  $("rc-copy").onclick = () => { navigator.clipboard?.writeText(text); toast("Copied"); };
+  $("rc-dl").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text + "\n"], { type: "text/plain" }));
+    a.download = "leuffen-rmm-recovery-codes.txt"; a.click();
+  };
 }
 async function disableTwofa() {
   const pw = $("tf-off-pw").value;

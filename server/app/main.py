@@ -126,14 +126,16 @@ def auth_login(request: Request):
 async def local_login(request: Request):
     data = await request.json()
     u = auth.verify_local((data.get("username") or "").strip(), data.get("password") or "")
-    # Second factor (TOTP) if the account has it enabled.
+    # Second factor (TOTP, or a single-use recovery code) if enabled.
     if u.get("totp_enabled"):
         code = (data.get("code") or "").strip()
         if not code:
             from fastapi.responses import JSONResponse
             return JSONResponse({"mfa_required": True}, status_code=200)
-        if not totp.verify(u.get("totp_secret") or "", code):
-            raise HTTPException(status_code=401, detail="Invalid authentication code")
+        ok = totp.verify(u.get("totp_secret") or "", code) or \
+            db.consume_recovery_code(u["username"], code)
+        if not ok:
+            raise HTTPException(status_code=401, detail="Invalid authentication or recovery code")
     db.touch_user(u["username"])
     resp = Response(status_code=204)
     resp.set_cookie(auth.COOKIE, auth.make_cookie(u["username"]), httponly=True,
@@ -805,6 +807,7 @@ def account(user: dict = Depends(auth.current_user)):
         "local": local is not None,
         "twofa_enabled": bool(local and local.get("totp_enabled")),
         "twofa_enforced": os.environ.get("RMM_ENFORCE_2FA", "").lower() in ("1", "true", "yes"),
+        "recovery_remaining": db.recovery_codes_remaining(local["username"]) if local else 0,
     }
 
 
@@ -838,7 +841,17 @@ async def twofa_enable(request: Request, user: dict = Depends(auth.current_user)
     if not totp.verify(u["totp_secret"], code):
         raise HTTPException(status_code=400, detail="That code didn't match — try again")
     db.set_totp_enabled(u["username"], True)
-    return {"ok": True}
+    codes = db.generate_recovery_codes(u["username"])
+    return {"ok": True, "recovery_codes": codes}
+
+
+@app.post("/api/account/2fa/recovery")
+def twofa_recovery(user: dict = Depends(auth.current_user)):
+    """Regenerate recovery codes (invalidates the old set). 2FA must be on."""
+    u = _local_self(user)
+    if not u.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="Enable two-factor first")
+    return {"recovery_codes": db.generate_recovery_codes(u["username"])}
 
 
 @app.post("/api/account/2fa/disable")
@@ -850,6 +863,7 @@ async def twofa_disable(request: Request, user: dict = Depends(auth.current_user
         raise HTTPException(status_code=403, detail="Password is incorrect")
     db.set_totp_enabled(u["username"], False)
     db.set_totp_secret(u["username"], None)
+    db.clear_recovery_codes(u["username"])
     return {"ok": True}
 
 
