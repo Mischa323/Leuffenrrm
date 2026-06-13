@@ -28,12 +28,24 @@
       </div>
       <div id="err" style="color:var(--bad);font-size:12.5px;min-height:18px;margin-bottom:10px"></div>
       <button class="btn" id="submit" type="submit" style="width:100%;justify-content:center;padding:11px">Sign in</button>
+      <div id="ssobox" class="hidden" style="margin-top:16px">
+        <div style="display:flex;align-items:center;gap:10px;color:var(--text-faint);font-size:12px;margin-bottom:14px"><span style="flex:1;height:1px;background:var(--border)"></span>OR<span style="flex:1;height:1px;background:var(--border)"></span></div>
+        <a class="btn ghost" href="/auth/sso" style="width:100%;justify-content:center;padding:11px;text-decoration:none">Sign in with Microsoft 365</a>
+      </div>
     </form>
   </div>
   <script src="icons.js"></script>
   <script src="appearance.js"></script>
   <script>
     document.getElementById("brand-logo").innerHTML = ICON.shield.replace("<svg", '<svg style="width:18px;height:18px"');
+    // Show the Microsoft 365 option in hybrid mode; hide the local form if SSO-only.
+    fetch("/api/auth/config").then((r) => r.json()).then((c) => {
+      if (c.sso) document.getElementById("ssobox").classList.remove("hidden");
+      if (!c.local) {
+        ["u", "p", "submit"].forEach((id) => document.getElementById(id).classList.add("hidden"));
+        document.querySelectorAll("#login label").forEach((l) => l.classList.add("hidden"));
+      }
+    }).catch(() => {});
     let mfaStep = false;
     document.getElementById("login").onsubmit = async (e) => {
       e.preventDefault();

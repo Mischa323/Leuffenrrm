@@ -109,13 +109,7 @@ async def _prune_loop() -> None:
 # --------------------------------------------------------------------------- #
 # Auth routes
 # --------------------------------------------------------------------------- #
-@app.get("/auth/login")
-def auth_login(request: Request):
-    if auth.AUTH_MODE == "dev":
-        return RedirectResponse("/")
-    if auth.AUTH_MODE == "local":
-        with open(os.path.join(STATIC_DIR, "login.html")) as f:
-            return HTMLResponse(f.read())
+def _sso_redirect() -> RedirectResponse:
     state = secrets.token_urlsafe(16)
     resp = RedirectResponse(auth.login_url(state))
     resp.set_cookie("oauth_state", state, httponly=True, max_age=600,
@@ -123,8 +117,34 @@ def auth_login(request: Request):
     return resp
 
 
+@app.get("/auth/login")
+def auth_login(request: Request):
+    if auth.AUTH_MODE == "dev":
+        return RedirectResponse("/")
+    # SSO-only: go straight to Microsoft. Otherwise show the sign-in page
+    # (local form, plus a Microsoft button in hybrid mode).
+    if auth.SSO_ENABLED and not auth.LOCAL_ENABLED:
+        return _sso_redirect()
+    with open(os.path.join(STATIC_DIR, "login.html")) as f:
+        return HTMLResponse(f.read())
+
+
+@app.get("/auth/sso")
+def auth_sso():
+    if not auth.SSO_ENABLED:
+        raise HTTPException(status_code=404, detail="SSO is not enabled")
+    return _sso_redirect()
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    return {"mode": auth.AUTH_MODE, "local": auth.LOCAL_ENABLED, "sso": auth.SSO_ENABLED}
+
+
 @app.post("/api/auth/local-login")
 async def local_login(request: Request):
+    if not auth.LOCAL_ENABLED:
+        raise HTTPException(status_code=403, detail="Local sign-in is disabled")
     data = await request.json()
     u = auth.verify_local((data.get("username") or "").strip(), data.get("password") or "")
     # Second factor (TOTP, or a single-use recovery code) if enabled.
@@ -149,8 +169,10 @@ def auth_callback(request: Request, code: str = "", state: str = ""):
     if request.cookies.get("oauth_state") != state:
         raise HTTPException(status_code=400, detail="state mismatch")
     email = auth.exchange_code(code)
+    # In hybrid mode, fold the SSO user onto a matching local account (by email).
+    identity = auth.resolve_sso_identity(email)
     resp = RedirectResponse("/")
-    resp.set_cookie(auth.COOKIE, auth.make_cookie(email), httponly=True,
+    resp.set_cookie(auth.COOKIE, auth.make_cookie(identity), httponly=True,
                     samesite="lax", secure=auth.SECURE_COOKIES)
     resp.delete_cookie("oauth_state")
     return resp
@@ -858,7 +880,7 @@ def list_app_users(user: dict = Depends(auth.current_user)):
 
 @app.get("/api/account")
 def account(user: dict = Depends(auth.current_user)):
-    local = db.get_user(user["email"]) if auth.AUTH_MODE == "local" else None
+    local = db.get_user(user["email"]) if auth.LOCAL_ENABLED else None
     return {
         "identity": user["email"],
         "email": local["email"] if local and local.get("email") else user["email"],
@@ -874,11 +896,11 @@ def account(user: dict = Depends(auth.current_user)):
 
 
 def _local_self(user: dict) -> dict:
-    if auth.AUTH_MODE != "local":
+    if not auth.LOCAL_ENABLED:
         raise HTTPException(status_code=400, detail="Two-factor applies to local accounts only")
     u = db.get_user(user["email"])
     if not u:
-        raise HTTPException(status_code=404, detail="No local account")
+        raise HTTPException(status_code=404, detail="No local account for this identity")
     return u
 
 
@@ -929,9 +951,23 @@ async def twofa_disable(request: Request, user: dict = Depends(auth.current_user
     return {"ok": True}
 
 
+@app.post("/api/account/email")
+async def set_account_email(request: Request, user: dict = Depends(auth.current_user)):
+    """Set a local account's email — used to link it to a Microsoft 365 identity."""
+    u = _local_self(user)
+    email = ((await request.json()).get("email") or "").strip().lower()
+    if email and "@" not in email:
+        raise HTTPException(status_code=400, detail="Enter a valid email address")
+    other = db.get_user_by_email(email) if email else None
+    if other and other["username"] != u["username"]:
+        raise HTTPException(status_code=409, detail="Another account already uses that email")
+    db.set_user_email(u["username"], email)
+    return {"ok": True, "email": email}
+
+
 @app.post("/api/account/password")
 async def change_password(request: Request, user: dict = Depends(auth.current_user)):
-    if auth.AUTH_MODE != "local":
+    if not auth.LOCAL_ENABLED:
         raise HTTPException(status_code=400, detail="Password is managed by your identity provider")
     u = db.get_user(user["email"])
     if not u:

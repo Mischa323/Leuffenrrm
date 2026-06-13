@@ -251,7 +251,7 @@ Explicit environment variables always take precedence over wizard-saved values.
 |---|---|---|
 | `RMM_API_KEY` | *(random)* | Enrollment key for the seeded *Default* org |
 | `RMM_SKIP_SETUP` | `0` | Skip the first-run setup wizard |
-| `RMM_AUTH_MODE` | `dev`/`sso` | Sign-in mode: `dev` \| `local` \| `sso` |
+| `RMM_AUTH_MODE` | `dev`/`sso` | Sign-in: `dev` \| `local` \| `sso` \| `hybrid` (local + M365) |
 | `RMM_PUBLIC_URL` | `https://localhost:8000` | Baked into agent downloads / SSO |
 | `RMM_TLS_MODE` | `self-signed` | `self-signed` \| `file` \| `proxy` |
 | `RMM_TLS_CERT` / `RMM_TLS_KEY` | `<data>/tls/*` | Cert/key paths (self-signed/file) |

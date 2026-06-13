@@ -149,7 +149,7 @@ function render() {
 }
 
 function usersRows() {
-  if (authMethod === "local" && USERS.users.length) {
+  if ((authMethod === "local" || authMethod === "hybrid") && USERS.users.length) {
     return USERS.users.map((u) => `<tr>
       <td><div class="u-cell"><div class="av" style="background:linear-gradient(140deg,${colorFor(u.username)},color-mix(in srgb,${colorFor(u.username)} 50%,#000))">${initials2(u.username)}</div><div><div class="un">${esc(u.display_name || u.username)}</div><div class="ue">${esc(u.email || "@" + u.username)}</div></div></div></td>
       <td><span class="role-pill ${u.is_admin ? "admin" : "member"}">${u.is_admin ? ICON.shieldCheck : ICON.user} ${u.is_admin ? "Global admin" : "Member"}</span></td>
@@ -166,6 +166,7 @@ function usersRows() {
 const AUTH_METHODS = [
   { id: "sso", t: "Microsoft 365", d: "Entra (Office 365) SSO.", icon: "globe" },
   { id: "local", t: "Local accounts", d: "Username + password.", icon: "lock" },
+  { id: "hybrid", t: "Both", d: "Local accounts + M365 SSO.", icon: "shieldCheck" },
   { id: "dev", t: "Dev login", d: "Auto bootstrap admin.", icon: "zap" },
 ];
 function buildAuthSeg() {
@@ -183,6 +184,8 @@ function buildAuthSeg() {
     ? `<div class="callout info"><div class="ic">${ICON.globe}</div><div><div class="ct">Microsoft 365 SSO</div><div class="cd">Tenant/client credentials are set during setup. Switching here changes the active mode after a restart.</div></div></div>`
     : authMethod === "local"
     ? `<div class="callout info"><div class="ic">${ICON.lock}</div><div><div class="ct">Local accounts</div><div class="cd">Manage accounts under <b>Users &amp; roles</b>. Passwords are PBKDF2-hashed on this server.</div></div></div>`
+    : authMethod === "hybrid"
+    ? `<div class="callout info"><div class="ic">${ICON.shieldCheck}</div><div><div class="ct">Local accounts + Microsoft 365</div><div class="cd">Both sign-in methods are offered. A Microsoft 365 user is matched to a local account with the same email, so they share one identity and its admin rights. Requires the SSO credentials configured at setup.</div></div></div>`
     : `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Dev login is on</div><div class="cd">Anyone reaching this server is signed in as bootstrap admin. Switch before production.</div></div></div>`;
 }
 

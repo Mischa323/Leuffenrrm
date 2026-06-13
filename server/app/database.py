@@ -270,6 +270,13 @@ def get_user(username: str) -> dict | None:
     return dict(row) if row else None
 
 
+def get_user_by_email(email: str) -> dict | None:
+    if not email:
+        return None
+    row = get_conn().execute("SELECT * FROM users WHERE lower(email)=?", (email.lower(),)).fetchone()
+    return dict(row) if row else None
+
+
 def list_users() -> list[dict]:
     return [dict(r) for r in get_conn().execute(
         "SELECT username, email, display_name, is_admin, created_at, last_active "
@@ -280,6 +287,12 @@ def set_user_password(username: str, password: str) -> None:
     with write() as conn:
         conn.execute("UPDATE users SET pw_hash=? WHERE username=?",
                      (_hash_pw(password), username.lower()))
+
+
+def set_user_email(username: str, email: str | None) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET email=? WHERE username=?",
+                     ((email or "").lower() or None, username.lower()))
 
 
 def touch_user(username: str) -> None:

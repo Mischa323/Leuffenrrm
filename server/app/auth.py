@@ -30,17 +30,30 @@ BOOTSTRAP_ADMINS = {
     e.strip().lower() for e in os.environ.get("RMM_BOOTSTRAP_ADMIN", "").split(",") if e.strip()
 }
 
-# Resolve the sign-in mode: dev (auto-login) | sso (Microsoft 365) | local (accounts).
+# Resolve the sign-in mode:
+#   dev    — auto-login a bootstrap admin
+#   sso    — Microsoft 365 only
+#   local  — username/password only
+#   hybrid — both local accounts AND Microsoft 365 SSO (matched by email)
 _explicit_mode = os.environ.get("RMM_AUTH_MODE", "").lower()
 if os.environ.get("RMM_DEV_AUTH", "").lower() in ("1", "true", "yes"):
     AUTH_MODE = "dev"
-elif _explicit_mode in ("dev", "sso", "local"):
+elif _explicit_mode in ("dev", "sso", "local", "hybrid"):
     AUTH_MODE = _explicit_mode
 else:
     AUTH_MODE = "sso" if CLIENT_ID else "dev"
 
 DEV_AUTH = AUTH_MODE == "dev"
+LOCAL_ENABLED = AUTH_MODE in ("local", "hybrid")
+SSO_ENABLED = AUTH_MODE in ("sso", "hybrid")
 DEV_USER = (next(iter(BOOTSTRAP_ADMINS)) if BOOTSTRAP_ADMINS else "admin@localhost")
+
+
+def resolve_sso_identity(email: str) -> str:
+    """Map a Microsoft 365 email onto a local account (by email) when one exists,
+    so the same person has one identity and the local account's admin rights."""
+    u = db.get_user_by_email(email)
+    return u["username"] if u else email.lower()
 
 # Mark session cookies Secure unless explicitly disabled (TLS is on by default).
 # Auto-off for plain-HTTP proxy mode without TLS termination.
