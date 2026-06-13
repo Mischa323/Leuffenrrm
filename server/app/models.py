@@ -47,8 +47,36 @@ class ScriptRequest(BaseModel):
     content: str
     shell: str = "shell"          # shell | powershell
     description: str | None = None
+    category: str = "Script"      # Monitoring | Installation | Maintenance | ...
 
 
 class ScriptRunRequest(BaseModel):
     device_id: str
     timeout: float = 120
+
+
+class ScheduleRequest(BaseModel):
+    script_id: str
+    name: str | None = None
+    target_type: str = "all"          # device | group | all
+    target_id: str | None = None
+    trigger: str = "interval"         # interval | daily
+    interval_minutes: int | None = None
+    at_time: str | None = None        # 'HH:MM' for daily
+
+
+class ScriptFileRequest(BaseModel):
+    name: str
+    content_b64: str
+
+
+class MonitorRequest(BaseModel):
+    name: str
+    monitor_script_id: str
+    remediation_script_id: str | None = None
+    target_type: str = "all"
+    target_id: str | None = None
+    trigger: str = "interval"
+    interval_minutes: int | None = 15
+    at_time: str | None = None
+    variables: dict | None = None     # name -> value, passed as env to both scripts
