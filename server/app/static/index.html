@@ -1,96 +1,169 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-density="1" data-dataviz="on">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Leuffen RMM</title>
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header>
-    <h1>Leuffen <span>RMM</span></h1>
-    <nav id="crumbs"><a href="#" id="home-link">Global</a></nav>
-    <div class="spacer"></div>
-    <select id="org-select" class="hidden"></select>
-    <span id="user" class="muted"></span>
-    <a href="/auth/logout" class="ghost-link">Sign out</a>
-  </header>
+  <div class="app">
+    <!-- ===== Header ===== -->
+    <header class="topbar">
+      <div class="brand"><span class="logo" id="brand-logo"></span> Leuffen <span>RMM</span></div>
+      <nav class="crumbs">
+        <a id="home-crumb" class="here">Global</a>
+        <span class="sep hidden" id="crumb-org"><span class="sep">/</span> <a class="here" id="crumb-org-name"></a></span>
+      </nav>
+      <div class="spacer"></div>
+      <div class="searchbox" id="searchbox"><span id="search-ico"></span><input placeholder="Search devices, IPs, orgs…" /><kbd>⌘K</kbd></div>
+      <button class="org-switch hidden" id="org-switch"><span class="dotmark" id="org-switch-dot" style="width:7px;height:7px;border-radius:99px"></span><span id="org-switch-name"></span><span id="org-switch-chev"></span></button>
+      <button class="icon-btn" id="theme-btn" title="Toggle theme"><span id="theme-ico"></span></button>
+      <button class="icon-btn" id="bell-btn" title="Alerts"><span id="bell-ico"></span><span class="ping"></span></button>
+      <a class="icon-btn" id="settings-btn" href="settings.html" title="Admin settings"><span id="gear-ico"></span></a>
+      <div style="position:relative">
+        <div class="userchip" id="userchip"><span class="avatar" id="avatar"></span><span class="who"><span id="user-name"></span><small id="user-email"></small></span></div>
+        <div class="hmenu" id="usermenu"></div>
+      </div>
+    </header>
 
-  <main>
-    <!-- Global dashboard -->
-    <section id="global-view">
-      <h2>Organisations</h2>
-      <div id="org-cards" class="cards"></div>
-    </section>
+    <main>
+      <!-- ===== Global view ===== -->
+      <section id="global-view">
+        <div class="page-head"><div><h1>Fleet overview</h1><p>Monitoring across all organisations</p></div>
+          <button class="btn ghost" id="refresh-global"><span id="refresh-ico"></span> Refresh</button></div>
+        <div class="kpis" id="kpis"></div>
+        <div class="page-head" style="margin:8px 0 16px"><div><h1 style="font-size:16px">Organisations</h1></div></div>
+        <div class="cards" id="org-cards"></div>
+      </section>
 
-    <!-- Org dashboard -->
-    <section id="org-view" class="hidden">
-      <div class="org-layout">
-        <aside class="sidebar">
-          <div class="tabs" id="org-tabs">
-            <button data-tab="devices" class="active">Devices</button>
-            <button data-tab="network">Network</button>
-            <button data-tab="nodes">Nodes</button>
-            <button data-tab="downloads">Downloads</button>
-          </div>
-          <div id="group-filter" class="group-filter"></div>
-        </aside>
-        <div class="content">
-          <div id="tab-devices">
-            <table class="grid">
-              <thead><tr>
-                <th>Status</th><th>Hostname</th><th>OS</th><th>IP</th>
-                <th>CPU</th><th>Mem</th><th>Disk</th><th>Compliance</th>
-              </tr></thead>
-              <tbody id="device-rows"></tbody>
-            </table>
-          </div>
-          <div id="tab-network" class="hidden">
-            <table class="grid">
-              <thead><tr><th>Status</th><th>IP</th><th>MAC</th><th>Hostname</th>
-                <th>Manufacturer</th><th></th></tr></thead>
-              <tbody id="network-rows"></tbody>
-            </table>
-          </div>
-          <div id="tab-nodes" class="hidden">
-            <div id="node-list"></div>
-          </div>
-          <div id="tab-downloads" class="hidden">
-            <h3>Install the agent</h3>
-            <p class="muted">One self-contained download — server URL &amp; key are baked in.</p>
-            <div id="download-cmds"></div>
+      <!-- ===== Org view ===== -->
+      <section id="org-view" class="hidden">
+        <div class="org-layout">
+          <aside class="sidebar">
+            <nav class="nav">
+              <button data-tab="devices" class="active"><span class="ni" data-i="monitor"></span> Devices <span class="count" id="nav-devices-count">0</span></button>
+              <button data-tab="network"><span class="ni" data-i="network"></span> Network <span class="count" id="nav-network-count">0</span></button>
+              <button data-tab="nodes"><span class="ni" data-i="nodes"></span> Nodes <span class="count" id="nav-nodes-count">0</span></button>
+              <button data-tab="downloads"><span class="ni" data-i="download"></span> Downloads</button>
+            </nav>
+            <div class="side-label">Groups</div>
+            <div class="groups" id="groups"></div>
+          </aside>
+
+          <div class="content">
+            <!-- Devices -->
+            <div id="tab-devices">
+              <div class="panel">
+                <div class="panel-head"><h2>Devices</h2><span class="sub" id="devices-sub"></span><div class="spacer"></div>
+                  <button class="btn ghost sm"><span class="hi" data-i="filter"></span> Filter</button></div>
+                <div style="overflow-x:auto"><table class="grid">
+                  <thead><tr><th>Device</th><th>Status</th><th>CPU</th><th>Memory</th><th>Disk</th><th>Compliance</th></tr></thead>
+                  <tbody id="device-rows"></tbody>
+                </table></div>
+              </div>
+            </div>
+            <!-- Network -->
+            <div id="tab-network" class="hidden">
+              <div class="panel">
+                <div class="panel-head"><h2>Network discovery</h2><span class="sub" id="network-sub"></span><div class="spacer"></div>
+                  <button class="btn sm" id="network-scan"><span class="hi" data-i="scan"></span> Scan now</button></div>
+                <div style="overflow-x:auto"><table class="grid">
+                  <thead><tr><th>Status</th><th>IP address</th><th>MAC</th><th>Hostname</th><th>Manufacturer</th></tr></thead>
+                  <tbody id="network-rows"></tbody>
+                </table></div>
+              </div>
+            </div>
+            <!-- Nodes -->
+            <div id="tab-nodes" class="hidden">
+              <div class="node-grid" id="node-grid"></div>
+            </div>
+            <!-- Downloads -->
+            <div id="tab-downloads" class="hidden">
+              <div class="panel">
+                <div class="panel-head"><h2>Install the agent</h2><span class="sub">Server URL &amp; org key are baked into every download</span></div>
+                <div style="padding:20px" id="downloads-body"></div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-    </section>
-  </main>
-
-  <!-- Device drawer -->
-  <div id="drawer" class="drawer hidden">
-    <div class="drawer-head">
-      <h2 id="drawer-title">Device</h2>
-      <button id="drawer-close" class="ghost">✕</button>
-    </div>
-    <div class="drawer-tabs">
-      <button data-dtab="overview" class="active">Overview</button>
-      <button data-dtab="terminal">Terminal</button>
-      <button data-dtab="actions">Actions</button>
-    </div>
-    <div class="drawer-body">
-      <div id="dtab-overview"><div id="inventory"></div></div>
-      <div id="dtab-terminal" class="hidden">
-        <pre id="term-output" class="terminal"></pre>
-        <form id="term-form"><input id="term-input" placeholder="type a command…" autocomplete="off" /></form>
-      </div>
-      <div id="dtab-actions" class="hidden">
-        <div class="actions-grid" id="actions-grid"></div>
-        <h4>Network node</h4>
-        <div id="node-controls"></div>
-      </div>
-    </div>
+      </section>
+    </main>
   </div>
 
-  <div id="toast" class="toast hidden"></div>
-  <script src="/app.js"></script>
+  <!-- ===== Device drawer ===== -->
+  <div id="scrim" class="scrim hidden"></div>
+  <aside id="drawer" class="drawer hidden">
+    <div class="drawer-head">
+      <div class="top">
+        <div class="os-ico" id="drawer-os-ico"></div>
+        <div><h2 id="drawer-title"></h2><div class="meta" id="drawer-meta"></div></div>
+        <button class="icon-btn drawer-close" id="drawer-close-btn"><span id="close-ico"></span></button>
+      </div>
+      <div class="dtabs">
+        <button data-dtab="overview" class="active">Overview</button>
+        <button data-dtab="terminal">Terminal</button>
+        <button data-dtab="actions">Actions</button>
+      </div>
+    </div>
+    <div class="drawer-body">
+      <div id="dtab-overview"></div>
+      <div id="dtab-terminal" class="hidden">
+        <div class="terminal">
+          <div class="tbar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="t">agent-shell</span></div>
+          <pre id="term-output"></pre>
+        </div>
+        <form class="term-form" id="term-form"><span class="chev">❯</span><input id="term-input" placeholder="run a command…" autocomplete="off" spellcheck="false" /></form>
+      </div>
+      <div id="dtab-actions" class="hidden"></div>
+    </div>
+  </aside>
+
+  <div id="toast" class="toast"><span id="toast-ico"></span><span></span></div>
+
+  <!-- icons + appearance + app -->
+  <script src="icons.js"></script>
+  <script src="appearance.js"></script>
+  <script src="app.js"></script>
+  <script>
+    // hydrate static icon slots
+    document.getElementById("brand-logo").innerHTML = ICON.shield;
+    document.getElementById("search-ico").innerHTML = ICON.search;
+    document.getElementById("bell-ico").innerHTML = ICON.bell;
+    document.getElementById("close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
+    document.getElementById("refresh-ico").innerHTML = ICON.refresh;
+    document.getElementById("org-switch-chev").innerHTML = ICON.chevD;
+    document.getElementById("toast-ico").innerHTML = ICON.check;
+    document.querySelectorAll(".ni").forEach((s) => s.innerHTML = ICON[s.dataset.i] || "");
+    document.querySelectorAll(".hi").forEach((s) => s.innerHTML = ICON[s.dataset.i] || "");
+    document.getElementById("gear-ico").innerHTML = ICON.gear;
+    document.getElementById("bell-btn").onclick = () => toast("No open alerts");
+    // user dropdown
+    (function () {
+      const menu = document.getElementById("usermenu");
+      menu.innerHTML = `<a href="account.html">${ICON.user} Your account</a><a href="settings.html">${ICON.gear} Admin settings</a><div class="hmenu-sep"></div><a href="/auth/logout">${ICON.logout} Sign out</a>`;
+      const chip = document.getElementById("userchip");
+      chip.style.cursor = "pointer";
+      chip.onclick = (e) => { e.stopPropagation(); menu.classList.toggle("open"); };
+      document.addEventListener("click", () => menu.classList.remove("open"));
+      const css = document.createElement("style");
+      css.textContent = `.hmenu{position:absolute;right:0;top:calc(100% + 8px);min-width:210px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--shadow-lg);padding:6px;opacity:0;transform:translateY(-6px);pointer-events:none;transition:.15s;z-index:50}.hmenu.open{opacity:1;transform:none;pointer-events:auto}.hmenu a{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--r-sm);color:var(--text);text-decoration:none;font-size:13px}.hmenu a:hover{background:var(--surface-hover)}.hmenu a svg{width:16px;height:16px;color:var(--text-dim)}.hmenu-sep{height:1px;background:var(--border);margin:5px 4px}`;
+      document.head.appendChild(css);
+    })();
+    // theme toggle button — persists as a personal override
+    const sun = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4 12H2m20 0h-2M5.6 5.6 4.2 4.2m15.6 15.6-1.4-1.4M18.4 5.6l1.4-1.4M4.2 19.8l1.4-1.4"/></svg>';
+    const moon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>';
+    function syncThemeIco() { document.getElementById("theme-ico").innerHTML = document.documentElement.getAttribute("data-theme") === "light" ? moon : sun; }
+    syncThemeIco();
+    window.addEventListener("appearance-change", syncThemeIco);
+    document.getElementById("theme-btn").onclick = () => {
+      const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+      window.Appearance.setUser({ follow: false, theme: next });
+      syncThemeIco();
+    };
+  </script>
 </body>
 </html>

@@ -30,7 +30,16 @@ BOOTSTRAP_ADMINS = {
     e.strip().lower() for e in os.environ.get("RMM_BOOTSTRAP_ADMIN", "").split(",") if e.strip()
 }
 
-DEV_AUTH = os.environ.get("RMM_DEV_AUTH", "").lower() in ("1", "true", "yes") or not CLIENT_ID
+# Resolve the sign-in mode: dev (auto-login) | sso (Microsoft 365) | local (accounts).
+_explicit_mode = os.environ.get("RMM_AUTH_MODE", "").lower()
+if os.environ.get("RMM_DEV_AUTH", "").lower() in ("1", "true", "yes"):
+    AUTH_MODE = "dev"
+elif _explicit_mode in ("dev", "sso", "local"):
+    AUTH_MODE = _explicit_mode
+else:
+    AUTH_MODE = "sso" if CLIENT_ID else "dev"
+
+DEV_AUTH = AUTH_MODE == "dev"
 DEV_USER = (next(iter(BOOTSTRAP_ADMINS)) if BOOTSTRAP_ADMINS else "admin@localhost")
 
 # Mark session cookies Secure unless explicitly disabled (TLS is on by default).
@@ -81,20 +90,32 @@ def read_cookie(value: str) -> dict | None:
         return None
 
 
-def is_global_admin(email: str) -> bool:
-    return email.lower() in BOOTSTRAP_ADMINS
+def local_login(username: str, password: str) -> str:
+    """Verify a local account; return its username (used as the session identity)."""
+    u = db.get_user(username)
+    if not u or not db.verify_pw(password, u["pw_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    db.touch_user(u["username"])
+    return u["username"]
+
+
+def is_global_admin(identifier: str) -> bool:
+    if identifier.lower() in BOOTSTRAP_ADMINS:
+        return True
+    u = db.get_user(identifier)
+    return bool(u and u["is_admin"])
 
 
 def current_user(request: Request) -> dict:
     """FastAPI dependency: resolve the signed-in user or 401."""
     if DEV_AUTH:
-        email = DEV_USER
-    else:
-        raw = request.cookies.get(COOKIE)
-        data = read_cookie(raw) if raw else None
-        if not data:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        email = data["email"]
+        # Single-admin evaluation mode: the auto-signed-in user is a global admin.
+        return {"email": DEV_USER, "is_global_admin": True}
+    raw = request.cookies.get(COOKIE)
+    data = read_cookie(raw) if raw else None
+    if not data:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    email = data["email"]
     return {"email": email, "is_global_admin": is_global_admin(email)}
 
 

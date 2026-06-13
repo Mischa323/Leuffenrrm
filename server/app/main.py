@@ -110,11 +110,24 @@ async def _prune_loop() -> None:
 # --------------------------------------------------------------------------- #
 @app.get("/auth/login")
 def auth_login(request: Request):
-    if auth.DEV_AUTH:
+    if auth.AUTH_MODE == "dev":
         return RedirectResponse("/")
+    if auth.AUTH_MODE == "local":
+        with open(os.path.join(STATIC_DIR, "login.html")) as f:
+            return HTMLResponse(f.read())
     state = secrets.token_urlsafe(16)
     resp = RedirectResponse(auth.login_url(state))
     resp.set_cookie("oauth_state", state, httponly=True, max_age=600,
+                    samesite="lax", secure=auth.SECURE_COOKIES)
+    return resp
+
+
+@app.post("/api/auth/local-login")
+async def local_login(request: Request):
+    data = await request.json()
+    username = auth.local_login((data.get("username") or "").strip(), data.get("password") or "")
+    resp = Response(status_code=204)
+    resp.set_cookie(auth.COOKIE, auth.make_cookie(username), httponly=True,
                     samesite="lax", secure=auth.SECURE_COOKIES)
     return resp
 
@@ -627,7 +640,9 @@ def setup_page():
 @app.get("/api/setup/status")
 def setup_status():
     return {"complete": db.setup_complete(), "public_url": public_url(),
-            "tls_mode": os.environ.get("RMM_TLS_MODE", "self-signed")}
+            "tls_mode": os.environ.get("RMM_TLS_MODE", "self-signed"),
+            "host": os.environ.get("RMM_HOST", "0.0.0.0"),
+            "port": os.environ.get("RMM_PORT", "8000")}
 
 
 @app.post("/api/setup")
@@ -638,17 +653,28 @@ async def do_setup(request: Request):
     data = await request.json()
 
     public = (data.get("public_url") or "").strip().rstrip("/")
-    admin = (data.get("admin_email") or "").strip().lower()
     tls_mode = (data.get("tls_mode") or "self-signed").strip().lower()
     auth_mode = (data.get("auth_mode") or "dev").strip().lower()
     if tls_mode not in ("self-signed", "file", "proxy"):
         raise HTTPException(status_code=400, detail="Invalid TLS mode")
+    if auth_mode not in ("dev", "sso", "local"):
+        raise HTTPException(status_code=400, detail="Invalid auth mode")
 
-    settings: dict[str, str] = {"RMM_TLS_MODE": tls_mode}
+    settings: dict[str, str] = {"RMM_TLS_MODE": tls_mode, "RMM_AUTH_MODE": auth_mode}
     if public:
         settings["RMM_PUBLIC_URL"] = public
-    if admin:
-        settings["RMM_BOOTSTRAP_ADMIN"] = admin
+    if data.get("host"):
+        settings["RMM_HOST"] = str(data["host"]).strip()
+    if data.get("port"):
+        settings["RMM_PORT"] = str(data["port"]).strip()
+    if tls_mode == "file":
+        if data.get("cert_path"):
+            settings["RMM_TLS_CERT"] = str(data["cert_path"]).strip()
+        if data.get("key_path"):
+            settings["RMM_TLS_KEY"] = str(data["key_path"]).strip()
+
+    admins = [e.strip().lower() for e in (data.get("admins") or []) if e.strip()]
+    accounts = data.get("accounts") or []
 
     if auth_mode == "sso":
         for src, env in (("tenant_id", "MS_TENANT_ID"), ("client_id", "MS_CLIENT_ID"),
@@ -660,30 +686,125 @@ async def do_setup(request: Request):
         settings["MS_REDIRECT_URI"] = (data.get("redirect_uri") or "").strip() or \
             (public + "/auth/callback" if public else "")
         settings["RMM_DEV_AUTH"] = "0"
-    else:
+    elif auth_mode == "local":
+        if not accounts:
+            raise HTTPException(status_code=400, detail="At least one local account is required")
+        settings["RMM_DEV_AUTH"] = "0"
+    else:  # dev
         settings["RMM_DEV_AUTH"] = "1"
 
-    # Generate a stable session secret if one isn't already set.
-    new_secret = not (os.environ.get("SESSION_SECRET") or db.get_setting("SESSION_SECRET"))
-    if new_secret:
+    if admins:
+        settings["RMM_BOOTSTRAP_ADMIN"] = ",".join(admins)
+
+    # Session secret: explicit from the wizard, else keep existing, else generate.
+    explicit_secret = (data.get("session_secret") or "").strip()
+    new_secret = False
+    if explicit_secret:
+        settings["SESSION_SECRET"] = explicit_secret
+    elif not (os.environ.get("SESSION_SECRET") or db.get_setting("SESSION_SECRET")):
         settings["SESSION_SECRET"] = secrets.token_urlsafe(48)
+        new_secret = True
 
     # Persist and live-apply to the environment (download URLs update immediately).
     for key, value in settings.items():
         db.set_setting(key, value)
         os.environ[key] = value
 
-    if admin:
-        org = db.get_org("default") or (db.list_orgs() or [None])[0]
-        if org:
-            db.add_org_user(org["id"], admin, "admin")
+    # Create local accounts (first account / any flagged one becomes a global admin).
+    for i, acc in enumerate(accounts):
+        uname = (acc.get("username") or "").strip()
+        pw = acc.get("password") or ""
+        if not uname or len(pw) < 8:
+            continue
+        db.create_user(uname, pw, is_admin=bool(acc.get("admin") or i == 0))
+
+    # Map bootstrap admin emails onto the default org.
+    org = db.get_org("default") or (db.list_orgs() or [None])[0]
+    if org:
+        for a in admins:
+            db.add_org_user(org["id"], a, "admin")
 
     db.set_setting("SETUP_COMPLETE", "1")
 
-    # These only take full effect on restart (modules read them at import).
+    # Auth/TLS/secret changes only take full effect on restart (read at import).
     restart_recommended = bool(
-        auth_mode == "sso" or new_secret or tls_mode != BOOT_TLS_MODE)
+        auth_mode in ("sso", "local") or new_secret or explicit_secret
+        or tls_mode != BOOT_TLS_MODE)
     return {"ok": True, "restart_recommended": restart_recommended}
+
+
+# --------------------------------------------------------------------------- #
+# Admin settings & users (back the Settings page)
+# --------------------------------------------------------------------------- #
+SETTINGS_KEYS = [
+    "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
+    "GRAPH_FROM", "RMM_SERVER_NAME", "ALERT_CPU_PCT", "ALERT_DISK_FREE_PCT",
+    "ALERT_MEM_PCT", "ALERT_OFFLINE_AFTER", "RMM_SECURE_COOKIES",
+]
+
+
+@app.get("/api/settings")
+def get_settings(user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    stored = db.get_all_settings()
+    out = {k: (stored.get(k) if stored.get(k) is not None else os.environ.get(k, ""))
+           for k in SETTINGS_KEYS}
+    out["RMM_AUTH_MODE"] = auth.AUTH_MODE
+    return out
+
+
+@app.post("/api/settings")
+async def save_settings(request: Request, user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    data = await request.json()
+    saved = {}
+    for key, value in data.items():
+        if key in SETTINGS_KEYS and value is not None:
+            db.set_setting(key, str(value))
+            os.environ[key] = str(value)
+            saved[key] = str(value)
+    return {"ok": True, "saved": saved}
+
+
+@app.get("/api/users")
+def list_app_users(user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    return {"mode": auth.AUTH_MODE, "users": db.list_users(),
+            "bootstrap_admins": sorted(auth.BOOTSTRAP_ADMINS)}
+
+
+@app.get("/api/account")
+def account(user: dict = Depends(auth.current_user)):
+    local = db.get_user(user["email"]) if auth.AUTH_MODE == "local" else None
+    return {
+        "identity": user["email"],
+        "email": local["email"] if local and local.get("email") else user["email"],
+        "name": (local and local.get("display_name")) or user["email"].split("@")[0],
+        "username": local["username"] if local else None,
+        "is_global_admin": user["is_global_admin"],
+        "mode": auth.AUTH_MODE,
+        "local": local is not None,
+    }
+
+
+@app.post("/api/account/password")
+async def change_password(request: Request, user: dict = Depends(auth.current_user)):
+    if auth.AUTH_MODE != "local":
+        raise HTTPException(status_code=400, detail="Password is managed by your identity provider")
+    u = db.get_user(user["email"])
+    if not u:
+        raise HTTPException(status_code=404, detail="No local account")
+    data = await request.json()
+    if not db.verify_pw(data.get("current") or "", u["pw_hash"]):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+    new = data.get("new") or ""
+    if len(new) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    db.set_user_password(u["username"], new)
+    return {"ok": True}
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

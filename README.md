@@ -6,6 +6,11 @@ files), wakes devices via **Wake-on-LAN** (including across LANs/VLANs through
 relay *nodes*), discovers devices on the network, and sends monitoring email
 alerts via Microsoft Graph. The dashboard is protected by **Office 365 SSO**.
 
+> Web UI: a modern dark/light dashboard (fleet overview, per-org devices, slide-in
+> device drawer with live rings/terminal/actions), a 5-step setup wizard, admin
+> settings, and a user account page — with a two-tier appearance system (workspace
+> default + per-user override). Dependency-free vanilla HTML/CSS/JS in `server/app/static/`.
+
 > Status: **Phase 1** (core RMM) is implemented and runnable. Phase 2 features
 > (monitors library + auto-response, scripts/scheduled jobs, patch management,
 > compliance evaluation, software audit, scheduled reports) are planned — see
@@ -45,7 +50,8 @@ taken to a **setup wizard** where you enter:
 - **Public URL** — what agents/browsers use to reach the server (baked into installers).
 - **Administrator email** — the global admin.
 - **HTTPS / TLS** — self-signed (default), your own cert files, or behind a reverse proxy.
-- **Sign-in** — *Dev mode* (no login, fastest) or *Microsoft 365 SSO*.
+- **Sign-in** — *Dev mode* (no login, fastest), *Local accounts* (username/password,
+  PBKDF2-hashed on this server), or *Microsoft 365 SSO*.
 
 Settings are saved to the `/data` volume. Some (SSO, TLS, session secret) take
 effect after a quick `docker compose restart`. A **Default** organisation is
@@ -245,6 +251,7 @@ Explicit environment variables always take precedence over wizard-saved values.
 |---|---|---|
 | `RMM_API_KEY` | *(random)* | Enrollment key for the seeded *Default* org |
 | `RMM_SKIP_SETUP` | `0` | Skip the first-run setup wizard |
+| `RMM_AUTH_MODE` | `dev`/`sso` | Sign-in mode: `dev` \| `local` \| `sso` |
 | `RMM_PUBLIC_URL` | `https://localhost:8000` | Baked into agent downloads / SSO |
 | `RMM_TLS_MODE` | `self-signed` | `self-signed` \| `file` \| `proxy` |
 | `RMM_TLS_CERT` / `RMM_TLS_KEY` | `<data>/tls/*` | Cert/key paths (self-signed/file) |

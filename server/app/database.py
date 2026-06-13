@@ -142,6 +142,16 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    username     TEXT PRIMARY KEY,
+    email        TEXT,
+    display_name TEXT,
+    pw_hash      TEXT NOT NULL,
+    is_admin     INTEGER NOT NULL DEFAULT 0,
+    created_at   REAL NOT NULL,
+    last_active  REAL
+);
 """
 
 # Default monitoring policy used to seed a new org's standard. Overridable per
@@ -181,6 +191,71 @@ def get_all_settings() -> dict[str, str]:
 
 def setup_complete() -> bool:
     return get_setting("SETUP_COMPLETE") == "1"
+
+
+# --------------------------------------------------------------------------- #
+# Local accounts (username/password) — used when auth mode is "local".
+# Passwords are hashed with PBKDF2-HMAC-SHA256 (stdlib, no extra dependency).
+# --------------------------------------------------------------------------- #
+def _hash_pw(password: str, salt: bytes | None = None) -> str:
+    import base64
+    import hashlib
+    salt = salt or os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200_000)
+    return "pbkdf2$200000$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(dk).decode()
+
+
+def verify_pw(password: str, stored: str) -> bool:
+    import base64
+    import hashlib
+    import hmac
+    try:
+        _, iters, salt_b64, hash_b64 = stored.split("$")
+        salt = base64.b64decode(salt_b64)
+        expected = base64.b64decode(hash_b64)
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, int(iters))
+        return hmac.compare_digest(dk, expected)
+    except Exception:
+        return False
+
+
+def create_user(username: str, password: str, is_admin: bool = False,
+                email: str | None = None, display_name: str | None = None) -> None:
+    with write() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO users
+               (username, email, display_name, pw_hash, is_admin, created_at, last_active)
+               VALUES (?,?,?,?,?,?,?)""",
+            (username.lower(), email, display_name or username, _hash_pw(password),
+             1 if is_admin else 0, _now(), None),
+        )
+
+
+def get_user(username: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM users WHERE username=?", (username.lower(),)).fetchone()
+    return dict(row) if row else None
+
+
+def list_users() -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT username, email, display_name, is_admin, created_at, last_active "
+        "FROM users ORDER BY is_admin DESC, username").fetchall()]
+
+
+def set_user_password(username: str, password: str) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET pw_hash=? WHERE username=?",
+                     (_hash_pw(password), username.lower()))
+
+
+def touch_user(username: str) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET last_active=? WHERE username=?", (_now(), username.lower()))
+
+
+def delete_user(username: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM users WHERE username=?", (username.lower(),))
 
 
 def init_db() -> None:
