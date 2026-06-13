@@ -120,6 +120,11 @@ function render() {
         `<div class="segmented" id="tls-seg"></div><div id="tls-extra" style="margin-top:4px"></div>`, "security-tls")}
       ${block("Session & access", "",
         `${toggle("secureCookies", "Secure cookies", "Only send session cookies over HTTPS. Disable only behind a TLS-terminating proxy on a trusted network.", secure)}`, "security-session")}
+      <div class="card-block">
+        <div class="cb-head"><h3>Danger zone</h3><p>Reset all server configuration and re-run the first-run setup wizard.</p></div>
+        <div class="cb-body"><div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Reset configuration</div><div class="cd">Clears auth mode, TLS, public URL and secrets, then sends you to <b>Setup</b>. Your devices, organisations and accounts are kept. A restart applies the new settings.</div></div></div></div>
+        <div class="cb-foot"><span class="saved">${ICON.alert} This cannot be undone</span><button class="btn danger" id="reset-config">${ICON.trash} Reset &amp; re-run setup</button></div>
+      </div>
     </section>
 
     <section class="sec" data-sec="agents">
@@ -246,6 +251,13 @@ function buildAppearance() {
 function wire() {
   document.querySelectorAll("[data-toggle]:not([data-toggle='ap-dataviz'])").forEach((t) => t.onclick = () => t.classList.toggle("on"));
   document.querySelectorAll(".save-btn").forEach((b) => b.onclick = () => onSave(b.dataset.save));
+  const rc = $("reset-config");
+  if (rc) rc.onclick = async () => {
+    if (!confirm("Reset ALL server configuration and re-run setup?\n\nDevices, organisations and accounts are kept. You'll be sent to the setup wizard.")) return;
+    if (!confirm("Are you sure? This clears auth mode, TLS, public URL and secrets.")) return;
+    try { await api("/api/admin/reset", { method: "POST" }); toast("Configuration reset — opening setup…"); setTimeout(() => { location.href = "/setup"; }, 800); }
+    catch (e) { toast(e.message); }
+  };
 }
 function onSave(which) {
   if (which === "general") return saveKeys({ RMM_SERVER_NAME: $("g-name").value, RMM_PUBLIC_URL: $("g-url").value }, "General settings saved");

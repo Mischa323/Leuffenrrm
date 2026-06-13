@@ -1238,6 +1238,19 @@ def list_app_users(user: dict = Depends(auth.current_user)):
             "bootstrap_admins": sorted(auth.BOOTSTRAP_ADMINS)}
 
 
+@app.post("/api/admin/reset")
+def reset_config(user: dict = Depends(auth.current_user)):
+    """Wipe server configuration and re-show the setup wizard.
+
+    Clears the settings store (auth mode, TLS, public URL, secrets, …) so the
+    first-run wizard reappears. Devices, organisations and accounts are kept.
+    """
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    db.clear_settings()
+    return {"ok": True, "restart_recommended": True}
+
+
 @app.get("/api/account")
 def account(user: dict = Depends(auth.current_user)):
     local = db.get_user(user["email"]) if auth.LOCAL_ENABLED else None

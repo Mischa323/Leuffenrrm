@@ -277,6 +277,12 @@ def setup_complete() -> bool:
     return get_setting("SETUP_COMPLETE") == "1"
 
 
+def clear_settings() -> None:
+    """Wipe all server configuration so the first-run setup wizard reappears."""
+    with write() as conn:
+        conn.execute("DELETE FROM settings")
+
+
 # --------------------------------------------------------------------------- #
 # Local accounts (username/password) — used when auth mode is "local".
 # Passwords are hashed with PBKDF2-HMAC-SHA256 (stdlib, no extra dependency).
