@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, 
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, auth, database as db
+from . import alerts, auth, database as db, totp
 from . import wol as wol_local
 from .manager import manager
 from .models import (GroupRequest, MoveDeviceRequest, OrgRequest, OrgUserRequest,
@@ -125,9 +125,18 @@ def auth_login(request: Request):
 @app.post("/api/auth/local-login")
 async def local_login(request: Request):
     data = await request.json()
-    username = auth.local_login((data.get("username") or "").strip(), data.get("password") or "")
+    u = auth.verify_local((data.get("username") or "").strip(), data.get("password") or "")
+    # Second factor (TOTP) if the account has it enabled.
+    if u.get("totp_enabled"):
+        code = (data.get("code") or "").strip()
+        if not code:
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"mfa_required": True}, status_code=200)
+        if not totp.verify(u.get("totp_secret") or "", code):
+            raise HTTPException(status_code=401, detail="Invalid authentication code")
+    db.touch_user(u["username"])
     resp = Response(status_code=204)
-    resp.set_cookie(auth.COOKIE, auth.make_cookie(username), httponly=True,
+    resp.set_cookie(auth.COOKIE, auth.make_cookie(u["username"]), httponly=True,
                     samesite="lax", secure=auth.SECURE_COOKIES)
     return resp
 
@@ -620,8 +629,15 @@ def index(request: Request):
         return RedirectResponse("/setup")
     if not auth.DEV_AUTH:
         raw = request.cookies.get(auth.COOKIE)
-        if not (raw and auth.read_cookie(raw)):
+        data = auth.read_cookie(raw) if raw else None
+        if not data:
             return RedirectResponse("/auth/login")
+        # Enforce 2FA enrolment for local accounts when the policy is on.
+        if auth.AUTH_MODE == "local" and \
+                os.environ.get("RMM_ENFORCE_2FA", "").lower() in ("1", "true", "yes"):
+            u = db.get_user(data.get("email", ""))
+            if u and not u.get("totp_enabled"):
+                return RedirectResponse("/account.html#enroll-2fa")
     with open(os.path.join(STATIC_DIR, "index.html")) as f:
         return HTMLResponse(f.read())
 
@@ -739,7 +755,7 @@ async def do_setup(request: Request):
 SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "ALERT_CPU_PCT", "ALERT_DISK_FREE_PCT",
-    "ALERT_MEM_PCT", "ALERT_OFFLINE_AFTER", "RMM_SECURE_COOKIES",
+    "ALERT_MEM_PCT", "ALERT_OFFLINE_AFTER", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
 ]
 
 
@@ -787,7 +803,54 @@ def account(user: dict = Depends(auth.current_user)):
         "is_global_admin": user["is_global_admin"],
         "mode": auth.AUTH_MODE,
         "local": local is not None,
+        "twofa_enabled": bool(local and local.get("totp_enabled")),
+        "twofa_enforced": os.environ.get("RMM_ENFORCE_2FA", "").lower() in ("1", "true", "yes"),
     }
+
+
+def _local_self(user: dict) -> dict:
+    if auth.AUTH_MODE != "local":
+        raise HTTPException(status_code=400, detail="Two-factor applies to local accounts only")
+    u = db.get_user(user["email"])
+    if not u:
+        raise HTTPException(status_code=404, detail="No local account")
+    return u
+
+
+@app.post("/api/account/2fa/setup")
+def twofa_setup(user: dict = Depends(auth.current_user)):
+    """Generate a fresh (pending) secret and return it for enrolment."""
+    u = _local_self(user)
+    secret = totp.generate_secret()
+    db.set_totp_secret(u["username"], secret)
+    db.set_totp_enabled(u["username"], False)
+    return {"secret": secret,
+            "otpauth_uri": totp.provisioning_uri(secret, u.get("email") or u["username"])}
+
+
+@app.post("/api/account/2fa/enable")
+async def twofa_enable(request: Request, user: dict = Depends(auth.current_user)):
+    """Confirm enrolment by verifying a code against the pending secret."""
+    u = _local_self(user)
+    code = ((await request.json()).get("code") or "").strip()
+    if not u.get("totp_secret"):
+        raise HTTPException(status_code=400, detail="Start 2FA setup first")
+    if not totp.verify(u["totp_secret"], code):
+        raise HTTPException(status_code=400, detail="That code didn't match — try again")
+    db.set_totp_enabled(u["username"], True)
+    return {"ok": True}
+
+
+@app.post("/api/account/2fa/disable")
+async def twofa_disable(request: Request, user: dict = Depends(auth.current_user)):
+    """Turn off 2FA after confirming the account password."""
+    u = _local_self(user)
+    password = (await request.json()).get("password") or ""
+    if not db.verify_pw(password, u["pw_hash"]):
+        raise HTTPException(status_code=403, detail="Password is incorrect")
+    db.set_totp_enabled(u["username"], False)
+    db.set_totp_secret(u["username"], None)
+    return {"ok": True}
 
 
 @app.post("/api/account/password")

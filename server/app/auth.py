@@ -90,13 +90,12 @@ def read_cookie(value: str) -> dict | None:
         return None
 
 
-def local_login(username: str, password: str) -> str:
-    """Verify a local account; return its username (used as the session identity)."""
+def verify_local(username: str, password: str) -> dict:
+    """Verify a local account's password; return the user row (raises on failure)."""
     u = db.get_user(username)
     if not u or not db.verify_pw(password, u["pw_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    db.touch_user(u["username"])
-    return u["username"]
+    return u
 
 
 def is_global_admin(identifier: str) -> bool:

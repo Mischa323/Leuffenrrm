@@ -96,6 +96,9 @@ function render() {
       ${secTitle("lock", "Authentication", "How users prove who they are.")}
       ${block("Sign-in method", "The active method. Switching applies after a server restart.",
         `<div class="segmented" id="auth-seg"></div><div id="auth-extra" style="margin-top:4px"></div>`, "auth")}
+      ${block("Two-factor authentication", "Time-based one-time codes (TOTP) for local accounts.",
+        `${toggle("enforce2fa", "Require 2FA for local accounts", "Local users are prompted to set up an authenticator before they can use the dashboard.", (cfg.RMM_ENFORCE_2FA ?? "0") === "1")}
+         <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Per-user enrolment</div><div class="cd">Each user enables 2FA under <b>Account → Password</b>. ${authMethod === "local" ? "" : "Switch to local accounts to use this — SSO 2FA is managed in your identity provider."}</div></div></div>`, "auth-mfa")}
     </section>
 
     <section class="sec" data-sec="alerts">
@@ -246,6 +249,7 @@ function wire() {
 function onSave(which) {
   if (which === "general") return saveKeys({ RMM_SERVER_NAME: $("g-name").value, RMM_PUBLIC_URL: $("g-url").value }, "General settings saved");
   if (which === "auth") return saveKeys({ RMM_AUTH_MODE: authMethod }, "Auth mode saved — restart to apply");
+  if (which === "auth-mfa") return saveKeys({ RMM_ENFORCE_2FA: document.querySelector('[data-toggle="enforce2fa"]').classList.contains("on") ? "1" : "0" }, "Two-factor policy saved");
   if (which === "alerts-mail") return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value }, "Email settings saved");
   if (which === "alerts-rules") return saveKeys({ ALERT_OFFLINE_AFTER: String(parseInt($("al-offline").value, 10) * 60), ALERT_CPU_PCT: $("al-cpu").value, ALERT_DISK_FREE_PCT: $("al-disk").value }, "Alert rules saved");
   if (which === "security-tls") return saveKeys({ RMM_TLS_MODE: tlsMode }, "TLS mode saved — restart to apply");

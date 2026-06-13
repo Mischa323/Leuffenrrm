@@ -66,7 +66,7 @@ function render() {
 
     <section class="sec" data-sec="password">
       ${secTitle("key", "Password", "Change the password you use to sign in.")}
-      ${local ? passwordCard() : `<div class="callout info"><div class="ic">${ICON.globe}</div><div><div class="ct">${acct.mode === "sso" ? "Managed by Microsoft 365" : "No password for this sign-in mode"}</div><div class="cd">${acct.mode === "sso" ? "You sign in with single sign-on, so there's no separate Leuffen RMM password. Change it through your Microsoft account." : "This server is in dev-login mode — there is no password to change. Switch to local accounts or SSO in Settings."}</div></div></div>
+      ${local ? passwordCard() + `<div id="twofa-wrap"></div>` : `<div class="callout info"><div class="ic">${ICON.globe}</div><div><div class="ct">${acct.mode === "sso" ? "Managed by Microsoft 365" : "No password for this sign-in mode"}</div><div class="cd">${acct.mode === "sso" ? "You sign in with single sign-on, so there's no separate Leuffen RMM password. Change it through your Microsoft account." : "This server is in dev-login mode — there is no password to change. Switch to local accounts or SSO in Settings."}</div></div></div>
         ${acct.mode === "sso" ? `<a class="btn ghost" href="https://account.microsoft.com/security" target="_blank" rel="noopener" style="align-self:flex-start">${ICON.external} Open Microsoft account security</a>` : ""}`}
     </section>
 
@@ -101,6 +101,67 @@ function passwordCard() {
     </div>
     <div class="cb-foot"><span class="saved">${ICON.lock} Stored PBKDF2-hashed</span><button class="btn" id="change-pw">${ICON.key} Update password</button></div>
   </div>`;
+}
+
+/* ---- two-factor (TOTP) ---- */
+function buildTwofa() {
+  const wrap = $("twofa-wrap"); if (!wrap) return;
+  if (acct.twofa_enabled) {
+    wrap.innerHTML = `<div class="card-block">
+      <div class="cb-head"><h3>Two-factor authentication</h3><p>An authenticator code is required at every sign-in.</p></div>
+      <div class="cb-body">
+        <div class="callout" style="border-color:var(--good);background:var(--good-soft)"><div class="ic" style="background:var(--good-soft);color:var(--good)">${ICON.shieldCheck}</div><div><div class="ct">Two-factor is on</div><div class="cd">To turn it off, confirm your password.</div></div></div>
+        <div class="frow"><label>Current password</label><div class="pw-wrap"><input class="inp mono" id="tf-off-pw" type="password" placeholder="••••••••" /><button class="reveal" data-rev="tf-off-pw" type="button">${ICON.eye}</button></div></div>
+      </div>
+      <div class="cb-foot"><span class="saved">${ICON.lock} TOTP · 6 digits · 30s</span><button class="btn danger" id="tf-disable">Turn off 2FA</button></div>
+    </div>`;
+    $("tf-disable").onclick = disableTwofa;
+    wireReveals();
+  } else {
+    wrap.innerHTML = `<div class="card-block">
+      <div class="cb-head"><h3>Two-factor authentication</h3><p>Add a one-time code from an authenticator app as a second sign-in step.${acct.twofa_enforced ? " <b>Required by your administrator.</b>" : ""}</p></div>
+      <div class="cb-body"><div id="tf-setup-body"><button class="btn" id="tf-start">${ICON.key} Set up two-factor</button></div></div>
+    </div>`;
+    $("tf-start").onclick = startTwofa;
+  }
+}
+async function startTwofa() {
+  let res;
+  try { res = await api("/api/account/2fa/setup", { method: "POST" }); } catch (e) { return toast(e.message); }
+  $("tf-setup-body").innerHTML = `
+    <ol style="margin:0 0 14px;padding-left:18px;color:var(--text-dim);font-size:13px;line-height:1.7">
+      <li>Open your authenticator app (Google / Microsoft Authenticator, 1Password…).</li>
+      <li>Add an account using this secret (or the link below):</li>
+    </ol>
+    <div class="frow"><label>Setup key</label><input class="inp mono" id="tf-secret" value="${esc(res.secret)}" readonly onclick="this.select()" /></div>
+    <div class="frow"><a class="ghost-link" href="${esc(res.otpauth_uri)}" style="font-size:12.5px">${ICON.external} Open in authenticator app</a></div>
+    <div class="frow"><label>Enter the 6-digit code to confirm</label><input class="inp mono" id="tf-code" inputmode="numeric" placeholder="123456" style="letter-spacing:.25em" /></div>
+    <button class="btn" id="tf-confirm">${ICON.check} Verify &amp; enable</button>`;
+  $("tf-confirm").onclick = confirmTwofa;
+  $("tf-code").onkeydown = (e) => { if (e.key === "Enter") confirmTwofa(); };
+  $("tf-code").focus();
+}
+async function confirmTwofa() {
+  const code = $("tf-code").value.trim();
+  if (!/^\d{6}$/.test(code)) { $("tf-code").classList.add("err"); return toast("Enter the 6-digit code"); }
+  try {
+    await api("/api/account/2fa/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+    acct.twofa_enabled = true; buildTwofa(); toast("Two-factor enabled");
+  } catch (e) { $("tf-code").classList.add("err"); toast(e.message); }
+}
+async function disableTwofa() {
+  const pw = $("tf-off-pw").value;
+  if (!pw) { $("tf-off-pw").classList.add("err"); return toast("Enter your password"); }
+  try {
+    await api("/api/account/2fa/disable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: pw }) });
+    acct.twofa_enabled = false; buildTwofa(); toast("Two-factor disabled");
+  } catch (e) { $("tf-off-pw").classList.add("err"); toast(e.message); }
+}
+function wireReveals() {
+  document.querySelectorAll("[data-rev]").forEach((b) => b.onclick = () => {
+    const inp = $(b.dataset.rev); const on = inp.type === "password";
+    inp.type = on ? "text" : "password"; b.innerHTML = on ? ICON.eyeOff : ICON.eye;
+  });
 }
 
 const REQS = [
@@ -182,6 +243,7 @@ function wire(local) {
   });
   buildPersonalAppearance();
   if (local) {
+    buildTwofa();
     ["new-pw", "confirm-pw"].forEach((id) => { const e = $(id); if (e) e.oninput = updatePw; });
     updatePw();
     const cp = $("change-pw");
@@ -206,5 +268,6 @@ async function init() {
   buildNav();
   try { acct = await api("/api/account"); acct.role = acct.is_global_admin ? "Global admin" : "Member"; } catch {}
   render();
+  if (location.hash.indexOf("2fa") >= 0) { selectSec("password"); if (acct.local && !acct.twofa_enabled) startTwofa(); }
 }
 init();

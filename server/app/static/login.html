@@ -21,24 +21,39 @@
       <input id="u" autocomplete="username" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;margin-bottom:14px" />
       <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">Password</label>
       <input id="p" type="password" autocomplete="current-password" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;margin-bottom:8px" />
+      <div id="mfa" class="hidden" style="margin-bottom:8px">
+        <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">Authentication code</label>
+        <input id="c" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;letter-spacing:.25em;font-family:var(--font-mono)" />
+        <div style="color:var(--text-dim);font-size:12px;margin-top:6px">Enter the 6-digit code from your authenticator app.</div>
+      </div>
       <div id="err" style="color:var(--bad);font-size:12.5px;min-height:18px;margin-bottom:10px"></div>
-      <button class="btn" type="submit" style="width:100%;justify-content:center;padding:11px">Sign in</button>
+      <button class="btn" id="submit" type="submit" style="width:100%;justify-content:center;padding:11px">Sign in</button>
     </form>
   </div>
   <script src="icons.js"></script>
   <script src="appearance.js"></script>
   <script>
     document.getElementById("brand-logo").innerHTML = ICON.shield.replace("<svg", '<svg style="width:18px;height:18px"');
+    let mfaStep = false;
     document.getElementById("login").onsubmit = async (e) => {
       e.preventDefault();
       const err = document.getElementById("err"); err.textContent = "";
+      const body = { username: document.getElementById("u").value, password: document.getElementById("p").value };
+      if (mfaStep) body.code = document.getElementById("c").value;
       try {
         const r = await fetch("/api/auth/local-login", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: document.getElementById("u").value, password: document.getElementById("p").value }),
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
         });
-        if (!r.ok) { err.textContent = (await r.json().catch(() => ({}))).detail || "Sign-in failed"; return; }
-        location.href = "/";
+        if (r.status === 204) { location.href = "/"; return; }
+        const data = await r.json().catch(() => ({}));
+        if (r.ok && data.mfa_required) {
+          mfaStep = true;
+          document.getElementById("mfa").classList.remove("hidden");
+          document.getElementById("submit").textContent = "Verify";
+          document.getElementById("c").focus();
+          return;
+        }
+        err.textContent = data.detail || "Sign-in failed";
       } catch (ex) { err.textContent = ex.message; }
     };
   </script>

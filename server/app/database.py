@@ -258,6 +258,17 @@ def delete_user(username: str) -> None:
         conn.execute("DELETE FROM users WHERE username=?", (username.lower(),))
 
 
+def set_totp_secret(username: str, secret: str | None) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET totp_secret=? WHERE username=?", (secret, username.lower()))
+
+
+def set_totp_enabled(username: str, enabled: bool) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET totp_enabled=? WHERE username=?",
+                     (1 if enabled else 0, username.lower()))
+
+
 def init_db() -> None:
     global _conn
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
@@ -266,7 +277,16 @@ def init_db() -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA foreign_keys=ON;")
     _conn.executescript(SCHEMA)
+    _migrate(_conn)
     _conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Lightweight additive migrations for existing databases."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+    for col, ddl in (("totp_secret", "TEXT"), ("totp_enabled", "INTEGER NOT NULL DEFAULT 0")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
 
 
 def get_conn() -> sqlite3.Connection:
