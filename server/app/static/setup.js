@@ -16,8 +16,7 @@ const STEPS = [
   { t: "Review", d: "Confirm & launch" },
 ];
 const AUTH_METHODS = [
-  { id: "sso", t: "Microsoft 365", d: "Sign in with your Entra (Office 365) tenant. Only your org's accounts get in.", icon: "globe" },
-  { id: "local", t: "Local accounts", d: "Username + password accounts stored on this server. No external identity provider.", icon: "lock" },
+  { id: "hybrid", t: "Local + Microsoft 365", d: "Username/password accounts on this server, plus optional Microsoft 365 SSO (matched by email). Recommended.", icon: "shieldCheck" },
   { id: "dev", t: "Dev login", d: "Auto sign-in a bootstrap admin. For evaluation only — not for production.", icon: "zap" },
 ];
 const TLS_MODES = [
@@ -28,12 +27,12 @@ const TLS_MODES = [
 
 const state = {
   step: 0,
-  authMethod: "sso",
+  authMethod: "hybrid",
   tenant: "", client: "", secret: "", redirect: location.origin + "/auth/callback",
   publicUrl: location.origin,
   admins: [],
   accounts: [],
-  draft: { username: "", password: "" },
+  draft: { username: "", password: "", email: "" },
   tlsMode: "self-signed",
   certPath: "/data/tls/cert.pem", keyPath: "/data/tls/key.pem",
   host: "0.0.0.0", port: "8000", sessionSecret: "",
@@ -90,28 +89,28 @@ function buildAuth() {
     seg.appendChild(o);
   });
   const ex = $("auth-extra");
-  if (state.authMethod === "sso") {
+  if (state.authMethod === "hybrid") {
     ex.innerHTML = `
-      <div class="fld"><label>Directory (tenant) ID</label><input class="inp mono" id="f-tenant" placeholder="00000000-0000-0000-0000-000000000000" value="${esc(state.tenant)}" /></div>
+      <div class="callout info"><div class="ic">${ICON.lock}</div><div><div class="ct">Local accounts are always available</div><div class="cd">You'll create your first account — the global admin — in the next step. Passwords are PBKDF2-hashed on this server.</div></div></div>
+      <div class="sec-label" style="margin-top:6px">Microsoft 365 SSO <span class="hint" style="font-weight:500">· optional</span></div>
+      <div class="fld"><label>Directory (tenant) ID</label><input class="inp mono" id="f-tenant" placeholder="leave blank to skip SSO" value="${esc(state.tenant)}" /></div>
       <div class="fld"><label>Application (client) ID</label><input class="inp mono" id="f-client" placeholder="00000000-0000-0000-0000-000000000000" value="${esc(state.client)}" /></div>
-      <div class="fld"><label>Client secret</label><input class="inp mono" id="f-secret" type="password" placeholder="••••••••••••••••" value="${esc(state.secret)}" /><div class="hint">Stored on this server. Create one under <b>Certificates &amp; secrets</b>.</div></div>
-      <div class="fld"><label>Redirect URI</label><input class="inp mono" id="f-redirect" placeholder="https://rmm.example.com/auth/callback" value="${esc(state.redirect)}" /><div class="hint">Add this exact URL to your app registration's <b>Redirect URIs</b>.</div></div>`;
+      <div class="fld"><label>Client secret</label><input class="inp mono" id="f-secret" type="password" placeholder="••••••••••••••••" value="${esc(state.secret)}" /></div>
+      <div class="fld"><label>Redirect URI</label><input class="inp mono" id="f-redirect" placeholder="https://rmm.example.com/auth/callback" value="${esc(state.redirect)}" /><div class="hint">Add this exact URL to your app registration's <b>Redirect URIs</b>. A Microsoft 365 user is matched to the local account with the same email.</div></div>`;
     ["tenant", "client", "secret", "redirect"].forEach((k) => { $("f-" + k).oninput = (e) => { state[k] = e.target.value; e.target.classList.remove("err"); }; });
-  } else if (state.authMethod === "local") {
-    ex.innerHTML = `<div class="callout info"><div class="ic">${ICON.lock}</div><div><div class="ct">Local accounts are stored securely</div><div class="cd">Passwords are hashed (PBKDF2) and never leave this server. You'll create your first account — the global admin — in the next step, and can add more there too.</div></div></div>`;
   } else {
-    ex.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Dev login signs you in automatically</div><div class="cd">No password prompt — anyone who can reach this server gets bootstrap-admin access. Use only on a trusted machine while evaluating, then switch to Microsoft 365 or local accounts.</div></div></div>`;
+    ex.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Dev login signs you in automatically</div><div class="cd">No password prompt — anyone who can reach this server gets bootstrap-admin access. Use only on a trusted machine while evaluating, then switch to local + Microsoft 365.</div></div></div>`;
   }
 }
 
 function buildAdmin() {
-  const head = { h2: "Global administrators", p: "Global admins can see every organisation and manage all devices." };
-  if (state.authMethod === "local") { head.h2 = "Create accounts"; head.p = "Add the local accounts that can sign in. The first account is your global administrator; add teammates now or later from the dashboard."; }
-  else if (state.authMethod === "dev") { head.h2 = "Bootstrap administrator"; head.p = "Dev login signs in a single bootstrap admin. Set which email it uses."; }
+  const head = state.authMethod === "hybrid"
+    ? { h2: "Create accounts", p: "Add the local accounts that can sign in. The first account is your global administrator; add teammates now or later. Set an email to also allow Microsoft 365 sign-in for that person." }
+    : { h2: "Bootstrap administrator", p: "Dev login signs in a single bootstrap admin. Set which email it uses." };
   $("admin-h2").textContent = head.h2;
   $("admin-p").textContent = head.p;
   const body = $("admin-body");
-  if (state.authMethod === "local") {
+  if (state.authMethod === "hybrid") {
     body.innerHTML = `
       <div class="fld"><label>Accounts</label><div class="acct-list" id="acct-list"></div></div>
       <div class="acct-form">
@@ -121,14 +120,16 @@ function buildAdmin() {
             <div class="pw-wrap"><input class="inp mono" id="d-pass" type="password" placeholder="••••••••" value="${esc(state.draft.password)}" /><button class="reveal" id="d-reveal" type="button">${EYE}</button></div>
           </div>
         </div>
+        <div class="fld" style="gap:6px;margin-top:12px"><label>Email <span class="hint" style="font-weight:500">· optional, links Microsoft 365 sign-in</span></label><input class="inp mono" id="d-email" type="email" placeholder="jdoe@example.com" value="${esc(state.draft.email || "")}" /></div>
         <div class="pw-meter" id="pw-meter"><i></i><i></i><i></i><i></i></div>
         <div class="pw-strength" id="pw-strength">Use at least 8 characters.</div>
         <button class="btn ghost" id="add-acct" style="margin-top:13px">${ICON.plus} Add account</button>
       </div>`;
     renderAccounts();
-    const du = $("d-user"), dp = $("d-pass");
+    const du = $("d-user"), dp = $("d-pass"), de = $("d-email");
     du.oninput = (e) => state.draft.username = e.target.value;
     dp.oninput = (e) => { state.draft.password = e.target.value; updateStrength(); };
+    de.oninput = (e) => state.draft.email = e.target.value;
     $("d-reveal").onclick = () => { const on = dp.type === "password"; dp.type = on ? "text" : "password"; $("d-reveal").innerHTML = on ? EYE_OFF : EYE; };
     $("add-acct").onclick = addAccount;
     dp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addAccount(); } };
@@ -165,7 +166,7 @@ function renderAccounts() {
   list.innerHTML = state.accounts.map((a, i) => `
     <div class="acct-item">
       <div class="av">${esc(a.username.slice(0, 2).toUpperCase())}</div>
-      <div class="am"><div class="u">${esc(a.username)}</div><div class="pw">${"•".repeat(Math.min(a.password.length, 14))}</div></div>
+      <div class="am"><div class="u">${esc(a.username)}</div><div class="pw">${a.email ? esc(a.email) : "•".repeat(Math.min(a.password.length, 14))}</div></div>
       ${a.admin ? '<span class="role-tag">Global admin</span>' : ""}
       ${state.accounts.length > 1 ? `<div class="x" data-i="${i}">${X_ICON}</div>` : ""}
     </div>`).join("");
@@ -176,13 +177,14 @@ function renderAccounts() {
   });
 }
 function addAccount() {
-  const u = (state.draft.username || "").trim(), p = state.draft.password || "";
+  const u = (state.draft.username || "").trim(), p = state.draft.password || "", em = (state.draft.email || "").trim();
   if (!u) { $("d-user").classList.add("err"); toast("Enter a username"); return; }
   if (state.accounts.some((a) => a.username.toLowerCase() === u.toLowerCase())) { $("d-user").classList.add("err"); toast("That username already exists"); return; }
   if (p.length < 8) { $("d-pass").classList.add("err"); toast("Password must be at least 8 characters"); return; }
-  state.accounts.push({ username: u, password: p, admin: state.accounts.length === 0 });
-  state.draft = { username: "", password: "" };
-  $("d-user").value = ""; $("d-pass").value = ""; $("d-user").classList.remove("err"); $("d-pass").classList.remove("err");
+  if (em && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) { $("d-email").classList.add("err"); toast("Enter a valid email or leave it blank"); return; }
+  state.accounts.push({ username: u, password: p, email: em, admin: state.accounts.length === 0 });
+  state.draft = { username: "", password: "", email: "" };
+  ["d-user", "d-pass", "d-email"].forEach((id) => { $(id).value = ""; $(id).classList.remove("err"); });
   renderAccounts(); updateStrength(); toast("Account added");
 }
 function renderChips() {
@@ -230,13 +232,17 @@ function buildTls() {
 }
 
 function validateStep() {
-  if (state.step === 1 && state.authMethod === "sso") {
-    const miss = !state.tenant || !state.client || !state.secret || !state.redirect;
-    if (miss) { ["f-tenant", "f-client", "f-secret", "f-redirect"].forEach((id) => { if ($(id) && !$(id).value.trim()) $(id).classList.add("err"); }); toast("Fill in the SSO details, or pick another method"); return false; }
+  if (state.step === 1 && state.authMethod === "hybrid") {
+    // SSO is optional, but if any field is filled the core three are required.
+    const any = state.tenant || state.client || state.secret;
+    if (any && !(state.tenant && state.client && state.secret)) {
+      ["f-tenant", "f-client", "f-secret"].forEach((id) => { if ($(id) && !$(id).value.trim()) $(id).classList.add("err"); });
+      toast("Complete the Microsoft 365 fields, or clear them to skip SSO"); return false;
+    }
   }
   if (state.step === 2) {
-    if (state.authMethod === "local" && state.accounts.length === 0) { toast("Create at least one account"); return false; }
-    if (state.authMethod !== "local" && state.admins.length === 0) { toast("Add at least one administrator"); return false; }
+    if (state.authMethod === "hybrid" && state.accounts.length === 0) { toast("Create at least one account"); return false; }
+    if (state.authMethod === "dev" && state.admins.length === 0) { toast("Add at least one administrator"); return false; }
   }
   return true;
 }
@@ -258,12 +264,10 @@ function back() { if (state.step > 0) { state.step--; showStep(); } }
 
 function buildReview() {
   let auth, access;
-  if (state.authMethod === "sso") {
-    auth = { v: "Microsoft 365 SSO", sub: state.tenant ? "Tenant " + state.tenant : "Entra tenant", ok: !!(state.tenant && state.client) };
-    access = { ic: "logout", t: "Administrators", v: state.admins.length + " account" + (state.admins.length === 1 ? "" : "s"), sub: state.admins.join(", "), ok: state.admins.length > 0 };
-  } else if (state.authMethod === "local") {
+  if (state.authMethod === "hybrid") {
     const admin = state.accounts.find((a) => a.admin);
-    auth = { v: "Local accounts", sub: state.accounts.length + " account" + (state.accounts.length === 1 ? "" : "s") + " · hashed on this server", ok: state.accounts.length > 0 };
+    const sso = !!state.client;
+    auth = { v: sso ? "Local accounts + Microsoft 365" : "Local accounts", sub: state.accounts.length + " account" + (state.accounts.length === 1 ? "" : "s") + (sso ? " · SSO matched by email" : " · SSO not configured"), ok: state.accounts.length > 0 };
     access = { ic: "logout", t: "Accounts", v: state.accounts.map((a) => a.username).join(", "), sub: admin ? "Global admin: " + admin.username : "", ok: state.accounts.length > 0 };
   } else {
     auth = { v: "Dev login", sub: "Bootstrap admin signed in automatically — not for production", ok: true };
@@ -297,11 +301,9 @@ function buildPayload() {
     host: state.host, port: state.port,
     session_secret: state.sessionSecret || "",
   };
-  if (state.authMethod === "sso") {
-    p.tenant_id = state.tenant; p.client_id = state.client; p.client_secret = state.secret; p.redirect_uri = state.redirect;
-    p.admins = state.admins;
-  } else if (state.authMethod === "local") {
+  if (state.authMethod === "hybrid") {
     p.accounts = state.accounts;
+    if (state.client) { p.tenant_id = state.tenant; p.client_id = state.client; p.client_secret = state.secret; p.redirect_uri = state.redirect; }
   } else {
     p.admins = state.admins;
   }
@@ -325,8 +327,8 @@ async function launch() {
     return;
   }
   const lines = [
-    state.authMethod === "sso" ? "Auth mode: Microsoft Entra SSO"
-      : state.authMethod === "local" ? `Auth mode: local accounts (${state.accounts.length} created)`
+    state.authMethod === "hybrid"
+      ? `Auth mode: local accounts (${state.accounts.length})${state.client ? " + Microsoft 365 SSO" : ""}`
       : "Auth mode: dev login (bootstrap admin)",
     state.tlsMode === "self-signed" ? "TLS: self-signed certificate" : `TLS mode: ${state.tlsMode}`,
     `Bind: ${state.host}:${state.port}`,

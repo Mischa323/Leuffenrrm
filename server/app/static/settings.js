@@ -164,9 +164,7 @@ function usersRows() {
 }
 
 const AUTH_METHODS = [
-  { id: "sso", t: "Microsoft 365", d: "Entra (Office 365) SSO.", icon: "globe" },
-  { id: "local", t: "Local accounts", d: "Username + password.", icon: "lock" },
-  { id: "hybrid", t: "Both", d: "Local accounts + M365 SSO.", icon: "shieldCheck" },
+  { id: "hybrid", t: "Local + Microsoft 365", d: "Password accounts plus optional M365 SSO.", icon: "shieldCheck" },
   { id: "dev", t: "Dev login", d: "Auto bootstrap admin.", icon: "zap" },
 ];
 function buildAuthSeg() {

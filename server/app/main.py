@@ -719,7 +719,7 @@ def index(request: Request):
         if not data:
             return RedirectResponse("/auth/login")
         # Enforce 2FA enrolment for local accounts when the policy is on.
-        if auth.AUTH_MODE == "local" and \
+        if auth.LOCAL_ENABLED and \
                 os.environ.get("RMM_ENFORCE_2FA", "").lower() in ("1", "true", "yes"):
             u = db.get_user(data.get("email", ""))
             if u and not u.get("totp_enabled"):
@@ -756,11 +756,12 @@ async def do_setup(request: Request):
 
     public = (data.get("public_url") or "").strip().rstrip("/")
     tls_mode = (data.get("tls_mode") or "self-signed").strip().lower()
-    auth_mode = (data.get("auth_mode") or "dev").strip().lower()
+    auth_mode = (data.get("auth_mode") or "hybrid").strip().lower()
+    # Only two modes are offered now; legacy values fold into hybrid.
+    if auth_mode != "dev":
+        auth_mode = "hybrid"
     if tls_mode not in ("self-signed", "file", "proxy"):
         raise HTTPException(status_code=400, detail="Invalid TLS mode")
-    if auth_mode not in ("dev", "sso", "local"):
-        raise HTTPException(status_code=400, detail="Invalid auth mode")
 
     settings: dict[str, str] = {"RMM_TLS_MODE": tls_mode, "RMM_AUTH_MODE": auth_mode}
     if public:
@@ -778,19 +779,20 @@ async def do_setup(request: Request):
     admins = [e.strip().lower() for e in (data.get("admins") or []) if e.strip()]
     accounts = data.get("accounts") or []
 
-    if auth_mode == "sso":
-        for src, env in (("tenant_id", "MS_TENANT_ID"), ("client_id", "MS_CLIENT_ID"),
-                         ("client_secret", "MS_CLIENT_SECRET")):
-            val = (data.get(src) or "").strip()
-            if not val:
-                raise HTTPException(status_code=400, detail=f"Missing {src} for SSO")
-            settings[env] = val
-        settings["MS_REDIRECT_URI"] = (data.get("redirect_uri") or "").strip() or \
-            (public + "/auth/callback" if public else "")
-        settings["RMM_DEV_AUTH"] = "0"
-    elif auth_mode == "local":
+    if auth_mode == "hybrid":
         if not accounts:
-            raise HTTPException(status_code=400, detail="At least one local account is required")
+            raise HTTPException(status_code=400, detail="Create at least one local account")
+        # Microsoft 365 SSO is optional in hybrid — store it only if provided.
+        if (data.get("client_id") or "").strip():
+            for src, env in (("tenant_id", "MS_TENANT_ID"), ("client_id", "MS_CLIENT_ID"),
+                             ("client_secret", "MS_CLIENT_SECRET")):
+                val = (data.get(src) or "").strip()
+                if not val:
+                    raise HTTPException(status_code=400,
+                                        detail=f"Missing {src} for Microsoft 365 SSO")
+                settings[env] = val
+            settings["MS_REDIRECT_URI"] = (data.get("redirect_uri") or "").strip() or \
+                (public + "/auth/callback" if public else "")
         settings["RMM_DEV_AUTH"] = "0"
     else:  # dev
         settings["RMM_DEV_AUTH"] = "1"
@@ -818,7 +820,8 @@ async def do_setup(request: Request):
         pw = acc.get("password") or ""
         if not uname or len(pw) < 8:
             continue
-        db.create_user(uname, pw, is_admin=bool(acc.get("admin") or i == 0))
+        db.create_user(uname, pw, is_admin=bool(acc.get("admin") or i == 0),
+                       email=(acc.get("email") or "").strip().lower() or None)
 
     # Map bootstrap admin emails onto the default org.
     org = db.get_org("default") or (db.list_orgs() or [None])[0]
@@ -830,7 +833,7 @@ async def do_setup(request: Request):
 
     # Auth/TLS/secret changes only take full effect on restart (read at import).
     restart_recommended = bool(
-        auth_mode in ("sso", "local") or new_secret or explicit_secret
+        auth_mode == "hybrid" or new_secret or explicit_secret
         or tls_mode != BOOT_TLS_MODE)
     return {"ok": True, "restart_recommended": restart_recommended}
 
