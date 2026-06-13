@@ -53,14 +53,15 @@ function render() {
         </div>
       </div></div>
       <div class="card-block">
-        <div class="cb-head"><h3>Details</h3><p>${local ? "You sign in with a local account." : "Managed by your Microsoft 365 directory — edit them in your organisation's profile."}</p></div>
+        <div class="cb-head"><h3>Details</h3><p>${local ? "Set your email to link this account to a Microsoft 365 sign-in (matched by email)." : "Managed by your Microsoft 365 directory — edit them in your organisation's profile."}</p></div>
         <div class="cb-body">
           <div class="frow split">
             <div class="frow"><label>Display name</label><input class="inp" value="${esc(acct.name)}" disabled /></div>
             <div class="frow"><label>${acct.username ? "Username" : "Sign-in identity"}</label><input class="inp mono" value="${esc(acct.username || acct.email)}" disabled /></div>
           </div>
-          <div class="frow"><label>Email</label><input class="inp mono" value="${esc(acct.email)}" disabled /></div>
+          <div class="frow"><label>Email${local ? " <span class='hint' style='font-weight:500'>· links Microsoft 365 sign-in</span>" : ""}</label><input class="inp mono" id="p-email" value="${esc(acct.email)}" ${local ? "" : "disabled"} placeholder="${local ? "you@example.com" : ""}" /></div>
         </div>
+        ${local ? `<div class="cb-foot"><span class="saved">${ICON.info} Match this to your M365 email to use either sign-in</span><button class="btn" id="save-email">${ICON.save} Save email</button></div>` : ""}
       </div>
     </section>
 
@@ -275,6 +276,11 @@ function wire(local) {
     inp.type = on ? "text" : "password"; b.innerHTML = on ? ICON.eyeOff : ICON.eye;
   });
   buildPersonalAppearance();
+  const se = $("save-email");
+  if (se) se.onclick = async () => {
+    try { const r = await api("/api/account/email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: $("p-email").value.trim() }) }); acct.email = r.email; toast("Email saved" + (r.email ? " — Microsoft 365 sign-in linked" : "")); }
+    catch (e) { toast(e.message); }
+  };
   if (local) {
     buildTwofa();
     ["new-pw", "confirm-pw"].forEach((id) => { const e = $(id); if (e) e.oninput = updatePw; });

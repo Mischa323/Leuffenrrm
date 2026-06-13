@@ -21,7 +21,8 @@ from . import alerts, auth, database as db, totp
 from . import wol as wol_local
 from .manager import manager
 from .models import (GroupRequest, MoveDeviceRequest, OrgRequest, OrgUserRequest,
-                     PowerRequest, ShellRequest, SubnetRequest, WakeRequest)
+                     PowerRequest, ScriptRequest, ScriptRunRequest, ShellRequest,
+                     SubnetRequest, WakeRequest)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
@@ -108,13 +109,7 @@ async def _prune_loop() -> None:
 # --------------------------------------------------------------------------- #
 # Auth routes
 # --------------------------------------------------------------------------- #
-@app.get("/auth/login")
-def auth_login(request: Request):
-    if auth.AUTH_MODE == "dev":
-        return RedirectResponse("/")
-    if auth.AUTH_MODE == "local":
-        with open(os.path.join(STATIC_DIR, "login.html")) as f:
-            return HTMLResponse(f.read())
+def _sso_redirect() -> RedirectResponse:
     state = secrets.token_urlsafe(16)
     resp = RedirectResponse(auth.login_url(state))
     resp.set_cookie("oauth_state", state, httponly=True, max_age=600,
@@ -122,8 +117,34 @@ def auth_login(request: Request):
     return resp
 
 
+@app.get("/auth/login")
+def auth_login(request: Request):
+    if auth.AUTH_MODE == "dev":
+        return RedirectResponse("/")
+    # SSO-only: go straight to Microsoft. Otherwise show the sign-in page
+    # (local form, plus a Microsoft button in hybrid mode).
+    if auth.SSO_ENABLED and not auth.LOCAL_ENABLED:
+        return _sso_redirect()
+    with open(os.path.join(STATIC_DIR, "login.html")) as f:
+        return HTMLResponse(f.read())
+
+
+@app.get("/auth/sso")
+def auth_sso():
+    if not auth.SSO_ENABLED:
+        raise HTTPException(status_code=404, detail="SSO is not enabled")
+    return _sso_redirect()
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    return {"mode": auth.AUTH_MODE, "local": auth.LOCAL_ENABLED, "sso": auth.SSO_ENABLED}
+
+
 @app.post("/api/auth/local-login")
 async def local_login(request: Request):
+    if not auth.LOCAL_ENABLED:
+        raise HTTPException(status_code=403, detail="Local sign-in is disabled")
     data = await request.json()
     u = auth.verify_local((data.get("username") or "").strip(), data.get("password") or "")
     # Second factor (TOTP, or a single-use recovery code) if enabled.
@@ -148,8 +169,10 @@ def auth_callback(request: Request, code: str = "", state: str = ""):
     if request.cookies.get("oauth_state") != state:
         raise HTTPException(status_code=400, detail="state mismatch")
     email = auth.exchange_code(code)
+    # In hybrid mode, fold the SSO user onto a matching local account (by email).
+    identity = auth.resolve_sso_identity(email)
     resp = RedirectResponse("/")
-    resp.set_cookie(auth.COOKIE, auth.make_cookie(email), httponly=True,
+    resp.set_cookie(auth.COOKIE, auth.make_cookie(identity), httponly=True,
                     samesite="lax", secure=auth.SECURE_COOKIES)
     resp.delete_cookie("oauth_state")
     return resp
@@ -299,6 +322,67 @@ async def shell(device_id: str, req: ShellRequest, user: dict = Depends(auth.cur
     except Exception as exc:
         raise HTTPException(status_code=504, detail=str(exc))
     return res
+
+
+# --------------------------------------------------------------------------- #
+# Scripts (Phase 2): a per-org library + run-on-device with stored history.
+# --------------------------------------------------------------------------- #
+@app.get("/api/orgs/{org_id}/scripts")
+def list_scripts(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return db.list_scripts(org_id)
+
+
+@app.post("/api/orgs/{org_id}/scripts")
+def create_script(org_id: str, req: ScriptRequest, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    if req.shell not in ("shell", "powershell"):
+        raise HTTPException(status_code=400, detail="shell must be 'shell' or 'powershell'")
+    return db.create_script(org_id, req.name, req.content, req.shell, req.description)
+
+
+@app.delete("/api/scripts/{script_id}")
+def delete_script(script_id: str, user: dict = Depends(auth.current_user)):
+    script = db.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    auth.require_org(user, script["org_id"])
+    db.delete_script(script_id)
+    return {"status": "deleted"}
+
+
+@app.post("/api/scripts/{script_id}/run")
+async def run_script(script_id: str, req: ScriptRunRequest,
+                     user: dict = Depends(auth.current_user)):
+    script = db.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    auth.require_org(user, script["org_id"])
+    dev = _device_for_user(req.device_id, user)
+    if dev["org_id"] != script["org_id"]:
+        raise HTTPException(status_code=400, detail="Device is in a different organisation")
+    if not manager.is_online(req.device_id):
+        raise HTTPException(status_code=409, detail="Device offline")
+    run_id = db.create_run(script["org_id"], req.device_id, script["name"], script_id)
+    try:
+        res = await manager.request(req.device_id, {
+            "type": "script_run", "content": script["content"],
+            "shell": script["shell"], "timeout": req.timeout},
+            timeout=req.timeout + 10)
+    except Exception as exc:
+        db.finish_run(run_id, "failed", None, str(exc))
+        raise HTTPException(status_code=504, detail=str(exc))
+    code = res.get("code")
+    db.finish_run(run_id, "ok" if code == 0 else "failed", code, res.get("output", ""))
+    return {"run_id": run_id, "exit_code": code, "output": res.get("output", ""),
+            "status": "ok" if code == 0 else "failed"}
+
+
+@app.get("/api/orgs/{org_id}/runs")
+def list_runs(org_id: str, device_id: str | None = None,
+              user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return db.list_runs(org_id, device_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -635,7 +719,7 @@ def index(request: Request):
         if not data:
             return RedirectResponse("/auth/login")
         # Enforce 2FA enrolment for local accounts when the policy is on.
-        if auth.AUTH_MODE == "local" and \
+        if auth.LOCAL_ENABLED and \
                 os.environ.get("RMM_ENFORCE_2FA", "").lower() in ("1", "true", "yes"):
             u = db.get_user(data.get("email", ""))
             if u and not u.get("totp_enabled"):
@@ -672,11 +756,12 @@ async def do_setup(request: Request):
 
     public = (data.get("public_url") or "").strip().rstrip("/")
     tls_mode = (data.get("tls_mode") or "self-signed").strip().lower()
-    auth_mode = (data.get("auth_mode") or "dev").strip().lower()
+    auth_mode = (data.get("auth_mode") or "hybrid").strip().lower()
+    # Only two modes are offered now; legacy values fold into hybrid.
+    if auth_mode != "dev":
+        auth_mode = "hybrid"
     if tls_mode not in ("self-signed", "file", "proxy"):
         raise HTTPException(status_code=400, detail="Invalid TLS mode")
-    if auth_mode not in ("dev", "sso", "local"):
-        raise HTTPException(status_code=400, detail="Invalid auth mode")
 
     settings: dict[str, str] = {"RMM_TLS_MODE": tls_mode, "RMM_AUTH_MODE": auth_mode}
     if public:
@@ -694,19 +779,20 @@ async def do_setup(request: Request):
     admins = [e.strip().lower() for e in (data.get("admins") or []) if e.strip()]
     accounts = data.get("accounts") or []
 
-    if auth_mode == "sso":
-        for src, env in (("tenant_id", "MS_TENANT_ID"), ("client_id", "MS_CLIENT_ID"),
-                         ("client_secret", "MS_CLIENT_SECRET")):
-            val = (data.get(src) or "").strip()
-            if not val:
-                raise HTTPException(status_code=400, detail=f"Missing {src} for SSO")
-            settings[env] = val
-        settings["MS_REDIRECT_URI"] = (data.get("redirect_uri") or "").strip() or \
-            (public + "/auth/callback" if public else "")
-        settings["RMM_DEV_AUTH"] = "0"
-    elif auth_mode == "local":
+    if auth_mode == "hybrid":
         if not accounts:
-            raise HTTPException(status_code=400, detail="At least one local account is required")
+            raise HTTPException(status_code=400, detail="Create at least one local account")
+        # Microsoft 365 SSO is optional in hybrid — store it only if provided.
+        if (data.get("client_id") or "").strip():
+            for src, env in (("tenant_id", "MS_TENANT_ID"), ("client_id", "MS_CLIENT_ID"),
+                             ("client_secret", "MS_CLIENT_SECRET")):
+                val = (data.get(src) or "").strip()
+                if not val:
+                    raise HTTPException(status_code=400,
+                                        detail=f"Missing {src} for Microsoft 365 SSO")
+                settings[env] = val
+            settings["MS_REDIRECT_URI"] = (data.get("redirect_uri") or "").strip() or \
+                (public + "/auth/callback" if public else "")
         settings["RMM_DEV_AUTH"] = "0"
     else:  # dev
         settings["RMM_DEV_AUTH"] = "1"
@@ -734,7 +820,8 @@ async def do_setup(request: Request):
         pw = acc.get("password") or ""
         if not uname or len(pw) < 8:
             continue
-        db.create_user(uname, pw, is_admin=bool(acc.get("admin") or i == 0))
+        db.create_user(uname, pw, is_admin=bool(acc.get("admin") or i == 0),
+                       email=(acc.get("email") or "").strip().lower() or None)
 
     # Map bootstrap admin emails onto the default org.
     org = db.get_org("default") or (db.list_orgs() or [None])[0]
@@ -746,7 +833,7 @@ async def do_setup(request: Request):
 
     # Auth/TLS/secret changes only take full effect on restart (read at import).
     restart_recommended = bool(
-        auth_mode in ("sso", "local") or new_secret or explicit_secret
+        auth_mode == "hybrid" or new_secret or explicit_secret
         or tls_mode != BOOT_TLS_MODE)
     return {"ok": True, "restart_recommended": restart_recommended}
 
@@ -796,7 +883,7 @@ def list_app_users(user: dict = Depends(auth.current_user)):
 
 @app.get("/api/account")
 def account(user: dict = Depends(auth.current_user)):
-    local = db.get_user(user["email"]) if auth.AUTH_MODE == "local" else None
+    local = db.get_user(user["email"]) if auth.LOCAL_ENABLED else None
     return {
         "identity": user["email"],
         "email": local["email"] if local and local.get("email") else user["email"],
@@ -812,11 +899,11 @@ def account(user: dict = Depends(auth.current_user)):
 
 
 def _local_self(user: dict) -> dict:
-    if auth.AUTH_MODE != "local":
+    if not auth.LOCAL_ENABLED:
         raise HTTPException(status_code=400, detail="Two-factor applies to local accounts only")
     u = db.get_user(user["email"])
     if not u:
-        raise HTTPException(status_code=404, detail="No local account")
+        raise HTTPException(status_code=404, detail="No local account for this identity")
     return u
 
 
@@ -867,9 +954,23 @@ async def twofa_disable(request: Request, user: dict = Depends(auth.current_user
     return {"ok": True}
 
 
+@app.post("/api/account/email")
+async def set_account_email(request: Request, user: dict = Depends(auth.current_user)):
+    """Set a local account's email — used to link it to a Microsoft 365 identity."""
+    u = _local_self(user)
+    email = ((await request.json()).get("email") or "").strip().lower()
+    if email and "@" not in email:
+        raise HTTPException(status_code=400, detail="Enter a valid email address")
+    other = db.get_user_by_email(email) if email else None
+    if other and other["username"] != u["username"]:
+        raise HTTPException(status_code=409, detail="Another account already uses that email")
+    db.set_user_email(u["username"], email)
+    return {"ok": True, "email": email}
+
+
 @app.post("/api/account/password")
 async def change_password(request: Request, user: dict = Depends(auth.current_user)):
-    if auth.AUTH_MODE != "local":
+    if not auth.LOCAL_ENABLED:
         raise HTTPException(status_code=400, detail="Password is managed by your identity provider")
     u = db.get_user(user["email"])
     if not u:

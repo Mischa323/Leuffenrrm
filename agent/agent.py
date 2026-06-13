@@ -187,6 +187,10 @@ class Agent:
         elif t == "shell_run":
             res = await handlers.run_command(msg.get("cmd", ""))
             await self._ack(rid, res)
+        elif t == "script_run":
+            res = await handlers.run_script(msg.get("content", ""), msg.get("shell", "shell"),
+                                            float(msg.get("timeout", 120)))
+            await self._ack(rid, res)
         elif t == "shell_input":
             res = await handlers.run_command(msg.get("data", ""))
             await self._send({"type": "shell_output", "data": res["output"],

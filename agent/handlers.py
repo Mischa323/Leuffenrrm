@@ -28,6 +28,39 @@ async def run_command(cmd: str, timeout: float = 60) -> dict:
         return {"output": f"error: {exc}", "code": 1}
 
 
+async def run_script(content: str, shell: str = "shell", timeout: float = 120) -> dict:
+    """Write a script to a temp file and execute it with the chosen interpreter."""
+    import tempfile
+    suffix = ".ps1" if shell == "powershell" else (".bat" if (IS_WIN and shell == "cmd") else ".sh")
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8") as f:
+            f.write(content)
+            path = f.name
+        if shell == "powershell":
+            argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path]
+        elif IS_WIN:
+            argv = ["cmd", "/c", path]
+        else:
+            os.chmod(path, 0o700)
+            argv = ["/bin/sh", path]
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return {"output": out.decode(errors="replace"), "code": proc.returncode}
+    except asyncio.TimeoutError:
+        return {"output": "(timed out)", "code": 124}
+    except Exception as exc:
+        return {"output": f"error: {exc}", "code": 1}
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 def power_action(action: str) -> dict:
     """Perform a power/session action for the host OS."""
     try:

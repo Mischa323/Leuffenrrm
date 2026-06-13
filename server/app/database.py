@@ -160,6 +160,32 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
     used       INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL
 );
+
+-- Phase 2: scripts library + run history.
+CREATE TABLE IF NOT EXISTS scripts (
+    id          TEXT PRIMARY KEY,
+    org_id      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT,
+    shell       TEXT NOT NULL DEFAULT 'shell',  -- 'shell' | 'powershell'
+    content     TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS script_runs (
+    id          TEXT PRIMARY KEY,
+    script_id   TEXT,
+    org_id      TEXT NOT NULL,
+    device_id   TEXT NOT NULL,
+    name        TEXT,
+    status      TEXT NOT NULL,                  -- 'running' | 'ok' | 'failed'
+    exit_code   INTEGER,
+    output      TEXT,
+    created_at  REAL NOT NULL,
+    finished_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_runs_device ON script_runs(device_id, created_at);
 """
 
 # Default monitoring policy used to seed a new org's standard. Overridable per
@@ -244,6 +270,13 @@ def get_user(username: str) -> dict | None:
     return dict(row) if row else None
 
 
+def get_user_by_email(email: str) -> dict | None:
+    if not email:
+        return None
+    row = get_conn().execute("SELECT * FROM users WHERE lower(email)=?", (email.lower(),)).fetchone()
+    return dict(row) if row else None
+
+
 def list_users() -> list[dict]:
     return [dict(r) for r in get_conn().execute(
         "SELECT username, email, display_name, is_admin, created_at, last_active "
@@ -254,6 +287,12 @@ def set_user_password(username: str, password: str) -> None:
     with write() as conn:
         conn.execute("UPDATE users SET pw_hash=? WHERE username=?",
                      (_hash_pw(password), username.lower()))
+
+
+def set_user_email(username: str, email: str | None) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET email=? WHERE username=?",
+                     ((email or "").lower() or None, username.lower()))
 
 
 def touch_user(username: str) -> None:
@@ -329,6 +368,68 @@ def recovery_codes_remaining(username: str) -> int:
 def clear_recovery_codes(username: str) -> None:
     with write() as conn:
         conn.execute("DELETE FROM recovery_codes WHERE username=?", (username.lower(),))
+
+
+# --------------------------------------------------------------------------- #
+# Scripts (Phase 2)
+# --------------------------------------------------------------------------- #
+def create_script(org_id: str, name: str, content: str, shell: str = "shell",
+                  description: str | None = None) -> dict:
+    sid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO scripts (id, org_id, name, description, shell, content, created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (sid, org_id, name, description, shell, content, _now()),
+        )
+    return get_script(sid)
+
+
+def get_script(script_id: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM scripts WHERE id=?", (script_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_scripts(org_id: str) -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM scripts WHERE org_id=? ORDER BY name", (org_id,)).fetchall()]
+
+
+def delete_script(script_id: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM scripts WHERE id=?", (script_id,))
+
+
+def create_run(org_id: str, device_id: str, name: str, script_id: str | None = None) -> str:
+    rid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO script_runs (id, script_id, org_id, device_id, name, status, created_at) "
+            "VALUES (?,?,?,?,?,'running',?)",
+            (rid, script_id, org_id, device_id, name, _now()),
+        )
+    return rid
+
+
+def finish_run(run_id: str, status: str, exit_code: int | None, output: str) -> None:
+    with write() as conn:
+        conn.execute(
+            "UPDATE script_runs SET status=?, exit_code=?, output=?, finished_at=? WHERE id=?",
+            (status, exit_code, output, _now(), run_id),
+        )
+
+
+def list_runs(org_id: str, device_id: str | None = None, limit: int = 50) -> list[dict]:
+    conn = get_conn()
+    if device_id:
+        rows = conn.execute(
+            "SELECT * FROM script_runs WHERE org_id=? AND device_id=? ORDER BY created_at DESC LIMIT ?",
+            (org_id, device_id, limit)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM script_runs WHERE org_id=? ORDER BY created_at DESC LIMIT ?",
+            (org_id, limit)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def init_db() -> None:

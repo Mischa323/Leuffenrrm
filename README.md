@@ -50,8 +50,9 @@ taken to a **setup wizard** where you enter:
 - **Public URL** — what agents/browsers use to reach the server (baked into installers).
 - **Administrator email** — the global admin.
 - **HTTPS / TLS** — self-signed (default), your own cert files, or behind a reverse proxy.
-- **Sign-in** — *Dev mode* (no login, fastest), *Local accounts* (username/password,
-  PBKDF2-hashed on this server), or *Microsoft 365 SSO*.
+- **Sign-in** — *Local + Microsoft 365* (default): username/password accounts
+  (PBKDF2-hashed) plus **optional** Microsoft 365 SSO, matched by email. Or
+  *Dev mode* (no login, evaluation only).
 
 Settings are saved to the `/data` volume. Some (SSO, TLS, session secret) take
 effect after a quick `docker compose restart`. A **Default** organisation is
@@ -251,7 +252,7 @@ Explicit environment variables always take precedence over wizard-saved values.
 |---|---|---|
 | `RMM_API_KEY` | *(random)* | Enrollment key for the seeded *Default* org |
 | `RMM_SKIP_SETUP` | `0` | Skip the first-run setup wizard |
-| `RMM_AUTH_MODE` | `dev`/`sso` | Sign-in mode: `dev` \| `local` \| `sso` |
+| `RMM_AUTH_MODE` | `hybrid` | Sign-in: `hybrid` (local + optional M365, default) \| `dev` |
 | `RMM_PUBLIC_URL` | `https://localhost:8000` | Baked into agent downloads / SSO |
 | `RMM_TLS_MODE` | `self-signed` | `self-signed` \| `file` \| `proxy` |
 | `RMM_TLS_CERT` / `RMM_TLS_KEY` | `<data>/tls/*` | Cert/key paths (self-signed/file) |

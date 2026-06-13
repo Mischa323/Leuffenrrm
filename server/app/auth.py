@@ -30,17 +30,38 @@ BOOTSTRAP_ADMINS = {
     e.strip().lower() for e in os.environ.get("RMM_BOOTSTRAP_ADMIN", "").split(",") if e.strip()
 }
 
-# Resolve the sign-in mode: dev (auto-login) | sso (Microsoft 365) | local (accounts).
+# Sign-in mode — only two are offered now:
+#   hybrid (default) — local password accounts + optional Microsoft 365 SSO
+#   dev              — auto-login a bootstrap admin (evaluation only)
+# Legacy values (sso/local) fold into hybrid.
 _explicit_mode = os.environ.get("RMM_AUTH_MODE", "").lower()
-if os.environ.get("RMM_DEV_AUTH", "").lower() in ("1", "true", "yes"):
+if os.environ.get("RMM_DEV_AUTH", "").lower() in ("1", "true", "yes") or _explicit_mode == "dev":
     AUTH_MODE = "dev"
-elif _explicit_mode in ("dev", "sso", "local"):
-    AUTH_MODE = _explicit_mode
 else:
-    AUTH_MODE = "sso" if CLIENT_ID else "dev"
+    AUTH_MODE = "hybrid"
 
 DEV_AUTH = AUTH_MODE == "dev"
+LOCAL_ENABLED = AUTH_MODE == "hybrid"
+SSO_ENABLED = AUTH_MODE == "hybrid" and bool(CLIENT_ID)
+
+# Safety: a hybrid server with neither local accounts nor SSO configured would
+# lock everyone out — fall back to dev login until it's set up.
+if AUTH_MODE == "hybrid" and not SSO_ENABLED:
+    try:
+        _has_users = db.get_conn().execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+    except Exception:
+        _has_users = False
+    if not _has_users:
+        AUTH_MODE, DEV_AUTH, LOCAL_ENABLED = "dev", True, False
+
 DEV_USER = (next(iter(BOOTSTRAP_ADMINS)) if BOOTSTRAP_ADMINS else "admin@localhost")
+
+
+def resolve_sso_identity(email: str) -> str:
+    """Map a Microsoft 365 email onto a local account (by email) when one exists,
+    so the same person has one identity and the local account's admin rights."""
+    u = db.get_user_by_email(email)
+    return u["username"] if u else email.lower()
 
 # Mark session cookies Secure unless explicitly disabled (TLS is on by default).
 # Auto-off for plain-HTTP proxy mode without TLS termination.

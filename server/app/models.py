@@ -40,3 +40,15 @@ class OrgUserRequest(BaseModel):
 
 class ShellRequest(BaseModel):
     cmd: str
+
+
+class ScriptRequest(BaseModel):
+    name: str
+    content: str
+    shell: str = "shell"          # shell | powershell
+    description: str | None = None
+
+
+class ScriptRunRequest(BaseModel):
+    device_id: str
+    timeout: float = 120
