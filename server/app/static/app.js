@@ -74,6 +74,7 @@ async function init() {
   document.querySelectorAll(".nav button").forEach((b) => b.onclick = () => selectTab(b.dataset.tab));
   document.querySelectorAll(".dtabs button").forEach((b) => b.onclick = () => selectDrawerTab(b.dataset.dtab));
   $("term-form").onsubmit = onTerm;
+  setupScriptModal();
   await showGlobal();
 }
 
@@ -187,6 +188,12 @@ function selectTab(tab) {
 }
 
 /* ---------- scripts (Phase 2) ---------- */
+const SCRIPT_CATEGORIES = ["Script", "Monitoring", "Installation", "Maintenance", "Security", "Diagnostics", "Network", "Other"];
+const CATEGORY_TONE = { Monitoring: "var(--accent)", Installation: "var(--good)", Maintenance: "var(--warn)", Security: "var(--bad)", Diagnostics: "#06b6d4", Network: "#8b5cf6" };
+function catBadge(cat) {
+  const c = CATEGORY_TONE[cat] || "var(--text-dim)";
+  return `<span class="badge" style="color:${c};background:color-mix(in srgb,${c} 14%,transparent);border:1px solid color-mix(in srgb,${c} 30%,transparent)">${escapeHtml(cat || "Script")}</span>`;
+}
 function renderScripts() {
   const scripts = state.cache.scripts || [];
   $("scripts-sub").textContent = `${scripts.length} script${scripts.length === 1 ? "" : "s"}`;
@@ -199,7 +206,8 @@ function renderScripts() {
     card.innerHTML = `
       <div style="display:flex;align-items:flex-start;gap:11px">
         <div class="os-ico">${ICON.terminal}</div>
-        <div style="flex:1"><div style="font-weight:650">${escapeHtml(s.name)}</div><div class="h-sub">${s.shell === "powershell" ? "PowerShell" : "Shell"}${s.description ? " · " + escapeHtml(s.description) : ""}</div></div>
+        <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px">${escapeHtml(s.name)} ${catBadge(s.category)}</div><div class="h-sub">${s.shell === "powershell" ? "PowerShell" : "Shell"}${s.description ? " · " + escapeHtml(s.description) : ""}</div></div>
+        <button class="btn ghost sm edit">${ICON.terminal} Edit</button>
         <button class="btn ghost sm del">${ICON.trash}</button>
       </div>
       <div class="field" style="margin-top:12px">
@@ -207,6 +215,7 @@ function renderScripts() {
         <button class="btn run" ${online.length ? "" : "disabled"}>${ICON.power} Run</button>
       </div>
       <pre class="out hidden" style="margin-top:10px;background:var(--term-bg);border:1px solid var(--border);border-radius:var(--r-md);padding:12px;font-family:var(--font-mono);font-size:12.5px;max-height:260px;overflow:auto;white-space:pre-wrap"></pre>`;
+    card.querySelector(".edit").onclick = () => openScriptForm(s);
     card.querySelector(".del").onclick = async () => {
       if (!confirm("Delete script “" + s.name + "”?")) return;
       try { await api(`/api/scripts/${s.id}`, { method: "DELETE" }); toast("Script deleted"); state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`); buildNav(); renderScripts(); } catch (e) { toast(e.message); }
@@ -225,7 +234,7 @@ function renderScripts() {
     };
     body.appendChild(card);
   }
-  $("script-new").onclick = openScriptForm;
+  $("script-new").onclick = () => openScriptForm(null);
   $("sched-new").onclick = openScheduleForm;
   $("runs-refresh").onclick = loadRuns;
   renderSchedules();
@@ -290,14 +299,50 @@ async function openScheduleForm() {
   else return toast("Couldn't parse the cadence");
   try { await api(`/api/orgs/${state.org}/schedules`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("Schedule created"); state.cache.schedules = await api(`/api/orgs/${state.org}/schedules`); renderSchedules(); } catch (e) { toast(e.message); }
 }
-function openScriptForm() {
-  const name = prompt("Script name?"); if (!name) return;
-  const shell = confirm("OK = Shell (Linux/macOS)\nCancel = PowerShell (Windows)") ? "shell" : "powershell";
-  const content = prompt(`Script body (${shell}):`, shell === "shell" ? "#!/bin/sh\nuptime" : "Get-Date");
-  if (content == null) return;
-  api(`/api/orgs/${state.org}/scripts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, shell, content }) })
-    .then(async () => { toast("Script created"); state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`); buildNav(); renderScripts(); })
-    .catch((e) => toast(e.message));
+let editingScriptId = null;
+function setupScriptModal() {
+  $("sm-close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
+  $("sm-category").innerHTML = SCRIPT_CATEGORIES.map((c) => `<option value="${c}">${c}</option>`).join("");
+  const close = () => $("script-modal").classList.add("hidden");
+  $("sm-close").onclick = close;
+  $("sm-cancel").onclick = close;
+  $("script-modal").addEventListener("click", (e) => { if (e.target === $("script-modal")) close(); });
+  // Tab inserts two spaces in the code editor instead of leaving the field.
+  $("sm-code").addEventListener("keydown", (e) => {
+    if (e.key === "Tab") { e.preventDefault(); const t = e.target, s = t.selectionStart; t.value = t.value.slice(0, s) + "  " + t.value.slice(t.selectionEnd); t.selectionStart = t.selectionEnd = s + 2; }
+  });
+  $("sm-save").onclick = saveScript;
+}
+function openScriptForm(existing) {
+  editingScriptId = existing ? existing.id : null;
+  $("sm-title").textContent = existing ? "Edit script" : "New script";
+  $("sm-name").value = existing ? existing.name : "";
+  $("sm-category").value = (existing && existing.category) || "Script";
+  $("sm-shell").value = (existing && existing.shell) || "shell";
+  $("sm-desc").value = (existing && existing.description) || "";
+  $("sm-code").value = existing ? existing.content : "#!/bin/sh\n";
+  $("sm-save").textContent = existing ? "Save changes" : "Create script";
+  $("script-modal").classList.remove("hidden");
+  setTimeout(() => $("sm-name").focus(), 30);
+}
+async function saveScript() {
+  const body = {
+    name: $("sm-name").value.trim(),
+    category: $("sm-category").value,
+    shell: $("sm-shell").value,
+    description: $("sm-desc").value.trim(),
+    content: $("sm-code").value,
+  };
+  if (!body.name) { $("sm-name").focus(); return toast("Give the script a name"); }
+  if (!body.content.trim()) { $("sm-code").focus(); return toast("The script body is empty"); }
+  try {
+    if (editingScriptId) await api(`/api/scripts/${editingScriptId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    else await api(`/api/orgs/${state.org}/scripts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("script-modal").classList.add("hidden");
+    toast(editingScriptId ? "Script saved" : "Script created");
+    state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`);
+    buildNav(); renderScripts();
+  } catch (e) { toast(e.message); }
 }
 async function loadRuns() {
   let runs = [];
@@ -521,5 +566,9 @@ function escapeHtml(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp
 
 function clearRefresh() { if (state.refresh) { clearInterval(state.refresh); state.refresh = null; } }
 
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("drawer").classList.contains("hidden")) closeDrawer(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("script-modal").classList.contains("hidden")) $("script-modal").classList.add("hidden");
+  else if (!$("drawer").classList.contains("hidden")) closeDrawer();
+});
 init().catch((e) => { document.body.innerHTML = `<div style="padding:48px;font-family:sans-serif;color:#e9eef6;background:#0a0c11;min-height:100vh"><h2>Couldn't load the dashboard</h2><p style="color:#97a3b4">${e.message}</p><p><a href="/auth/login" style="color:#3b82f6">Sign in →</a></p></div>`; });

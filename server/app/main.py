@@ -355,7 +355,19 @@ def create_script(org_id: str, req: ScriptRequest, user: dict = Depends(auth.cur
     auth.require_org(user, org_id)
     if req.shell not in ("shell", "powershell"):
         raise HTTPException(status_code=400, detail="shell must be 'shell' or 'powershell'")
-    return db.create_script(org_id, req.name, req.content, req.shell, req.description)
+    return db.create_script(org_id, req.name, req.content, req.shell, req.description, req.category)
+
+
+@app.put("/api/scripts/{script_id}")
+def update_script(script_id: str, req: ScriptRequest, user: dict = Depends(auth.current_user)):
+    script = db.get_script(script_id)
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    auth.require_org(user, script["org_id"])
+    if req.shell not in ("shell", "powershell"):
+        raise HTTPException(status_code=400, detail="shell must be 'shell' or 'powershell'")
+    return db.update_script(script_id, req.name, req.content, req.shell,
+                            req.description, req.category)
 
 
 @app.delete("/api/scripts/{script_id}")

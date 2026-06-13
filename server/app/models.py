@@ -47,6 +47,7 @@ class ScriptRequest(BaseModel):
     content: str
     shell: str = "shell"          # shell | powershell
     description: str | None = None
+    category: str = "Script"      # Monitoring | Installation | Maintenance | ...
 
 
 class ScriptRunRequest(BaseModel):

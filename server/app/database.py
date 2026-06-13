@@ -392,15 +392,25 @@ def clear_recovery_codes(username: str) -> None:
 # Scripts (Phase 2)
 # --------------------------------------------------------------------------- #
 def create_script(org_id: str, name: str, content: str, shell: str = "shell",
-                  description: str | None = None) -> dict:
+                  description: str | None = None, category: str = "Script") -> dict:
     sid = uuid.uuid4().hex
     with write() as conn:
         conn.execute(
-            "INSERT INTO scripts (id, org_id, name, description, shell, content, created_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (sid, org_id, name, description, shell, content, _now()),
+            "INSERT INTO scripts (id, org_id, name, description, shell, content, category, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (sid, org_id, name, description, shell, content, category, _now()),
         )
     return get_script(sid)
+
+
+def update_script(script_id: str, name: str, content: str, shell: str,
+                  description: str | None, category: str) -> dict:
+    with write() as conn:
+        conn.execute(
+            "UPDATE scripts SET name=?, content=?, shell=?, description=?, category=? WHERE id=?",
+            (name, content, shell, description, category, script_id),
+        )
+    return get_script(script_id)
 
 
 def get_script(script_id: str) -> dict | None:
@@ -516,6 +526,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col, ddl in (("totp_secret", "TEXT"), ("totp_enabled", "INTEGER NOT NULL DEFAULT 0")):
         if col not in cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+    scols = {r[1] for r in conn.execute("PRAGMA table_info(scripts)")}
+    if "category" not in scols:
+        conn.execute("ALTER TABLE scripts ADD COLUMN category TEXT DEFAULT 'Script'")
 
 
 def get_conn() -> sqlite3.Connection:
