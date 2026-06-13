@@ -475,8 +475,27 @@ function renderDownloads() {
       <div class="code"><button class="btn ghost sm copy" data-c="iwr ${base}/api/orgs/${state.org}/install.ps1 -UseBasicParsing | iex">${ICON.copy} Copy</button>iwr ${base}/api/orgs/${state.org}/install.ps1 -UseBasicParsing | iex</div></div>
     <div class="dl-block"><div class="lab">${ICON.download} Manual install</div>
       <div class="code">Download: ${base}/api/orgs/${state.org}/agent.zip
-Run: python agent.py  <span style="color:#5f7088"># config bundled inside</span></div></div>`;
+Run: python agent.py  <span style="color:#5f7088"># config bundled inside</span></div></div>
+    <div class="dl-block"><div class="lab">${ICON.key} Enrollment key</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <code id="enroll-key" class="mono" style="background:var(--surface-3);border:1px solid var(--border);border-radius:var(--r-sm);padding:7px 10px;font-size:13px">••••••••</code>
+        <button class="btn ghost sm" id="key-show">Show</button>
+        <button class="btn ghost sm" id="key-rotate">${ICON.refresh} Rotate</button>
+      </div>
+      <div class="h-sub" style="margin-top:8px">Used by new installers. Rotating issues a new key — already-installed agents keep working.</div></div>`;
   $("downloads-body").querySelectorAll(".copy").forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.c); toast("Copied to clipboard"); });
+  let keyShown = false, keyVal = null;
+  const loadKey = async () => { if (keyVal == null) keyVal = (await api(`/api/orgs/${state.org}/enroll-key`)).enroll_key; return keyVal; };
+  $("key-show").onclick = async () => {
+    keyShown = !keyShown;
+    $("enroll-key").textContent = keyShown ? await loadKey() : "••••••••";
+    $("key-show").textContent = keyShown ? "Hide" : "Show";
+  };
+  $("key-rotate").onclick = async () => {
+    if (!confirm("Rotate the enrollment key? New installers will use the new key; existing agents are unaffected.")) return;
+    try { keyVal = (await api(`/api/orgs/${state.org}/rotate-key`, { method: "POST" })).enroll_key; keyShown = true; $("enroll-key").textContent = keyVal; $("key-show").textContent = "Hide"; toast("Enrollment key rotated"); }
+    catch (e) { toast(e.message); }
+  };
 }
 
 /* ---------- monitors (policies) ---------- */

@@ -712,6 +712,14 @@ def get_org_by_key(enroll_key: str) -> dict | None:
     return dict(row) if row else None
 
 
+def rotate_org_key(org_id: str) -> str:
+    """Generate a new enrolment key for new installs (existing agents keep working)."""
+    new_key = secrets.token_urlsafe(24)
+    with write() as conn:
+        conn.execute("UPDATE organizations SET enroll_key=? WHERE id=?", (new_key, org_id))
+    return new_key
+
+
 def list_orgs() -> list[dict]:
     return [dict(r) for r in get_conn().execute(
         "SELECT * FROM organizations ORDER BY name").fetchall()]
