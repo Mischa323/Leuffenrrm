@@ -13,11 +13,15 @@
   startup as SYSTEM. Uninstall removes the task.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="Leuffen RMM Agent" Manufacturer="Leuffen"
+  <Package Name="Leuffen RMM Agent" Manufacturer="Leuffen IT"
            Version="1.0.0.0" UpgradeCode="6f9a2c14-7d3e-4b8a-9d21-2b6e5a0c1f77"
            Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer version of the Leuffen RMM agent is already installed." />
     <MediaTemplate EmbedCab="yes" />
+
+    <!-- Publisher / about info shown in Programs &amp; Features. -->
+    <Property Id="ARPURLINFOABOUT" Value="https://leuffen.it" />
+    <Property Id="ARPHELPLINK" Value="https://leuffen.it" />
 
     <!-- Per-install configuration. -->
     <Property Id="RMM_SERVER_URL" Secure="yes" />
