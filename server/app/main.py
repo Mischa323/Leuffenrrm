@@ -1026,6 +1026,31 @@ Write-Host "Leuffen RMM agent installed."
 MSI_URL = os.environ.get(
     "RMM_MSI_URL",
     "https://github.com/Mischa323/Leuffenrrm/releases/latest/download/leuffen-rmm-agent.msi")
+GH_REPO = os.environ.get("RMM_GH_REPO", "Mischa323/Leuffenrrm")
+_release_cache: dict = {"t": 0.0, "data": None}
+
+
+@app.get("/api/agent-release")
+async def agent_release(user: dict = Depends(auth.current_user)):
+    """Latest published Windows agent build (name/version, size, date) for the UI."""
+    if _release_cache["data"] and time.time() - _release_cache["t"] < 300:
+        return _release_cache["data"]
+    import httpx
+    out = {"available": False}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(f"https://api.github.com/repos/{GH_REPO}/releases/latest",
+                                 headers={"Accept": "application/vnd.github+json"})
+        if r.status_code == 200:
+            d = r.json()
+            asset = next((a for a in d.get("assets", []) if a["name"].endswith(".msi")), None)
+            out = {"available": bool(asset), "name": d.get("name") or d.get("tag_name"),
+                   "tag": d.get("tag_name"), "published_at": d.get("published_at"),
+                   "size": asset["size"] if asset else None}
+    except Exception:
+        pass
+    _release_cache.update(t=time.time(), data=out)
+    return out
 
 
 @app.get("/api/orgs/{org_id}/install.msi")

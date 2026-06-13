@@ -471,8 +471,13 @@ async function renderDownloads() {
   let info = { enroll_key: "<enrollment-key>", insecure_tls: location.protocol === "https:" };
   try { info = await api(`/api/orgs/${state.org}/enroll-key`); } catch {}
   const msiCmd = (key) => `msiexec /i leuffen-rmm-agent.msi /qn RMM_SERVER_URL=${base} RMM_API_KEY=${key} RMM_INSECURE_TLS=${info.insecure_tls ? 1 : 0}`;
+  let rel = { available: false };
+  try { rel = await api(`/api/agent-release`); } catch {}
+  const relLabel = rel.available
+    ? `<span class="badge ok" style="margin-left:8px">${escapeHtml(rel.name || rel.tag || "latest")}</span>${rel.size ? ` <span class="h-sub">${(rel.size / 1048576).toFixed(1)} MB${rel.published_at ? " · " + new Date(rel.published_at).toLocaleDateString() : ""}</span>` : ""}`
+    : `<span class="badge na" style="margin-left:8px">no build published yet</span>`;
   $("downloads-body").innerHTML = `
-    <div class="dl-block"><div class="lab">${ICON.windows} Windows — MSI installer</div>
+    <div class="dl-block"><div class="lab">${ICON.windows} Windows — MSI installer ${relLabel}</div>
       <div style="margin:6px 0 8px"><a class="btn sm" href="${base}/api/orgs/${state.org}/install.msi">${ICON.download} Download MSI</a></div>
       <div class="code"><button class="btn ghost sm copy" data-c="${msiCmd(info.enroll_key)}">${ICON.copy} Copy</button>${msiCmd("&lt;enrollment-key&gt;")}</div>
       <div class="h-sub" style="margin-top:6px">Silent install as SYSTEM; runs at startup. Download the MSI, then run the command (admin). Copy includes the key.</div></div>
