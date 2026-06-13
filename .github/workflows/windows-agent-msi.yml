@@ -83,6 +83,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'v1.0.0' }}
-          name: Leuffen RMM ${{ github.ref_type == 'tag' && github.ref_name || 'v1.0.0' }}
+          # Release name carries the actual MSI version so the dashboard can show it.
+          name: Leuffen RMM Agent ${{ github.ref_type == 'tag' && github.ref_name || format('1.0.{0}.0', github.run_number) }}
           files: leuffen-rmm-agent.msi
           fail_on_unmatched_files: true
