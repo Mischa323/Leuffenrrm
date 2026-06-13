@@ -12,6 +12,7 @@ import ipaddress
 import logging
 import os
 import secrets
+import time
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
@@ -21,8 +22,8 @@ from . import alerts, auth, database as db, totp
 from . import wol as wol_local
 from .manager import manager
 from .models import (GroupRequest, MoveDeviceRequest, OrgRequest, OrgUserRequest,
-                     PowerRequest, ScriptRequest, ScriptRunRequest, ShellRequest,
-                     SubnetRequest, WakeRequest)
+                     PowerRequest, ScheduleRequest, ScriptRequest, ScriptRunRequest,
+                     ShellRequest, SubnetRequest, WakeRequest)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
@@ -60,6 +61,7 @@ async def _startup() -> None:
     _ensure_default_org()
     asyncio.create_task(_alert_loop())
     asyncio.create_task(_prune_loop())
+    asyncio.create_task(_schedule_loop())
 
 
 def _resolve_setup_state() -> None:
@@ -104,6 +106,21 @@ async def _prune_loop() -> None:
             db.prune_metrics(METRIC_RETENTION)
         except Exception:  # pragma: no cover
             pass
+
+
+async def _schedule_loop() -> None:
+    """Run scheduled jobs that have come due, then compute their next run."""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            for sched in db.due_schedules():
+                try:
+                    await _execute_schedule(sched)
+                except Exception as exc:
+                    log.warning("schedule %s failed: %s", sched["id"], exc)
+                db.mark_schedule_ran(sched["id"], _next_run(sched))
+        except Exception as exc:  # pragma: no cover
+            log.warning("schedule loop error: %s", exc)
 
 
 # --------------------------------------------------------------------------- #
@@ -351,6 +368,22 @@ def delete_script(script_id: str, user: dict = Depends(auth.current_user)):
     return {"status": "deleted"}
 
 
+async def _exec_script_on_device(script: dict, device_id: str, timeout: float = 120) -> dict:
+    """Run a script on one device, recording a run row. Raises on transport error."""
+    run_id = db.create_run(script["org_id"], device_id, script["name"], script["id"])
+    try:
+        res = await manager.request(device_id, {
+            "type": "script_run", "content": script["content"],
+            "shell": script["shell"], "timeout": timeout}, timeout=timeout + 10)
+    except Exception as exc:
+        db.finish_run(run_id, "failed", None, str(exc))
+        raise
+    code = res.get("code")
+    db.finish_run(run_id, "ok" if code == 0 else "failed", code, res.get("output", ""))
+    return {"run_id": run_id, "exit_code": code, "output": res.get("output", ""),
+            "status": "ok" if code == 0 else "failed"}
+
+
 @app.post("/api/scripts/{script_id}/run")
 async def run_script(script_id: str, req: ScriptRunRequest,
                      user: dict = Depends(auth.current_user)):
@@ -363,19 +396,10 @@ async def run_script(script_id: str, req: ScriptRunRequest,
         raise HTTPException(status_code=400, detail="Device is in a different organisation")
     if not manager.is_online(req.device_id):
         raise HTTPException(status_code=409, detail="Device offline")
-    run_id = db.create_run(script["org_id"], req.device_id, script["name"], script_id)
     try:
-        res = await manager.request(req.device_id, {
-            "type": "script_run", "content": script["content"],
-            "shell": script["shell"], "timeout": req.timeout},
-            timeout=req.timeout + 10)
+        return await _exec_script_on_device(script, req.device_id, req.timeout)
     except Exception as exc:
-        db.finish_run(run_id, "failed", None, str(exc))
         raise HTTPException(status_code=504, detail=str(exc))
-    code = res.get("code")
-    db.finish_run(run_id, "ok" if code == 0 else "failed", code, res.get("output", ""))
-    return {"run_id": run_id, "exit_code": code, "output": res.get("output", ""),
-            "status": "ok" if code == 0 else "failed"}
 
 
 @app.get("/api/orgs/{org_id}/runs")
@@ -383,6 +407,108 @@ def list_runs(org_id: str, device_id: str | None = None,
               user: dict = Depends(auth.current_user)):
     auth.require_org(user, org_id)
     return db.list_runs(org_id, device_id)
+
+
+# --------------------------------------------------------------------------- #
+# Scheduled jobs (Phase 2): run scripts on a cadence.
+# --------------------------------------------------------------------------- #
+def _next_run(sched: dict, from_ts: float | None = None) -> float | None:
+    """Compute the next run timestamp for a schedule."""
+    import datetime
+    now = from_ts if from_ts is not None else time.time()
+    if sched["trigger"] == "interval":
+        mins = max(int(sched.get("interval_minutes") or 0), 1)
+        return now + mins * 60
+    if sched["trigger"] == "daily" and sched.get("at_time"):
+        try:
+            hh, mm = (int(x) for x in str(sched["at_time"]).split(":"))
+        except ValueError:
+            return now + 86400
+        base = datetime.datetime.fromtimestamp(now)
+        nxt = base.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if nxt.timestamp() <= now:
+            nxt += datetime.timedelta(days=1)
+        return nxt.timestamp()
+    return None
+
+
+def _schedule_targets(sched: dict) -> list[str]:
+    """Resolve a schedule's online target device ids."""
+    org_id, online = sched["org_id"], manager.online_ids()
+    if sched["target_type"] == "device":
+        return [sched["target_id"]] if sched["target_id"] in online else []
+    devs = db.list_devices(org_id, sched["target_id"] if sched["target_type"] == "group" else None)
+    return [d["id"] for d in devs if d["id"] in online]
+
+
+async def _execute_schedule(sched: dict) -> None:
+    script = db.get_script(sched["script_id"])
+    if not script:
+        return
+    for device_id in _schedule_targets(sched):
+        try:
+            await _exec_script_on_device(script, device_id)
+        except Exception as exc:
+            log.warning("scheduled run on %s failed: %s", device_id, exc)
+
+
+@app.get("/api/orgs/{org_id}/schedules")
+def list_schedules(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return db.list_schedules(org_id)
+
+
+@app.post("/api/orgs/{org_id}/schedules")
+def create_schedule(org_id: str, req: ScheduleRequest, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    script = db.get_script(req.script_id)
+    if not script or script["org_id"] != org_id:
+        raise HTTPException(status_code=404, detail="Script not found")
+    if req.target_type not in ("device", "group", "all"):
+        raise HTTPException(status_code=400, detail="Invalid target type")
+    if req.trigger == "interval" and not req.interval_minutes:
+        raise HTTPException(status_code=400, detail="interval_minutes is required")
+    if req.trigger == "daily" and not req.at_time:
+        raise HTTPException(status_code=400, detail="at_time is required for a daily schedule")
+    if req.trigger not in ("interval", "daily"):
+        raise HTTPException(status_code=400, detail="Invalid trigger")
+    name = req.name or script["name"]
+    nxt = _next_run({"trigger": req.trigger, "interval_minutes": req.interval_minutes,
+                     "at_time": req.at_time})
+    return db.create_schedule(org_id, req.script_id, name, req.target_type, req.target_id,
+                              req.trigger, req.interval_minutes, req.at_time, nxt)
+
+
+@app.post("/api/schedules/{schedule_id}/toggle")
+def toggle_schedule(schedule_id: str, user: dict = Depends(auth.current_user)):
+    sched = db.get_schedule(schedule_id)
+    if not sched:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    auth.require_org(user, sched["org_id"])
+    enabled = not sched["enabled"]
+    db.set_schedule_enabled(schedule_id, enabled, _next_run(sched) if enabled else None)
+    return {"enabled": enabled}
+
+
+@app.post("/api/schedules/{schedule_id}/run")
+async def run_schedule_now(schedule_id: str, user: dict = Depends(auth.current_user)):
+    sched = db.get_schedule(schedule_id)
+    if not sched:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    auth.require_org(user, sched["org_id"])
+    targets = _schedule_targets(sched)
+    await _execute_schedule(sched)
+    return {"status": "ran", "devices": len(targets)}
+
+
+@app.delete("/api/schedules/{schedule_id}")
+def delete_schedule(schedule_id: str, user: dict = Depends(auth.current_user)):
+    sched = db.get_schedule(schedule_id)
+    if not sched:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    auth.require_org(user, sched["org_id"])
+    db.delete_schedule(schedule_id)
+    return {"status": "deleted"}
 
 
 # --------------------------------------------------------------------------- #

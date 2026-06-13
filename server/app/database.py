@@ -186,6 +186,24 @@ CREATE TABLE IF NOT EXISTS script_runs (
     finished_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_device ON script_runs(device_id, created_at);
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id               TEXT PRIMARY KEY,
+    org_id           TEXT NOT NULL,
+    script_id        TEXT NOT NULL,
+    name             TEXT,
+    target_type      TEXT NOT NULL DEFAULT 'all',   -- 'device' | 'group' | 'all'
+    target_id        TEXT,
+    trigger          TEXT NOT NULL DEFAULT 'interval', -- 'interval' | 'daily'
+    interval_minutes INTEGER,
+    at_time          TEXT,                          -- 'HH:MM' (daily)
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    last_run         REAL,
+    next_run         REAL,
+    created_at       REAL NOT NULL,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
+    FOREIGN KEY (script_id) REFERENCES scripts(id) ON DELETE CASCADE
+);
 """
 
 # Default monitoring policy used to seed a new org's standard. Overridable per
@@ -417,6 +435,54 @@ def finish_run(run_id: str, status: str, exit_code: int | None, output: str) -> 
             "UPDATE script_runs SET status=?, exit_code=?, output=?, finished_at=? WHERE id=?",
             (status, exit_code, output, _now(), run_id),
         )
+
+
+def create_schedule(org_id: str, script_id: str, name: str, target_type: str,
+                    target_id: str | None, trigger: str, interval_minutes: int | None,
+                    at_time: str | None, next_run: float) -> dict:
+    sid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute(
+            """INSERT INTO schedules (id, org_id, script_id, name, target_type, target_id,
+                   trigger, interval_minutes, at_time, enabled, next_run, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,1,?,?)""",
+            (sid, org_id, script_id, name, target_type, target_id, trigger,
+             interval_minutes, at_time, next_run, _now()),
+        )
+    return get_schedule(sid)
+
+
+def get_schedule(schedule_id: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM schedules WHERE id=?", (schedule_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_schedules(org_id: str) -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM schedules WHERE org_id=? ORDER BY created_at DESC", (org_id,)).fetchall()]
+
+
+def due_schedules() -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM schedules WHERE enabled=1 AND next_run IS NOT NULL AND next_run<=?",
+        (_now(),)).fetchall()]
+
+
+def set_schedule_enabled(schedule_id: str, enabled: bool, next_run: float | None = None) -> None:
+    with write() as conn:
+        conn.execute("UPDATE schedules SET enabled=?, next_run=? WHERE id=?",
+                     (1 if enabled else 0, next_run, schedule_id))
+
+
+def mark_schedule_ran(schedule_id: str, next_run: float | None) -> None:
+    with write() as conn:
+        conn.execute("UPDATE schedules SET last_run=?, next_run=? WHERE id=?",
+                     (_now(), next_run, schedule_id))
+
+
+def delete_schedule(schedule_id: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM schedules WHERE id=?", (schedule_id,))
 
 
 def list_runs(org_id: str, device_id: str | None = None, limit: int = 50) -> list[dict]:

@@ -52,3 +52,13 @@ class ScriptRequest(BaseModel):
 class ScriptRunRequest(BaseModel):
     device_id: str
     timeout: float = 120
+
+
+class ScheduleRequest(BaseModel):
+    script_id: str
+    name: str | None = None
+    target_type: str = "all"          # device | group | all
+    target_id: str | None = None
+    trigger: str = "interval"         # interval | daily
+    interval_minutes: int | None = None
+    at_time: str | None = None        # 'HH:MM' for daily

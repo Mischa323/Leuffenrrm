@@ -145,14 +145,15 @@ function cycleOrg() {
   showOrg(next.id, next.name); toast("Switched to " + next.name);
 }
 async function refreshOrgCaches() {
-  const [devices, hosts, nodes, groups, scripts] = await Promise.all([
+  const [devices, hosts, nodes, groups, scripts, schedules] = await Promise.all([
     api(`/api/orgs/${state.org}/devices`),
     api(`/api/orgs/${state.org}/network/hosts`).catch(() => []),
     api(`/api/orgs/${state.org}/nodes`).catch(() => []),
     api(`/api/orgs/${state.org}/groups`).catch(() => []),
     api(`/api/orgs/${state.org}/scripts`).catch(() => []),
+    api(`/api/orgs/${state.org}/schedules`).catch(() => []),
   ]);
-  state.cache = { devices, hosts, nodes, groups, scripts };
+  state.cache = { devices, hosts, nodes, groups, scripts, schedules };
 }
 function buildNav() {
   $("nav-devices-count").textContent = state.cache.devices.length;
@@ -225,8 +226,69 @@ function renderScripts() {
     body.appendChild(card);
   }
   $("script-new").onclick = openScriptForm;
+  $("sched-new").onclick = openScheduleForm;
   $("runs-refresh").onclick = loadRuns;
+  renderSchedules();
   loadRuns();
+}
+function cadenceText(s) {
+  if (s.trigger === "interval") return `every ${s.interval_minutes} min`;
+  if (s.trigger === "daily") return `daily at ${s.at_time}`;
+  return s.trigger;
+}
+function targetText(s) {
+  if (s.target_type === "all") return "all devices";
+  if (s.target_type === "group") { const g = (state.cache.groups || []).find((x) => x.id === s.target_id); return "group: " + (g ? g.name : "—"); }
+  const d = (state.cache.devices || []).find((x) => x.id === s.target_id); return d ? d.hostname : "device";
+}
+function renderSchedules() {
+  const scheds = state.cache.schedules || [];
+  $("sched-sub").textContent = `${scheds.length} schedule${scheds.length === 1 ? "" : "s"}`;
+  const body = $("sched-body");
+  body.innerHTML = scheds.length ? "" : `<div class="empty"><div class="big">${ICON.clock}</div>No schedules yet.<br><span class="muted">Automate a script to run on a cadence.</span></div>`;
+  for (const s of scheds) {
+    const row = el("div", "tile");
+    row.style.marginBottom = "10px";
+    row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
+      <div class="os-ico">${ICON.clock}</div>
+      <div style="flex:1"><div style="font-weight:650">${escapeHtml(s.name || "Schedule")}</div>
+        <div class="h-sub">${cadenceText(s)} · ${escapeHtml(targetText(s))} · next ${s.next_run ? relTime(s.next_run).replace(" ago", "") : "—"}${s.last_run ? " · last " + relTime(s.last_run) : ""}</div></div>
+      <span class="badge ${s.enabled ? "ok" : "na"}">${s.enabled ? "enabled" : "paused"}</span>
+      <button class="btn ghost sm run-now">${ICON.power} Run now</button>
+      <button class="btn ghost sm toggle">${s.enabled ? "Pause" : "Resume"}</button>
+      <button class="btn ghost sm del">${ICON.trash}</button></div>`;
+    row.querySelector(".run-now").onclick = async () => { try { const r = await api(`/api/schedules/${s.id}/run`, { method: "POST" }); toast(`Ran on ${r.devices} device(s)`); loadRuns(); } catch (e) { toast(e.message); } };
+    row.querySelector(".toggle").onclick = async () => { try { await api(`/api/schedules/${s.id}/toggle`, { method: "POST" }); state.cache.schedules = await api(`/api/orgs/${state.org}/schedules`); renderSchedules(); } catch (e) { toast(e.message); } };
+    row.querySelector(".del").onclick = async () => { if (!confirm("Delete this schedule?")) return; try { await api(`/api/schedules/${s.id}`, { method: "DELETE" }); state.cache.schedules = await api(`/api/orgs/${state.org}/schedules`); renderSchedules(); toast("Schedule deleted"); } catch (e) { toast(e.message); } };
+    body.appendChild(row);
+  }
+}
+async function openScheduleForm() {
+  const scripts = state.cache.scripts || [];
+  if (!scripts.length) return toast("Create a script first");
+  const names = scripts.map((s, i) => `${i + 1}. ${s.name}`).join("\n");
+  const pick = prompt("Which script?\n" + names, "1");
+  const idx = parseInt(pick, 10) - 1; if (!(idx >= 0 && idx < scripts.length)) return;
+  const script = scripts[idx];
+  const tgt = (prompt("Target: type 'all', 'group', or a device hostname", "all") || "all").trim();
+  let target_type = "all", target_id = null;
+  if (tgt.toLowerCase() === "group") {
+    const groups = state.cache.groups || [];
+    const gpick = prompt("Group?\n" + groups.map((g, i) => `${i + 1}. ${g.name}`).join("\n"), "1");
+    const gi = parseInt(gpick, 10) - 1; if (!(gi >= 0 && gi < groups.length)) return;
+    target_type = "group"; target_id = groups[gi].id;
+  } else if (tgt.toLowerCase() !== "all") {
+    const d = (state.cache.devices || []).find((x) => x.hostname.toLowerCase() === tgt.toLowerCase());
+    if (!d) return toast("No device named " + tgt);
+    target_type = "device"; target_id = d.id;
+  }
+  const when = (prompt("Cadence: 'every <N> min'  or  'daily HH:MM'", "every 60 min") || "").trim().toLowerCase();
+  let body = { script_id: script.id, target_type, target_id };
+  const mInt = when.match(/every\s+(\d+)/), mDay = when.match(/daily\s+(\d{1,2}:\d{2})/);
+  if (mInt) { body.trigger = "interval"; body.interval_minutes = parseInt(mInt[1], 10); }
+  else if (mDay) { body.trigger = "daily"; body.at_time = mDay[1]; }
+  else return toast("Couldn't parse the cadence");
+  try { await api(`/api/orgs/${state.org}/schedules`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("Schedule created"); state.cache.schedules = await api(`/api/orgs/${state.org}/schedules`); renderSchedules(); } catch (e) { toast(e.message); }
 }
 function openScriptForm() {
   const name = prompt("Script name?"); if (!name) return;
