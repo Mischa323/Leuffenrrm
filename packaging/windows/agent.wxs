@@ -39,11 +39,19 @@
           <Environment Id="EnvInsec" Name="RMM_INSECURE_TLS" Value="[RMM_INSECURE_TLS]"
                        Action="set" Part="all" System="yes" Permanent="no" />
         </Component>
+        <!-- Per-user system-tray companion: autostarts at logon in the user's session. -->
+        <Component Id="TrayExe" Guid="c2e5f3b1-4d66-4a7c-9b28-1f3e5d7c2b42">
+          <File Id="trayexe" Source="leuffen-rmm-tray.exe" KeyPath="yes" />
+          <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                         Name="LeuffenRMMTray" Type="string"
+                         Value="&quot;[INSTALLFOLDER]leuffen-rmm-tray.exe&quot;" />
+        </Component>
       </Directory>
     </StandardDirectory>
 
     <Feature Id="Main">
       <ComponentRef Id="AgentExe" />
+      <ComponentRef Id="TrayExe" />
     </Feature>
 
     <!-- Scheduled task: run the agent at startup as SYSTEM with highest rights. -->
