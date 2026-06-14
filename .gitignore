@@ -8,6 +8,8 @@ server/data/
 *.db-shm
 agent/rmm_config.json
 agent/rmm_device_id
+agent/status.json
+agent/sync_request
 dist/
 build/
 *.spec

@@ -14,7 +14,9 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sys
+import time
 import uuid
 
 import psutil
@@ -123,6 +125,14 @@ def _collect_metrics() -> dict:
     }
 
 
+def _status_path() -> str:
+    return os.path.join(_data_dir(), "status.json")
+
+
+def _sync_flag_path() -> str:
+    return os.path.join(_data_dir(), "sync_request")
+
+
 class Agent:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -131,6 +141,17 @@ class Agent:
         self.subnets: list[str] = []
         self.ws = None
         self.screen: ScreenSession | None = None
+        self.last_sync: float | None = None
+
+    def _write_status(self, connected: bool) -> None:
+        """Publish a small status file the tray app reads (best effort)."""
+        try:
+            with open(_status_path(), "w") as f:
+                json.dump({"connected": connected, "last_sync": self.last_sync,
+                           "server_url": self.cfg.get("server_url"),
+                           "hostname": socket.gethostname(), "updated": time.time()}, f)
+        except Exception:
+            pass
 
     def _ssl_context(self, url: str):
         """SSL context for wss:// connections.
@@ -152,18 +173,46 @@ class Agent:
         url = _ws_url(self.cfg["server_url"], self.cfg["api_key"])
         ssl_ctx = self._ssl_context(url)
         backoff = 2
+        self._write_status(False)
         while True:
             try:
                 async with websockets.connect(url, max_size=None, ping_interval=30,
                                               ssl=ssl_ctx) as ws:
                     self.ws = ws
                     await self._register()
+                    self.last_sync = time.time()
+                    self._write_status(True)
                     backoff = 2
-                    await asyncio.gather(self._metrics_loop(), self._recv_loop())
+                    await asyncio.gather(self._metrics_loop(), self._recv_loop(),
+                                         self._control_loop())
             except Exception as exc:
                 log.warning("connection lost (%s); retrying in %ss", exc, backoff)
+                self._write_status(False)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
+
+    async def _sync_now(self) -> None:
+        """Force an immediate push of inventory + metrics (used by the tray)."""
+        await self._register()
+        await self._send({"type": "metrics", "metrics": _collect_metrics()})
+        self.last_sync = time.time()
+        self._write_status(True)
+
+    async def _control_loop(self) -> None:
+        """Watch for a sync-request flag dropped by the tray app."""
+        flag = _sync_flag_path()
+        while True:
+            await asyncio.sleep(2)
+            if os.path.exists(flag):
+                try:
+                    os.remove(flag)
+                except OSError:
+                    pass
+                try:
+                    await self._sync_now()
+                    log.info("forced sync")
+                except Exception:
+                    return
 
     async def _send(self, msg: dict) -> None:
         await self.ws.send(json.dumps(msg))
@@ -180,6 +229,8 @@ class Agent:
             await asyncio.sleep(self.cfg["interval"])
             try:
                 await self._send({"type": "metrics", "metrics": _collect_metrics()})
+                self.last_sync = time.time()
+                self._write_status(True)
             except Exception:
                 return
 
@@ -263,12 +314,26 @@ class Agent:
             self.screen = None
 
 
+def _grant_users_writable(path: str) -> None:
+    """On Windows, let the interactive user write to the data dir (the agent runs
+    as SYSTEM; the tray runs per-user and drops a sync-request flag here)."""
+    if os.name != "nt":
+        return
+    try:
+        import subprocess
+        subprocess.run(["icacls", path, "/grant", "*S-1-5-32-545:(OI)(CI)M", "/T", "/Q"],
+                       capture_output=True, timeout=20)
+    except Exception:
+        pass
+
+
 def main() -> None:
     cfg = _load_config()
     if not cfg.get("server_url") or not cfg.get("api_key"):
         log.error("Missing server_url/api_key. Set RMM_SERVER_URL and RMM_API_KEY "
                   "or ship rmm_config.json next to the agent.")
         sys.exit(1)
+    _grant_users_writable(_data_dir())
     asyncio.run(Agent(cfg).run())
 
 
