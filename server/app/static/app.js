@@ -745,7 +745,19 @@ function renderActions(d) {
       try { await api(`/api/devices/${d.id}/update-agent`, { method: "POST" }); toast("Update sent — agent is upgrading"); }
       catch (e) { toast(e.message); upd.disabled = false; upd.innerHTML = old; }
     };
-    api(`/api/agent-release`).then((r) => { const el = $("upd-latest"); if (el && r && r.tag) el.innerHTML = ` · Latest: <b>${escapeHtml(r.tag)}</b>`; }).catch(() => {});
+    upd._dev = d;
+    api(`/api/agent-release`).then((r) => {
+      const el = $("upd-latest"); if (!el) return;
+      const latest = (r && (r.tag || r.name) || "").replace(/^.*?(\d+\.\d+(\.\d+)?).*$/, "$1");
+      const installed = (d.agent_version || "").replace(/^v/, "");
+      if (latest) el.innerHTML = ` · Latest: <b>v${escapeHtml(latest)}</b>`;
+      const upToDate = installed && latest && cmpVer(installed, latest) >= 0;
+      if (upToDate) {
+        upd.disabled = true;
+        upd.innerHTML = `${ICON.check} Up to date`;
+        upd.classList.add("ghost");
+      }
+    }).catch(() => {});
   }
   const mob = $("move-org-btn");
   if (mob) mob.onclick = async () => {
@@ -777,6 +789,15 @@ async function act(path, body) {
 }
 async function power(id, action) {
   try { await api(`/api/devices/${id}/power`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) }); toast(action + " sent"); } catch (e) { toast(e.message); }
+}
+// Compare dotted numeric versions: -1 if a<b, 0 if equal, 1 if a>b.
+function cmpVer(a, b) {
+  const pa = String(a).split("."), pb = String(b).split(".");
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = parseInt(pa[i] || "0", 10) || 0, y = parseInt(pb[i] || "0", 10) || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
 }
 function closeDrawer() { closeTerminal(); const d = $("drawer"); d.style.transform = "translateX(100%)"; setTimeout(() => d.classList.add("hidden"), 280); $("scrim").classList.add("hidden"); state.device = null; }
 
