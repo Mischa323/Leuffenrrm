@@ -10,6 +10,7 @@ agent/rmm_config.json
 agent/rmm_device_id
 agent/status.json
 agent/sync_request
+agent/agent.log*
 dist/
 build/
 *.spec
