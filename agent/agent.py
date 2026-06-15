@@ -371,6 +371,31 @@ def _grant_users_writable(path: str) -> None:
         pass
 
 
+def _allow_inbound_ping() -> None:
+    """Allow inbound ICMP echo (ping) on Windows so a network node in the same
+    organisation can reliably discover this device and confirm it's on the LAN.
+
+    Best-effort and idempotent; scoped to the local subnet so it only opens ping
+    to hosts on the same network (where the relay node lives). The agent runs as
+    SYSTEM, so it has rights to manage the firewall."""
+    if os.name != "nt":
+        return  # Linux hosts answer ICMP echo by default.
+    try:
+        import subprocess
+        name = "Leuffen RMM Allow Ping"
+        # Remove any prior copy first so re-runs don't stack duplicate rules.
+        subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule",
+                        f"name={name}"], capture_output=True, timeout=15)
+        for proto in ("icmpv4:8,any", "icmpv6:128,any"):
+            subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule",
+                            f"name={name}", f"protocol={proto}", "dir=in",
+                            "action=allow", "remoteip=localsubnet"],
+                           capture_output=True, timeout=15)
+        log.info("ensured inbound ICMP (ping) firewall rule for LAN discovery")
+    except Exception:
+        pass
+
+
 def _setup_file_logging() -> None:
     """Write the agent's logs to a rotating file in the data directory.
 
@@ -412,6 +437,7 @@ def main() -> None:
         sys.exit(1)
     _persist_config(cfg)
     _grant_users_writable(_data_dir())
+    _allow_inbound_ping()
     asyncio.run(Agent(cfg).run())
 
 
