@@ -1515,6 +1515,42 @@ def get_version(user: dict = Depends(auth.current_user)):
     return {"version": SERVER_VERSION}
 
 
+@app.get("/api/server/update")
+def server_update_status(user: dict = Depends(auth.current_user)):
+    """Whether the server container can self-update via the Docker socket."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    from . import docker_update
+    return {"version": SERVER_VERSION, **docker_update.status()}
+
+
+@app.post("/api/server/update/check")
+def server_update_check(user: dict = Depends(auth.current_user)):
+    """Pull the latest image and report whether it differs from the running one."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    from . import docker_update
+    try:
+        return {"version": SERVER_VERSION, **docker_update.check_for_update()}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/api/server/update/apply")
+def server_update_apply(user: dict = Depends(auth.current_user)):
+    """Pull the latest image and recreate this container (server will restart)."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    from . import docker_update
+    if not docker_update.available():
+        raise HTTPException(status_code=409,
+                            detail="Docker socket not mounted — in-UI update unavailable")
+    try:
+        return docker_update.start_update()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 @app.get("/api/logs")
 def get_logs(limit: int = 300, level: str | None = None,
              user: dict = Depends(auth.current_user)):

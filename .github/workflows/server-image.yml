@@ -1,0 +1,55 @@
+name: Build & publish server image
+
+# Builds the Leuffen RMM server image and pushes it to GitHub Container Registry
+# (ghcr.io/<owner>/leuffenrrm-server). This is the image the dashboard's one-click
+# "Update & restart" pulls. Runs on pushes to the main lines and on version tags.
+
+on:
+  push:
+    branches: ["main", "beta"]
+    tags: ["v*"]
+    paths:
+      - "server/**"
+      - "agent/**"
+      - "docker-compose.yml"
+      - ".github/workflows/server-image.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # so 'git describe' resolves a meaningful version
+
+      - name: Resolve version
+        id: ver
+        run: echo "v=$(git describe --tags --always --dirty | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase image name
+        id: img
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}-server" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          push: true
+          build-args: |
+            RMM_VERSION=${{ steps.ver.outputs.v }}
+          tags: |
+            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.name }}:${{ steps.ver.outputs.v }}

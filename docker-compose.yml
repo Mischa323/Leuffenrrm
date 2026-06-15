@@ -1,13 +1,15 @@
 services:
   server:
-    build:
-      context: .
-      dockerfile: server/Dockerfile
-      args:
-        # Stamp the deployed version. Build with the git tag/commit, e.g.:
-        #   RMM_VERSION=$(git describe --tags --always) docker compose build
-        RMM_VERSION: ${RMM_VERSION:-}
-    image: leuffen-rmm-server
+    # Prebuilt image from GitHub Container Registry — enables one-click updates
+    # from Settings → General (the server pulls a newer image and recreates
+    # itself via the Docker socket). To build from source instead, uncomment the
+    # build block below and run with RMM_VERSION=$(git describe --tags --always).
+    image: ${RMM_SERVER_IMAGE:-ghcr.io/mischa323/leuffenrrm-server:latest}
+    # build:
+    #   context: .
+    #   dockerfile: server/Dockerfile
+    #   args:
+    #     RMM_VERSION: ${RMM_VERSION:-}
     # host networking lets the server broadcast Wake-on-LAN on its own LAN and
     # keeps WebSocket/SSO redirects simple. Swap to a ports mapping if preferred.
     network_mode: host
@@ -17,12 +19,17 @@ services:
     # wizard is skipped. HTTPS (self-signed) is on by default.
     environment:
       RMM_TLS_MODE: "self-signed"
+      # Image the in-UI updater pulls/tracks for one-click container updates.
+      RMM_SERVER_IMAGE: ${RMM_SERVER_IMAGE:-ghcr.io/mischa323/leuffenrrm-server:latest}
       # Uncomment to configure via env and skip the wizard:
       # SESSION_SECRET: "change-me"
       # RMM_PUBLIC_URL: "https://rmm.example.com:8000"
       # RMM_BOOTSTRAP_ADMIN: "admin@example.com"
     volumes:
       - rmm-data:/data
+      # Required for one-click in-UI server updates (pull image + recreate
+      # container). Comment out to disable self-update (button shows "unavailable").
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
 volumes:

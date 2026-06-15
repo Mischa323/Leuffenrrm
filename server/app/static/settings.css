@@ -148,6 +148,8 @@ table.utable tr:last-child td { border-bottom: 0; }
   background: var(--surface-3); border: 1px solid var(--border); border-radius: 99px; padding: 6px 14px; width: fit-content; }
 .ver-pill svg { width: 15px; height: 15px; color: var(--accent); }
 
+.upd-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
 .log-view { max-height: 460px; overflow: auto; background: var(--surface-1, #0c0f14); border: 1px solid var(--border); border-radius: var(--r-sm);
   font-family: var(--font-mono, "JetBrains Mono", monospace); font-size: 12px; line-height: 1.5; }
 .log-line { display: grid; grid-template-columns: 72px 64px 110px 1fr; gap: 10px; padding: 3px 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); white-space: pre-wrap; word-break: break-word; }
