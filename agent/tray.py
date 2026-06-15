@@ -102,6 +102,32 @@ def _restart_agent() -> None:
             pass
 
 
+def _apply_settings(url: str, key: str, insecure: bool) -> None:
+    """Persist config to machine env (needs admin) and restart the agent."""
+    for name, val in (("RMM_SERVER_URL", url), ("RMM_API_KEY", key),
+                      ("RMM_INSECURE_TLS", "1" if insecure else "0")):
+        subprocess.run(["setx", "/M", name, val], capture_output=True, timeout=20)
+    _restart_agent()
+
+
+def _is_configured() -> bool:
+    return bool(os.environ.get("RMM_SERVER_URL") and os.environ.get("RMM_API_KEY")) \
+        or bool(_read_status().get("server_url"))
+
+
+def _self_exe() -> str:
+    return sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+
+
+def _elevate(args: str) -> None:
+    """Relaunch this program elevated (UAC) with the given argument string."""
+    if getattr(sys, "frozen", False):
+        target, params = _self_exe(), args
+    else:
+        target, params = sys.executable, f'"{_self_exe()}" {args}'
+    ctypes.windll.shell32.ShellExecuteW(None, "runas", target, params, None, 1)
+
+
 def settings_dialog() -> None:
     import tkinter as tk
     from tkinter import messagebox
@@ -137,21 +163,20 @@ def settings_dialog() -> None:
         if not u or not k:
             messagebox.showerror("Leuffen RMM", "Server URL and enrollment key are required.")
             return
-        denied = False
-        for name, val in (("RMM_SERVER_URL", u), ("RMM_API_KEY", k),
-                          ("RMM_INSECURE_TLS", "1" if insecure.get() else "0")):
-            r = subprocess.run(["setx", "/M", name, val], capture_output=True, timeout=20, text=True)
-            if r.returncode != 0:
-                denied = True
-        if denied:
-            messagebox.showerror(
-                "Leuffen RMM",
-                "Administrator rights are required to save these settings.\n\n"
-                "Right-click the Leuffen RMM tray icon and choose “Settings…” "
-                "(it will prompt for admin), or run this installer as administrator.")
+        if _is_admin():
+            _apply_settings(u, k, bool(insecure.get()))
+            messagebox.showinfo("Leuffen RMM", "Settings saved. The agent is reconnecting.")
+            root.destroy()
             return
-        _restart_agent()
-        messagebox.showinfo("Leuffen RMM", "Settings saved. The agent is reconnecting.")
+        # Not elevated: write the values to a temp file and re-apply them elevated
+        # (preserves what was typed; one UAC prompt).
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        with open(path, "w") as f:
+            json.dump({"url": u, "key": k, "insecure": bool(insecure.get())}, f)
+        _elevate(f'--apply "{path}"')
+        messagebox.showinfo("Leuffen RMM", "Approve the administrator prompt to finish saving.")
         root.destroy()
 
     btns = tk.Frame(root)
@@ -164,10 +189,6 @@ def settings_dialog() -> None:
 # --------------------------------------------------------------------------- #
 # Tray
 # --------------------------------------------------------------------------- #
-def _self_exe() -> str:
-    return sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
-
-
 class Tray:
     def __init__(self):
         self.status = _read_status()
@@ -202,18 +223,14 @@ class Tray:
             pass
 
     def _open_settings(self, icon=None, item=None):
-        exe = _self_exe()
         try:
             if _is_admin():
                 if getattr(sys, "frozen", False):
-                    subprocess.Popen([exe, "--settings"])
+                    subprocess.Popen([_self_exe(), "--settings"])
                 else:
-                    subprocess.Popen([sys.executable, exe, "--settings"])
+                    subprocess.Popen([sys.executable, _self_exe(), "--settings"])
             else:
-                # Elevate via UAC, then open the settings dialog.
-                params = "--settings" if getattr(sys, "frozen", False) else f'"{exe}" --settings'
-                target = exe if getattr(sys, "frozen", False) else sys.executable
-                ctypes.windll.shell32.ShellExecuteW(None, "runas", target, params, None, 1)
+                _elevate("--settings")
         except Exception:
             pass
 
@@ -238,11 +255,40 @@ class Tray:
         self.icon.run(setup=self._refresh)
 
 
+def _do_apply(path: str) -> None:
+    """Elevated re-entry: apply settings from a temp file, then confirm."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        _apply_settings(d["url"], d["key"], bool(d.get("insecure", True)))
+    except Exception:
+        return
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        r = tk.Tk()
+        r.withdraw()
+        messagebox.showinfo("Leuffen RMM", "Settings saved. The agent is reconnecting.")
+        r.destroy()
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
     try:
-        if "--settings" in sys.argv:
+        if "--apply" in sys.argv:
+            _do_apply(sys.argv[sys.argv.index("--apply") + 1])
+        elif "--settings" in sys.argv:
             settings_dialog()
         else:
+            # First run with no configuration → open the settings dialog, then tray.
+            if os.name == "nt" and not _is_configured():
+                settings_dialog()
             Tray().run()
     except Exception:
         sys.exit(1)
