@@ -753,16 +753,24 @@ function renderActions(d) {
     try { await api(`/api/devices/${d.id}/move-org`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ org_id: oid }) }); toast("Device moved"); closeDrawer(); refreshOrgCaches().then(() => { buildNav(); renderDevices(); }); } catch (e) { toast(e.message); }
   };
   const add = $("add-subnet");
-  if (add) add.onclick = async () => { const v = $("cidr-input").value.trim(); if (!v) return; try { await api(`/api/devices/${d.id}/subnets`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cidr: v }) }); toast("Subnet " + v + " added"); openDrawer(d.id); } catch (e) { toast(e.message); } };
+  if (add) add.onclick = async () => { const v = $("cidr-input").value.trim(); if (!v) return; try { await api(`/api/devices/${d.id}/subnets`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cidr: v }) }); toast("Subnet " + v + " added"); await refreshNodeViews(); openDrawer(d.id); } catch (e) { toast(e.message); } };
   const promo = $("promote");
-  if (promo) promo.onclick = async () => { try { await api(`/api/devices/${d.id}/promote`, { method: "POST" }); toast("Promoted to network node"); refreshOrgCaches(); openDrawer(d.id); } catch (e) { toast(e.message); } };
+  if (promo) promo.onclick = async () => { try { await api(`/api/devices/${d.id}/promote`, { method: "POST" }); toast("Promoted to network node"); await refreshNodeViews(); openDrawer(d.id); } catch (e) { toast(e.message); } };
   const demo = $("demote");
-  if (demo) demo.onclick = async () => { try { await api(`/api/devices/${d.id}/demote`, { method: "POST" }); toast("Demoted to plain agent"); refreshOrgCaches(); openDrawer(d.id); } catch (e) { toast(e.message); } };
+  if (demo) demo.onclick = async () => { try { await api(`/api/devices/${d.id}/demote`, { method: "POST" }); toast("Demoted to plain agent"); await refreshNodeViews(); openDrawer(d.id); } catch (e) { toast(e.message); } };
   $("dtab-actions").querySelectorAll(".subnet-row .x").forEach((x) => x.onclick = async () => {
     const s = (d.subnets || []).find((su) => su.cidr === x.dataset.cidr);
     if (!s) return;
-    try { await api(`/api/subnets/${s.id}`, { method: "DELETE" }); toast("Subnet removed"); openDrawer(d.id); } catch (e) { toast(e.message); }
+    try { await api(`/api/subnets/${s.id}`, { method: "DELETE" }); toast("Subnet removed"); await refreshNodeViews(); openDrawer(d.id); } catch (e) { toast(e.message); }
   });
+}
+// Keep the Nodes/Network views (driven by the org cache) in sync after a change
+// made from a device drawer.
+async function refreshNodeViews() {
+  await refreshOrgCaches();
+  buildNav();
+  renderNodes();
+  renderNetwork();
 }
 async function act(path, body) {
   try { const r = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast(typeof r === "object" ? (r.via ? "Magic packet sent via " + r.via : (r.status || "Done")) : "Done"); } catch (e) { toast(e.message); }

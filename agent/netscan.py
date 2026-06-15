@@ -75,24 +75,45 @@ async def scan(cidrs: list[str], concurrency: int = 64) -> list[dict]:
             continue
     targets = targets[:4096]  # safety cap
 
+    nets = []
+    for cidr in cidrs:
+        try:
+            nets.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            continue
+
     sem = asyncio.Semaphore(concurrency)
-    alive: list[str] = []
+    alive: set[str] = set()
 
     async def probe(ip: str) -> None:
         async with sem:
             if await asyncio.get_event_loop().run_in_executor(None, _ping, ip):
-                alive.append(ip)
+                alive.add(ip)
 
+    # The ping sweep also populates the ARP cache via the underlying ARP requests,
+    # so hosts that are up but drop ICMP (e.g. Windows' default firewall) still get
+    # an ARP entry — we fold those in below so discovery isn't limited to pingers.
     await asyncio.gather(*(probe(ip) for ip in targets))
 
     arp = _arp_table()
+
+    def _in_scope(ip: str) -> bool:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        return any(addr in n for n in nets)
+
+    found = set(alive)
+    found.update(ip for ip in arp if _in_scope(ip))
+
     hosts = []
-    for ip in sorted(alive, key=lambda x: tuple(int(o) for o in x.split("."))):
+    for ip in sorted(found, key=lambda x: tuple(int(o) for o in x.split("."))):
         mac = arp.get(ip)
         try:
             hostname = socket.gethostbyaddr(ip)[0]
         except Exception:
             hostname = None
         hosts.append({"ip": ip, "mac": mac, "hostname": hostname,
-                      "manufacturer": _mac_vendor(mac)})
+                      "manufacturer": _mac_vendor(mac), "online": True})
     return hosts
