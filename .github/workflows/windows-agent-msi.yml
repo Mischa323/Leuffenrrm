@@ -24,6 +24,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim().TrimStart('v')   # e.g. 1.1.0
+          $mm = ($v -split '\.')[0..1] -join '.'                   # e.g. 1.1
+          "ver=$v"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "msi=$mm.${{ github.run_number }}.0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -66,8 +75,9 @@ jobs:
         run: |
           copy agent\dist\leuffen-rmm-agent.exe packaging\windows\leuffen-rmm-agent.exe
           copy agent\dist\leuffen-rmm-tray.exe packaging\windows\leuffen-rmm-tray.exe
-          # Bump the version per build so 'newest' is visible in Programs & Features.
-          (Get-Content packaging\windows\agent.wxs) -replace 'Version="1.0.0.0"', 'Version="1.0.${{ github.run_number }}.0"' | Set-Content packaging\windows\agent.wxs
+          # Stamp the MSI version from VERSION (major.minor) + run number, so
+          # 'newest' is visible in Programs & Features and upgrades are monotonic.
+          (Get-Content packaging\windows\agent.wxs) -replace 'Version="1.0.0.0"', 'Version="${{ steps.ver.outputs.msi }}"' | Set-Content packaging\windows\agent.wxs
           wix build packaging\windows\agent.wxs -b packaging\windows -o leuffen-rmm-agent.msi
 
       - name: Sign MSI
@@ -87,8 +97,8 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'v1.0.0' }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.ver.outputs.ver) }}
           # Release name carries the actual MSI version so the dashboard can show it.
-          name: Leuffen RMM Agent ${{ github.ref_type == 'tag' && github.ref_name || format('1.0.{0}.0', github.run_number) }}
+          name: Leuffen RMM Agent ${{ steps.ver.outputs.msi }}
           files: leuffen-rmm-agent.msi
           fail_on_unmatched_files: true

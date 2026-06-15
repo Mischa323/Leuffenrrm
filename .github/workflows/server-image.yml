@@ -11,6 +11,7 @@ on:
     paths:
       - "server/**"
       - "agent/**"
+      - "VERSION"
       - "docker-compose.yml"
       - ".github/workflows/server-image.yml"
   workflow_dispatch: {}
@@ -29,7 +30,10 @@ jobs:
 
       - name: Resolve version
         id: ver
-        run: echo "v=$(git describe --tags --always --dirty | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -f VERSION ]; then v=$(tr -d ' \n' < VERSION | sed 's/^v//');
+          else v=$(git describe --tags --always | sed 's/^v//'); fi
+          echo "v=$v" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3

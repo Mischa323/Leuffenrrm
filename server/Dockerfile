@@ -8,10 +8,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # App code, the launcher (handles TLS modes), and the agent payload.
 COPY server/app ./app
 COPY server/run.py ./run.py
+COPY VERSION ./VERSION
 COPY agent /agent
 
-# Version stamped at build time (pass --build-arg RMM_VERSION=$(git describe --tags));
-# baked into a VERSION file the app reads, so Settings shows the deployed build.
+# Version: the repo VERSION file is the default; a build arg (e.g. a git tag)
+# overrides it. The app reads /app/VERSION so Settings shows the deployed build.
 ARG RMM_VERSION=""
 RUN if [ -n "$RMM_VERSION" ]; then printf '%s' "$RMM_VERSION" | sed 's/^v//' > /app/VERSION; fi
 
