@@ -25,6 +25,7 @@ import websockets
 import handlers
 import inventory
 import netscan
+import updater
 from screen import ScreenSession
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -285,6 +286,8 @@ class Agent:
                 await self._ack(rid, {"ok": True})
             except Exception as exc:
                 await self._ack(rid, {"ok": False, "error": str(exc)})
+        elif t == "update_agent":
+            asyncio.create_task(self._self_update(msg, rid))
         elif t == "scan":
             asyncio.create_task(self._do_scan(msg.get("subnets") or self.subnets))
         elif t == "screen_start":
@@ -296,6 +299,17 @@ class Agent:
         elif t == "input":
             if self.screen:
                 self.screen.input(msg)
+
+    async def _self_update(self, msg: dict, rid: str | None) -> None:
+        """Download and apply the latest agent build (blocking work off-loop)."""
+        log.info("update requested from server")
+        loop = asyncio.get_event_loop()
+        try:
+            res = await loop.run_in_executor(None, updater.apply_update, msg, HERE)
+        except Exception as exc:
+            log.warning("update failed: %s", exc)
+            res = {"ok": False, "error": str(exc)}
+        await self._ack(rid, res)
 
     async def _do_scan(self, subnets: list[str]) -> None:
         if not subnets:

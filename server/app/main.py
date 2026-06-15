@@ -473,6 +473,54 @@ async def shell(device_id: str, req: ShellRequest, user: dict = Depends(auth.cur
     return res
 
 
+def _update_message(org_id: str) -> dict:
+    """Build the self-update instruction sent to an agent over its socket.
+
+    Carries a short-lived one-time token so the agent can pull the latest
+    installer (MSI on Windows, agent.zip on Linux) without a browser session,
+    keeping its existing config + device id across the upgrade.
+    """
+    pub = public_url()
+    token = db.create_enroll_token(org_id, label="agent-update", ttl_hours=2)["token"]
+    return {
+        "type": "update_agent",
+        "server_url": pub,
+        "org_id": org_id,
+        "insecure_tls": agent_insecure_tls(),
+        "msi_url": f"{pub}/api/orgs/{org_id}/install.msi?token={token}",
+        "zip_url": f"{pub}/api/orgs/{org_id}/agent.zip?token={token}",
+    }
+
+
+@app.post("/api/devices/{device_id}/update-agent")
+async def update_agent_device(device_id: str, user: dict = Depends(auth.current_user)):
+    """Tell an online agent to download and apply the latest installer in place."""
+    dev = _device_for_user(device_id, user)
+    if not manager.is_online(device_id):
+        raise HTTPException(status_code=409, detail="Device offline")
+    try:
+        res = await manager.request(device_id, _update_message(dev["org_id"]), timeout=120)
+    except Exception as exc:
+        raise HTTPException(status_code=504, detail=str(exc))
+    return res
+
+
+@app.post("/api/orgs/{org_id}/update-agents")
+async def update_agents_org(org_id: str, user: dict = Depends(auth.current_user)):
+    """Push a self-update to every online agent in the organisation (best effort)."""
+    auth.require_org(user, org_id)
+    msg = _update_message(org_id)
+    targets = [d["id"] for d in db.list_devices(org_id) if manager.is_online(d["id"])]
+    started = 0
+    for did in targets:
+        try:
+            await manager.get(did).send(msg)
+            started += 1
+        except Exception:
+            pass
+    return {"started": started, "online": len(targets)}
+
+
 # --------------------------------------------------------------------------- #
 # Scripts (Phase 2): a per-org library + run-on-device with stored history.
 # --------------------------------------------------------------------------- #
@@ -1177,14 +1225,22 @@ async def agent_release(user: dict = Depends(auth.current_user)):
 
 
 @app.get("/api/orgs/{org_id}/install.msi")
-async def install_msi(org_id: str, user: dict = Depends(auth.current_user)):
+async def install_msi(org_id: str, token: str | None = Query(None),
+                      user: dict | None = Depends(auth.optional_user)):
     """Stream the latest Windows MSI from the release, fresh each time.
 
     Fetching server-side (rather than redirecting the browser to a fixed URL)
     avoids stale browser/CDN copies, so you always get the newest build.
     Configure it at install via msiexec properties — see the Downloads tab.
+
+    A valid one-time ``token`` query authorises the download (used by the agent
+    self-update, which has no browser session); otherwise an org admin session.
     """
-    _org_from_request(org_id, user)
+    if not (token and db.token_valid_for(org_id, token)):
+        if user is None:
+            raise HTTPException(status_code=401,
+                                detail="A valid token (?token=) or an admin session is required")
+        _org_from_request(org_id, user)
     import httpx
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
