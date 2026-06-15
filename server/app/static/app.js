@@ -74,9 +74,29 @@ async function init() {
   document.querySelectorAll(".nav button").forEach((b) => b.onclick = () => selectTab(b.dataset.tab));
   document.querySelectorAll(".dtabs button").forEach((b) => b.onclick = () => selectDrawerTab(b.dataset.dtab));
   $("term-form").onsubmit = onTerm;
+  $("approvals-ico").innerHTML = ICON.shieldCheck;
   setupScriptModal();
   setupMonitorModal();
+  refreshPendingBadge();
+  setInterval(refreshPendingBadge, 30000);
   await showGlobal();
+}
+
+async function refreshPendingBadge() {
+  let p;
+  try { p = await api("/api/pending-count"); } catch { return; }
+  const btn = $("approvals-btn"), badge = $("approvals-badge");
+  if (p.total > 0) {
+    badge.textContent = p.total;
+    btn.classList.remove("hidden");
+    btn.title = `${p.total} device(s) pending approval`;
+    btn.onclick = () => {
+      if (p.orgs.length === 1) showOrg(p.orgs[0].id, p.orgs[0].name).then(() => selectTab("approvals"));
+      else showGlobal();
+    };
+  } else {
+    btn.classList.add("hidden");
+  }
 }
 
 /* ---------- global view ---------- */
@@ -100,11 +120,8 @@ async function showGlobal() {
     kpi("Offline", tot.offline, "red", ICON.bell, "", tot.offline ? `<span class="kdelta down">${tot.offline} down</span>` : `<span class="kdelta">none</span>`),
   ].join("");
 
-  $("orgnew-ico").innerHTML = ICON.plus;
-  $("org-new").onclick = createOrg;
   const wrap = $("org-cards"); wrap.innerHTML = "";
-  if (!orgs.length) { wrap.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="big">${ICON.building}</div>No organisations yet.</div>`; return; }
-  const admin = state.me.is_global_admin;
+  if (!orgs.length) { wrap.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="big">${ICON.building}</div>No organisations yet. Add one in Settings → Organisations.</div>`; return; }
   for (const o of orgs) {
     const c = el("div", "orgcard");
     const onPct = o.devices ? (o.online / o.devices) * 100 : 0, offPct = o.devices ? (o.offline / o.devices) * 100 : 0, ncPct = o.devices ? (o.noncompliant / o.devices) * 100 : 0;
@@ -112,7 +129,6 @@ async function showGlobal() {
       <div class="oc-head">
         <div class="oc-mark" style="background:linear-gradient(140deg, ${o.color}, color-mix(in srgb, ${o.color} 55%, #000))">${initials(o.name)}</div>
         <div style="flex:1"><h3>${o.name}</h3><small>${o.devices} devices · ${o.online} online</small></div>
-        ${admin ? `<button class="btn ghost sm oc-del" title="Delete organisation">${ICON.trash}</button>` : ""}
         <div class="oc-arrow">${ICON.chevR}</div>
       </div>
       <div class="health-bar"><i class="on" style="width:${onPct}%"></i><i class="nc" style="width:${ncPct}%"></i><i class="off" style="width:${offPct}%"></i></div>
@@ -121,22 +137,9 @@ async function showGlobal() {
         <div class="s"><b><span class="dot-led m"></span>${o.offline}</b><span>Offline</span></div>
         <div class="s"><b><span class="dot-led r"></span>${o.noncompliant}</b><span>Non-compliant</span></div>
       </div>`;
-    const del = c.querySelector(".oc-del");
-    if (del) del.onclick = (e) => { e.stopPropagation(); deleteOrg(o.id, o.name); };
     c.onclick = () => showOrg(o.id, o.name);
     wrap.appendChild(c);
   }
-}
-async function createOrg() {
-  const name = (prompt("New organisation name?") || "").trim();
-  if (!name) return;
-  try { await api("/api/orgs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }); toast("Organisation created"); state.me = await api("/api/me"); showGlobal(); }
-  catch (e) { toast(e.message); }
-}
-async function deleteOrg(id, name) {
-  if (!confirm(`Delete organisation “${name}”?\n\nAll of its devices, scripts and data are permanently removed.`)) return;
-  try { await api(`/api/orgs/${id}`, { method: "DELETE" }); toast("Organisation deleted"); state.me = await api("/api/me"); showGlobal(); }
-  catch (e) { toast(e.message); }
 }
 function renderApprovals() {
   const pend = state.cache.pending || [];
@@ -157,7 +160,7 @@ function renderApprovals() {
 async function _reloadApprovals() {
   state.cache.pending = await api(`/api/orgs/${state.org}/pending`).catch(() => []);
   state.cache.devices = await api(`/api/orgs/${state.org}/devices`).catch(() => state.cache.devices);
-  buildNav(); renderApprovals();
+  buildNav(); renderApprovals(); refreshPendingBadge();
 }
 function kpi(label, val, tone, icon, spark, delta) {
   return `<div class="kpi"><div class="klabel"><span class="ki ${tone}">${icon}</span>${label}</div>

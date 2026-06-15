@@ -9,10 +9,15 @@ alerting standard. Email goes out via :mod:`graph`.
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 from . import database as db, graph
 from .manager import manager
+
+
+def _default_recipients() -> list[str]:
+    return [e.strip() for e in os.environ.get("RMM_ALERT_RECIPIENTS", "").split(",") if e.strip()]
 
 log = logging.getLogger("rmm.alerts")
 
@@ -31,7 +36,7 @@ def evaluate_once() -> None:
     for dev in db.all_devices():
         policy = db.get_effective_policy(dev)
         cfg = db.alert_config(dev["org_id"])
-        recipients = cfg.get("recipients") or []
+        recipients = cfg.get("recipients") or _default_recipients()
         rules_enabled = set(cfg.get("rules") or ["offline", "cpu", "disk", "mem"])
         metrics = db.get_metrics(dev["id"], limit=200)
         latest = metrics[-1] if metrics else None

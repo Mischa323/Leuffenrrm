@@ -19,7 +19,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, auth, database as db, totp
+from . import alerts, auth, database as db, graph, totp
 from . import wol as wol_local
 from .manager import manager
 from .models import (GroupRequest, MonitorRequest, MoveDeviceRequest, MoveOrgRequest,
@@ -127,11 +127,13 @@ async def _schedule_loop() -> None:
                     log.warning("schedule %s failed: %s", sched["id"], exc)
                 db.mark_schedule_ran(sched["id"], _next_run(sched))
             for mon in db.due_monitors():
+                old = mon.get("last_status")
                 try:
                     status = await _execute_monitor(mon)
                 except Exception as exc:
                     status = "error"
                     log.warning("monitor %s failed: %s", mon["id"], exc)
+                _monitor_notify(mon, old, status)
                 db.mark_monitor_ran(mon["id"], _next_run(mon), status)
         except Exception as exc:  # pragma: no cover
             log.warning("schedule loop error: %s", exc)
@@ -332,6 +334,19 @@ def add_user(org_id: str, req: OrgUserRequest, user: dict = Depends(auth.current
 def list_pending(org_id: str, user: dict = Depends(auth.current_user)):
     auth.require_org(user, org_id)
     return [_decorate(d) for d in db.list_pending(org_id)]
+
+
+@app.get("/api/pending-count")
+def pending_count(user: dict = Depends(auth.current_user)):
+    """Pending-approval totals across the orgs the user can see (for the header)."""
+    orgs = db.orgs_for_user(user["email"], user["is_global_admin"])
+    out, total = [], 0
+    for o in orgs:
+        c = len(db.list_pending(o["id"]))
+        if c:
+            out.append({"id": o["id"], "name": o["name"], "count": c})
+            total += c
+    return {"total": total, "orgs": out}
 
 
 @app.get("/api/orgs/{org_id}/groups")
@@ -678,6 +693,28 @@ def delete_schedule(schedule_id: str, user: dict = Depends(auth.current_user)):
 # --------------------------------------------------------------------------- #
 # Monitoring policies (Phase 2): monitor script + auto-remediation + variables.
 # --------------------------------------------------------------------------- #
+def _monitor_notify(mon: dict, old_status: str | None, new_status: str) -> None:
+    """Email the org's alert recipients when a monitor flips to/from alerting."""
+    if old_status == new_status:
+        return
+    if new_status == "alert" and old_status != "alert":
+        subject = f"Monitor alerting: {mon['name']}"
+        body = (f"<p>The monitoring policy <b>{mon['name']}</b> is now <b>alerting</b>.</p>"
+                f"<p>The monitor script exited non-zero on one or more devices"
+                + (" and the remediation script was run." if mon.get('remediation_script_id')
+                   else ".") + "</p>")
+    elif new_status == "ok" and old_status == "alert":
+        subject = f"Monitor resolved: {mon['name']}"
+        body = f"<p>The monitoring policy <b>{mon['name']}</b> is healthy again.</p>"
+    else:
+        return
+    recipients = (db.alert_config(mon["org_id"]).get("recipients")
+                  or [e.strip() for e in os.environ.get("RMM_ALERT_RECIPIENTS", "").split(",") if e.strip()]
+                  or sorted(auth.BOOTSTRAP_ADMINS))
+    if recipients:
+        graph.send_mail(f"[RMM] {subject}", body, recipients)
+
+
 async def _execute_monitor(mon: dict) -> str:
     """Run the monitor script on each online target; on failure run remediation.
 
@@ -758,7 +795,9 @@ async def run_monitor_now(monitor_id: str, user: dict = Depends(auth.current_use
     if not mon:
         raise HTTPException(status_code=404, detail="Monitor not found")
     auth.require_org(user, mon["org_id"])
+    old = mon.get("last_status")
     status = await _execute_monitor(mon)
+    _monitor_notify(mon, old, status)
     db.mark_monitor_ran(monitor_id, _next_run(mon) if mon["enabled"] else mon.get("next_run"), status)
     return {"status": status}
 
@@ -1289,7 +1328,7 @@ SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "ALERT_CPU_PCT", "ALERT_DISK_FREE_PCT",
     "ALERT_MEM_PCT", "ALERT_OFFLINE_AFTER", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
-    "RMM_REQUIRE_APPROVAL",
+    "RMM_REQUIRE_APPROVAL", "RMM_ALERT_RECIPIENTS",
 ]
 
 
