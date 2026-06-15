@@ -154,7 +154,7 @@ function render() {
       ${secTitle("monitor", "Agents", "Defaults applied to every connected agent.")}
       ${block("Enrolment", "",
         `${toggle("requireApproval", "Require approval for new devices", "New agents wait in the Approvals queue until you approve them, instead of appearing automatically.", (cfg.RMM_REQUIRE_APPROVAL ?? "1") === "1")}`, "agents-approval")}
-      <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Heartbeat interval</div><div class="cd">Agents report every ~30s by default (set <code>RMM_INTERVAL</code> on the agent). Per-agent auto-update arrives in a later release.</div></div></div>
+      <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Heartbeat interval</div><div class="cd">Agents report every ~30s by default (set <code>RMM_INTERVAL</code> on the agent). Update agents in place from a device's <b>Agent</b> panel, or all at once from <b>Downloads</b>.</div></div></div>
       <div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Danger zone</div><div class="cd">Removing an agent (from a device's Actions) stops monitoring and revokes its key. Re-enrol with a fresh installer from Downloads.</div></div></div>
     </section>
 

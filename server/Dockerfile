@@ -10,6 +10,11 @@ COPY server/app ./app
 COPY server/run.py ./run.py
 COPY agent /agent
 
+# Version stamped at build time (pass --build-arg RMM_VERSION=$(git describe --tags));
+# baked into a VERSION file the app reads, so Settings shows the deployed build.
+ARG RMM_VERSION=""
+RUN if [ -n "$RMM_VERSION" ]; then printf '%s' "$RMM_VERSION" | sed 's/^v//' > /app/VERSION; fi
+
 ENV RMM_DB_PATH=/data/rmm.db
 # Default to HTTPS with a self-signed cert generated into the data volume.
 ENV RMM_TLS_MODE=self-signed

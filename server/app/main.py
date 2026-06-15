@@ -30,7 +30,39 @@ from .models import (GroupRequest, MonitorRequest, MoveDeviceRequest, MoveOrgReq
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
 
-SERVER_VERSION = "0.1.0"
+def _resolve_version() -> str:
+    """Server version, resolved automatically at startup (first hit wins):
+
+    1. ``RMM_VERSION`` env var — injected at deploy (compose/Dockge build arg).
+    2. A ``VERSION`` file baked next to the app or at the repo root.
+    3. ``git describe`` at runtime — for native/source installs.
+    4. A static fallback.
+    """
+    env = os.environ.get("RMM_VERSION", "").strip()
+    if env:
+        return env[1:] if env[:1] == "v" else env
+    here = os.path.dirname(__file__)
+    for path in (os.path.join(here, "VERSION"), os.path.join(here, "..", "VERSION"),
+                 os.path.join(here, "..", "..", "VERSION")):
+        try:
+            with open(path) as f:
+                v = f.read().strip()
+            if v:
+                return v
+        except OSError:
+            pass
+    try:
+        import subprocess
+        v = subprocess.run(["git", "describe", "--tags", "--always", "--dirty"],
+                           cwd=here, capture_output=True, text=True, timeout=3)
+        if v.returncode == 0 and v.stdout.strip():
+            return v.stdout.strip().lstrip("v")
+    except Exception:
+        pass
+    return "0.1.0"
+
+
+SERVER_VERSION = _resolve_version()
 
 
 class _RingLogHandler(logging.Handler):

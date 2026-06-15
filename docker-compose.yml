@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+      args:
+        # Stamp the deployed version. Build with the git tag/commit, e.g.:
+        #   RMM_VERSION=$(git describe --tags --always) docker compose build
+        RMM_VERSION: ${RMM_VERSION:-}
     image: leuffen-rmm-server
     # host networking lets the server broadcast Wake-on-LAN on its own LAN and
     # keeps WebSocket/SSO redirects simple. Swap to a ports mapping if preferred.
