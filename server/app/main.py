@@ -363,9 +363,16 @@ def create_group(org_id: str, req: GroupRequest, user: dict = Depends(auth.curre
 
 @app.get("/api/orgs/{org_id}/tokens")
 def list_tokens(org_id: str, user: dict = Depends(auth.current_user)):
-    """One-time enrolment keys for this org (metadata only — never the secret)."""
+    """One-time enrolment keys for this org (metadata only — never the secret).
+
+    Each used key is annotated with the device it enrolled, so you can see which
+    key belongs to which device."""
     auth.require_org(user, org_id)
-    return {"tokens": db.list_enroll_tokens(org_id), "insecure_tls": agent_insecure_tls()}
+    tokens = db.list_enroll_tokens(org_id)
+    for t in tokens:
+        dev = db.get_device(t["device_id"]) if t.get("device_id") else None
+        t["device_hostname"] = dev["hostname"] if dev else None
+    return {"tokens": tokens, "insecure_tls": agent_insecure_tls()}
 
 
 @app.post("/api/orgs/{org_id}/tokens")

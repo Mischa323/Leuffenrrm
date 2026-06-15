@@ -569,9 +569,10 @@ function showNewToken(token, base, ins) {
 function renderTokenList(tokens) {
   const host = $("token-list");
   if (!tokens.length) { host.innerHTML = `<div class="h-sub">No keys yet. Generate one above.</div>`; return; }
-  host.innerHTML = `<table class="grid"><thead><tr><th>Created</th><th>Status</th><th></th></tr></thead><tbody>${tokens.map((t) => {
+  host.innerHTML = `<table class="grid"><thead><tr><th>Created</th><th>Status</th><th>Device</th><th></th></tr></thead><tbody>${tokens.map((t) => {
     const used = t.used_at ? `<span class="badge na">used ${relTime(t.used_at)}</span>` : `<span class="badge ok">unused</span>`;
-    return `<tr><td class="h-sub">${relTime(t.created_at)}</td><td>${used}</td><td style="text-align:right"><button class="btn ghost sm tdel" data-id="${t.id}">${ICON.trash}</button></td></tr>`;
+    const dev = t.device_hostname ? `<span class="mono">${escapeHtml(t.device_hostname)}</span>` : (t.device_id ? `<span class="h-sub">removed device</span>` : `<span class="h-sub">—</span>`);
+    return `<tr><td class="h-sub">${relTime(t.created_at)}</td><td>${used}</td><td>${dev}</td><td style="text-align:right"><button class="btn ghost sm tdel" data-id="${t.id}">${ICON.trash}</button></td></tr>`;
   }).join("")}</tbody></table>`;
   host.querySelectorAll(".tdel").forEach((b) => b.onclick = async () => {
     try { await api(`/api/orgs/tokens/${b.dataset.id}`, { method: "DELETE" }); const info = await api(`/api/orgs/${state.org}/tokens`); renderTokenList(info.tokens); toast("Key revoked"); } catch (e) { toast(e.message); }
