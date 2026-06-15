@@ -29,6 +29,10 @@ class MoveDeviceRequest(BaseModel):
     group_id: str | None = None
 
 
+class MoveOrgRequest(BaseModel):
+    org_id: str
+
+
 class OrgRequest(BaseModel):
     name: str
 

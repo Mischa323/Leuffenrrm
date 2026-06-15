@@ -100,15 +100,19 @@ async function showGlobal() {
     kpi("Offline", tot.offline, "red", ICON.bell, "", tot.offline ? `<span class="kdelta down">${tot.offline} down</span>` : `<span class="kdelta">none</span>`),
   ].join("");
 
+  $("orgnew-ico").innerHTML = ICON.plus;
+  $("org-new").onclick = createOrg;
   const wrap = $("org-cards"); wrap.innerHTML = "";
   if (!orgs.length) { wrap.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="big">${ICON.building}</div>No organisations yet.</div>`; return; }
+  const admin = state.me.is_global_admin;
   for (const o of orgs) {
     const c = el("div", "orgcard");
     const onPct = o.devices ? (o.online / o.devices) * 100 : 0, offPct = o.devices ? (o.offline / o.devices) * 100 : 0, ncPct = o.devices ? (o.noncompliant / o.devices) * 100 : 0;
     c.innerHTML = `
       <div class="oc-head">
         <div class="oc-mark" style="background:linear-gradient(140deg, ${o.color}, color-mix(in srgb, ${o.color} 55%, #000))">${initials(o.name)}</div>
-        <div><h3>${o.name}</h3><small>${o.devices} devices · ${o.online} online</small></div>
+        <div style="flex:1"><h3>${o.name}</h3><small>${o.devices} devices · ${o.online} online</small></div>
+        ${admin ? `<button class="btn ghost sm oc-del" title="Delete organisation">${ICON.trash}</button>` : ""}
         <div class="oc-arrow">${ICON.chevR}</div>
       </div>
       <div class="health-bar"><i class="on" style="width:${onPct}%"></i><i class="nc" style="width:${ncPct}%"></i><i class="off" style="width:${offPct}%"></i></div>
@@ -117,9 +121,43 @@ async function showGlobal() {
         <div class="s"><b><span class="dot-led m"></span>${o.offline}</b><span>Offline</span></div>
         <div class="s"><b><span class="dot-led r"></span>${o.noncompliant}</b><span>Non-compliant</span></div>
       </div>`;
+    const del = c.querySelector(".oc-del");
+    if (del) del.onclick = (e) => { e.stopPropagation(); deleteOrg(o.id, o.name); };
     c.onclick = () => showOrg(o.id, o.name);
     wrap.appendChild(c);
   }
+}
+async function createOrg() {
+  const name = (prompt("New organisation name?") || "").trim();
+  if (!name) return;
+  try { await api("/api/orgs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }); toast("Organisation created"); state.me = await api("/api/me"); showGlobal(); }
+  catch (e) { toast(e.message); }
+}
+async function deleteOrg(id, name) {
+  if (!confirm(`Delete organisation “${name}”?\n\nAll of its devices, scripts and data are permanently removed.`)) return;
+  try { await api(`/api/orgs/${id}`, { method: "DELETE" }); toast("Organisation deleted"); state.me = await api("/api/me"); showGlobal(); }
+  catch (e) { toast(e.message); }
+}
+function renderApprovals() {
+  const pend = state.cache.pending || [];
+  $("approvals-sub").textContent = `${pend.length} device${pend.length === 1 ? "" : "s"} waiting`;
+  const tb = $("approval-rows");
+  tb.innerHTML = pend.length ? "" : `<tr><td colspan="5"><div class="empty"><div class="big">${ICON.shieldCheck}</div>Nothing waiting.<br><span class="muted">New agents appear here for you to approve.</span></div></td></tr>`;
+  for (const d of pend) {
+    const tr = el("tr"); tr.style.cursor = "default";
+    tr.innerHTML = `
+      <td><div class="host"><div class="os-ico">${osIcon(d.os)}</div><div><div class="h-name">${escapeHtml(d.hostname)}</div><div class="h-sub">${d.online ? "online now" : "offline"}</div></div></div></td>
+      <td>${escapeHtml(d.os || "—")}</td><td class="mono">${escapeHtml(d.ip || "—")}</td><td class="h-sub">${relTime(d.created_at)}</td>
+      <td><div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn sm approve">${ICON.check} Approve</button><button class="btn ghost sm reject" title="Reject">${ICON.trash}</button></div></td>`;
+    tr.querySelector(".approve").onclick = async () => { try { await api(`/api/devices/${d.id}/approve`, { method: "POST" }); toast("Device approved"); await _reloadApprovals(); } catch (e) { toast(e.message); } };
+    tr.querySelector(".reject").onclick = async () => { if (!confirm("Reject and remove " + d.hostname + "?")) return; try { await api(`/api/devices/${d.id}/reject`, { method: "POST" }); toast("Device rejected"); await _reloadApprovals(); } catch (e) { toast(e.message); } };
+    tb.appendChild(tr);
+  }
+}
+async function _reloadApprovals() {
+  state.cache.pending = await api(`/api/orgs/${state.org}/pending`).catch(() => []);
+  state.cache.devices = await api(`/api/orgs/${state.org}/devices`).catch(() => state.cache.devices);
+  buildNav(); renderApprovals();
 }
 function kpi(label, val, tone, icon, spark, delta) {
   return `<div class="kpi"><div class="klabel"><span class="ki ${tone}">${icon}</span>${label}</div>
@@ -147,7 +185,7 @@ function cycleOrg() {
   showOrg(next.id, next.name); toast("Switched to " + next.name);
 }
 async function refreshOrgCaches() {
-  const [devices, hosts, nodes, groups, scripts, schedules, monitors] = await Promise.all([
+  const [devices, hosts, nodes, groups, scripts, schedules, monitors, pending] = await Promise.all([
     api(`/api/orgs/${state.org}/devices`),
     api(`/api/orgs/${state.org}/network/hosts`).catch(() => []),
     api(`/api/orgs/${state.org}/nodes`).catch(() => []),
@@ -155,11 +193,13 @@ async function refreshOrgCaches() {
     api(`/api/orgs/${state.org}/scripts`).catch(() => []),
     api(`/api/orgs/${state.org}/schedules`).catch(() => []),
     api(`/api/orgs/${state.org}/monitors`).catch(() => []),
+    api(`/api/orgs/${state.org}/pending`).catch(() => []),
   ]);
-  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors };
+  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors, pending };
 }
 function buildNav() {
   $("nav-devices-count").textContent = state.cache.devices.length;
+  $("nav-approvals-count").textContent = state.cache.pending.length;
   $("nav-network-count").textContent = state.cache.hosts.length;
   $("nav-nodes-count").textContent = state.cache.nodes.length;
   $("nav-scripts-count").textContent = state.cache.scripts.length;
@@ -181,9 +221,10 @@ function buildGroups() {
 function selectTab(tab) {
   state.tab = tab;
   document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  ["devices", "network", "nodes", "scripts", "monitors", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  ["devices", "approvals", "network", "nodes", "scripts", "monitors", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
   clearRefresh();
   if (tab === "devices") { renderDevices(); state.refresh = setInterval(async () => { try { state.cache.devices = await api(`/api/orgs/${state.org}/devices`); renderDevices(); } catch {} }, 5000); }
+  else if (tab === "approvals") renderApprovals();
   else if (tab === "network") renderNetwork();
   else if (tab === "nodes") renderNodes();
   else if (tab === "scripts") renderScripts();
@@ -646,6 +687,12 @@ function renderActions(d) {
     { t: "Remove", d: "Delete from RMM", i: ICON.trash, c: "danger", f: async () => { if (confirm("Remove " + d.hostname + "?")) { try { await api(`/api/devices/${d.id}`, { method: "DELETE" }); toast("Device removed"); closeDrawer(); refreshOrgCaches().then(() => { buildNav(); renderDevices(); }); } catch (e) { toast(e.message); } } } },
   ];
   let html = `<div class="actions-grid">${acts.map((a, i) => `<button class="action ${a.c}" data-i="${i}"><span class="ai">${a.i}</span><span><span class="at">${a.t}</span><br><span class="ad">${a.d}</span></span></button>`).join("")}</div>`;
+  const otherOrgs = (state.me.orgs || []).filter((o) => o.id !== d.org_id);
+  if (otherOrgs.length) {
+    html += `<div class="sec-label">Organisation</div><div class="tile"><div class="field">
+      <select id="move-org">${otherOrgs.map((o) => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join("")}</select>
+      <button class="btn" id="move-org-btn">${ICON.building} Move here</button></div></div>`;
+  }
   html += `<div class="sec-label">Network node</div>`;
   if (d.is_node) {
     const subs = (d.subnets || []).map((s) => s.cidr);
@@ -658,6 +705,11 @@ function renderActions(d) {
   }
   $("dtab-actions").innerHTML = html;
   $("dtab-actions").querySelectorAll(".action").forEach((b) => b.onclick = () => acts[+b.dataset.i].f());
+  const mob = $("move-org-btn");
+  if (mob) mob.onclick = async () => {
+    const oid = $("move-org").value;
+    try { await api(`/api/devices/${d.id}/move-org`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ org_id: oid }) }); toast("Device moved"); closeDrawer(); refreshOrgCaches().then(() => { buildNav(); renderDevices(); }); } catch (e) { toast(e.message); }
+  };
   const add = $("add-subnet");
   if (add) add.onclick = async () => { const v = $("cidr-input").value.trim(); if (!v) return; try { await api(`/api/devices/${d.id}/subnets`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cidr: v }) }); toast("Subnet " + v + " added"); openDrawer(d.id); } catch (e) { toast(e.message); } };
   const promo = $("promote");

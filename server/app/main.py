@@ -22,9 +22,10 @@ from fastapi.staticfiles import StaticFiles
 from . import alerts, auth, database as db, totp
 from . import wol as wol_local
 from .manager import manager
-from .models import (GroupRequest, MonitorRequest, MoveDeviceRequest, OrgRequest,
-                     OrgUserRequest, PowerRequest, ScheduleRequest, ScriptFileRequest,
-                     ScriptRequest, ScriptRunRequest, ShellRequest, SubnetRequest, WakeRequest)
+from .models import (GroupRequest, MonitorRequest, MoveDeviceRequest, MoveOrgRequest,
+                     OrgRequest, OrgUserRequest, PowerRequest, ScheduleRequest,
+                     ScriptFileRequest, ScriptRequest, ScriptRunRequest, ShellRequest,
+                     SubnetRequest, WakeRequest)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
@@ -48,6 +49,11 @@ def agent_insecure_tls() -> bool:
     """Agents skip TLS verification only against a self-signed server cert."""
     mode = os.environ.get("RMM_TLS_MODE", "self-signed").lower()
     return mode in ("self-signed", "self_signed", "selfsigned")
+
+
+def require_approval() -> bool:
+    """Whether brand-new devices land in the approval queue (default: yes)."""
+    return os.environ.get("RMM_REQUIRE_APPROVAL", "1").lower() in ("1", "true", "yes")
 
 app = FastAPI(title="Leuffen RMM", version="0.1.0")
 
@@ -303,11 +309,29 @@ def create_org(req: OrgRequest, user: dict = Depends(auth.current_user)):
     return org
 
 
+@app.delete("/api/orgs/{org_id}")
+def delete_org(org_id: str, user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    if not db.get_org(org_id):
+        raise HTTPException(status_code=404, detail="Org not found")
+    if len(db.list_orgs()) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the only organisation")
+    db.delete_org(org_id)
+    return {"status": "deleted"}
+
+
 @app.post("/api/orgs/{org_id}/users")
 def add_user(org_id: str, req: OrgUserRequest, user: dict = Depends(auth.current_user)):
     auth.require_org(user, org_id)
     db.add_org_user(org_id, req.email, req.role)
     return {"status": "ok"}
+
+
+@app.get("/api/orgs/{org_id}/pending")
+def list_pending(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return [_decorate(d) for d in db.list_pending(org_id)]
 
 
 @app.get("/api/orgs/{org_id}/groups")
@@ -374,6 +398,30 @@ def move_device(device_id: str, req: MoveDeviceRequest, user: dict = Depends(aut
     _device_for_user(device_id, user)
     db.set_device_group(device_id, req.group_id)
     return {"status": "ok"}
+
+
+@app.post("/api/devices/{device_id}/move-org")
+def move_device_org(device_id: str, req: MoveOrgRequest, user: dict = Depends(auth.current_user)):
+    _device_for_user(device_id, user)          # access to the current org
+    auth.require_org(user, req.org_id)          # and the destination org
+    if not db.get_org(req.org_id):
+        raise HTTPException(status_code=404, detail="Target organisation not found")
+    db.set_device_org(device_id, req.org_id)
+    return {"status": "ok"}
+
+
+@app.post("/api/devices/{device_id}/approve")
+def approve_device(device_id: str, user: dict = Depends(auth.current_user)):
+    _device_for_user(device_id, user)
+    db.set_device_approved(device_id, True)
+    return {"status": "approved"}
+
+
+@app.post("/api/devices/{device_id}/reject")
+def reject_device(device_id: str, user: dict = Depends(auth.current_user)):
+    _device_for_user(device_id, user)
+    db.delete_device(device_id)
+    return {"status": "rejected"}
 
 
 @app.post("/api/devices/{device_id}/power")
@@ -867,7 +915,7 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
         if org is None:
             await ws.close(code=4401)
             return
-        db.upsert_device(org["id"], first)
+        db.upsert_device(org["id"], first, require_approval=require_approval())
         await manager.register(device_id, org["id"], ws)
         if db.get_device(device_id).get("is_node"):
             subs = [s["cidr"] for s in db.list_subnets(device_id)]
@@ -1241,6 +1289,7 @@ SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "ALERT_CPU_PCT", "ALERT_DISK_FREE_PCT",
     "ALERT_MEM_PCT", "ALERT_OFFLINE_AFTER", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
+    "RMM_REQUIRE_APPROVAL",
 ]
 
 

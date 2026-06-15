@@ -129,6 +129,8 @@ function render() {
 
     <section class="sec" data-sec="agents">
       ${secTitle("monitor", "Agents", "Defaults applied to every connected agent.")}
+      ${block("Enrolment", "",
+        `${toggle("requireApproval", "Require approval for new devices", "New agents wait in the Approvals queue until you approve them, instead of appearing automatically.", (cfg.RMM_REQUIRE_APPROVAL ?? "1") === "1")}`, "agents-approval")}
       <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Heartbeat interval</div><div class="cd">Agents report every ~30s by default (set <code>RMM_INTERVAL</code> on the agent). Per-agent auto-update arrives in a later release.</div></div></div>
       <div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Danger zone</div><div class="cd">Removing an agent (from a device's Actions) stops monitoring and revokes its key. Re-enrol with a fresh installer from Downloads.</div></div></div>
     </section>
@@ -267,6 +269,7 @@ function onSave(which) {
   if (which === "alerts-rules") return saveKeys({ ALERT_OFFLINE_AFTER: String(parseInt($("al-offline").value, 10) * 60), ALERT_CPU_PCT: $("al-cpu").value, ALERT_DISK_FREE_PCT: $("al-disk").value }, "Alert rules saved");
   if (which === "security-tls") return saveKeys({ RMM_TLS_MODE: tlsMode }, "TLS mode saved — restart to apply");
   if (which === "security-session") return saveKeys({ RMM_SECURE_COOKIES: document.querySelector('[data-toggle="secureCookies"]').classList.contains("on") ? "1" : "0" }, "Security saved");
+  if (which === "agents-approval") return saveKeys({ RMM_REQUIRE_APPROVAL: document.querySelector('[data-toggle="requireApproval"]').classList.contains("on") ? "1" : "0" }, "Enrolment policy saved");
 }
 
 async function init() {
