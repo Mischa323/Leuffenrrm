@@ -79,7 +79,7 @@ async function init() {
   setupMonitorModal();
   refreshPendingBadge();
   setInterval(refreshPendingBadge, 30000);
-  await showGlobal();
+  await restoreView();
 }
 
 async function refreshPendingBadge() {
@@ -106,7 +106,12 @@ async function showGlobal() {
   $("org-view").classList.add("hidden");
   $("org-switch").classList.add("hidden");
   $("crumb-org").classList.add("hidden");
-
+  saveView();
+  await loadGlobal();
+  // Keep the global overview live in the background.
+  state.refresh = setInterval(() => { if (!document.hidden && !state.org) loadGlobal().catch(() => {}); }, 10000);
+}
+async function loadGlobal() {
   const data = await api("/api/overview");
   const orgs = data.orgs.map((o) => ({ ...o, color: colorFor(o.id) }));
   state.orgs = orgs;
@@ -226,13 +231,48 @@ function selectTab(tab) {
   document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   ["devices", "approvals", "network", "nodes", "scripts", "monitors", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
   clearRefresh();
-  if (tab === "devices") { renderDevices(); state.refresh = setInterval(async () => { try { state.cache.devices = await api(`/api/orgs/${state.org}/devices`); renderDevices(); } catch {} }, 5000); }
+  saveView();
+  if (tab === "devices") renderDevices();
   else if (tab === "approvals") renderApprovals();
   else if (tab === "network") renderNetwork();
   else if (tab === "nodes") renderNodes();
   else if (tab === "scripts") renderScripts();
   else if (tab === "monitors") renderMonitors();
   else if (tab === "downloads") renderDownloads();
+  // Keep the active view live in the background (skip the static Downloads tab).
+  if (tab !== "downloads") {
+    const every = tab === "devices" ? 5000 : 8000;
+    state.refresh = setInterval(() => { if (!document.hidden && state.org && state.tab === tab) refreshTab(tab); }, every);
+  }
+}
+async function refreshTab(tab) {
+  if (!state.org) return;
+  try {
+    if (tab === "devices") { state.cache.devices = await api(`/api/orgs/${state.org}/devices`); renderDevices(); }
+    else if (tab === "approvals") { state.cache.pending = await api(`/api/orgs/${state.org}/pending`); buildNav(); renderApprovals(); }
+    else if (tab === "network") { state.cache.hosts = await api(`/api/orgs/${state.org}/network/hosts`); buildNav(); renderNetwork(); }
+    else if (tab === "nodes") { state.cache.nodes = await api(`/api/orgs/${state.org}/nodes`); buildNav(); renderNodes(); }
+    else if (tab === "monitors") { state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); buildNav(); renderMonitors(); }
+    else if (tab === "scripts") { state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`); buildNav(); renderScripts(); }
+  } catch {}
+}
+// Persist the current location so a browser refresh stays put (instead of
+// snapping back to the global dashboard).
+function saveView() {
+  try { location.hash = state.org ? `#/o/${state.org}/${state.tab}` : "#/"; } catch {}
+}
+async function restoreView() {
+  const m = (location.hash || "").match(/^#\/o\/([^/]+)\/([^/]+)/);
+  if (m) {
+    const org = (state.me.orgs || []).find((o) => o.id === m[1]);
+    if (org) {
+      const tabs = ["devices", "approvals", "network", "nodes", "scripts", "monitors", "downloads"];
+      state.tab = tabs.includes(m[2]) ? m[2] : "devices";
+      await showOrg(org.id, org.name);
+      return;
+    }
+  }
+  await showGlobal();
 }
 
 /* ---------- scripts (Phase 2) ---------- */
