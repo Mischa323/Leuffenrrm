@@ -361,23 +361,32 @@ def create_group(org_id: str, req: GroupRequest, user: dict = Depends(auth.curre
     return db.create_group(org_id, req.name)
 
 
-@app.get("/api/orgs/{org_id}/enroll-key")
-def get_enroll_key(org_id: str, user: dict = Depends(auth.current_user)):
+@app.get("/api/orgs/{org_id}/tokens")
+def list_tokens(org_id: str, user: dict = Depends(auth.current_user)):
+    """One-time enrolment keys for this org (metadata only — never the secret)."""
     auth.require_org(user, org_id)
-    org = db.get_org(org_id)
-    if not org:
-        raise HTTPException(status_code=404, detail="Org not found")
-    return {"enroll_key": org["enroll_key"], "insecure_tls": agent_insecure_tls()}
+    return {"tokens": db.list_enroll_tokens(org_id), "insecure_tls": agent_insecure_tls()}
 
 
-@app.post("/api/orgs/{org_id}/rotate-key")
-def rotate_enroll_key(org_id: str, user: dict = Depends(auth.current_user)):
-    """Issue a new enrolment key. New installers use it; existing agents keep
-    working (they reconnect by device identity)."""
+@app.post("/api/orgs/{org_id}/tokens")
+def create_token(org_id: str, user: dict = Depends(auth.current_user)):
+    """Mint a one-time enrolment key. The plaintext is returned ONCE and never
+    stored or shown again (only its hash is kept). Single-use: enrols one device."""
     auth.require_org(user, org_id)
     if not db.get_org(org_id):
         raise HTTPException(status_code=404, detail="Org not found")
-    return {"enroll_key": db.rotate_org_key(org_id)}
+    t = db.create_enroll_token(org_id, label=f"by {user['email']}")
+    return {"id": t["id"], "token": t["token"], "insecure_tls": agent_insecure_tls()}
+
+
+@app.delete("/api/orgs/tokens/{token_id}")
+def delete_token(token_id: str, user: dict = Depends(auth.current_user)):
+    t = db.get_enroll_token(token_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Token not found")
+    auth.require_org(user, t["org_id"])
+    db.delete_enroll_token(token_id)
+    return {"status": "deleted"}
 
 
 # --------------------------------------------------------------------------- #
@@ -945,12 +954,18 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
             await ws.close(code=4400)
             return
         device_id = first["id"]
-        # New installs need a valid enrolment key; an already-registered device may
-        # reconnect by its identity even after the key was rotated.
-        org = db.get_org_by_key(key)
-        if org is None:
-            existing = db.get_device(device_id)
-            org = db.get_org(existing["org_id"]) if existing else None
+        # Already-registered devices reconnect by identity (no key needed even after
+        # rotation). New devices must present a valid one-time enrolment token;
+        # the legacy reusable org key only works if RMM_LEGACY_ENROLL is on.
+        existing = db.get_device(device_id)
+        if existing:
+            org = db.get_org(existing["org_id"])
+        else:
+            org_id = db.consume_enroll_token(key, device_id)
+            if org_id is None and os.environ.get("RMM_LEGACY_ENROLL", "").lower() in ("1", "true", "yes"):
+                o = db.get_org_by_key(key)
+                org_id = o["id"] if o else None
+            org = db.get_org(org_id) if org_id else None
         if org is None:
             await ws.close(code=4401)
             return
@@ -1053,19 +1068,39 @@ def _org_from_request(org_id: str, user: dict) -> dict:
     return org
 
 
+def _installer_key(org_id: str, token: str | None, user: dict | None) -> tuple[dict, str]:
+    """Resolve (org, enrolment key) for an installer download.
+
+    A valid one-time ``token`` query authorises the download (so the one-liner
+    works on a target machine without a session). Otherwise an authenticated admin
+    gets a freshly-minted single-use token baked in.
+    """
+    org = db.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    if token and db.token_valid_for(org_id, token):
+        return org, token
+    if user is not None:
+        auth.require_org(user, org_id)
+        return org, db.create_enroll_token(org_id, label="installer")["token"]
+    raise HTTPException(status_code=401,
+                        detail="A valid enrolment token (?token=) or an admin session is required")
+
+
 @app.get("/api/orgs/{org_id}/install.sh", response_class=PlainTextResponse)
-def install_sh(org_id: str, user: dict = Depends(auth.current_user)):
-    org = _org_from_request(org_id, user)
+def install_sh(org_id: str, token: str | None = Query(None),
+               user: dict | None = Depends(auth.optional_user)):
+    org, key = _installer_key(org_id, token, user)
     pub = public_url()
     insecure = "1" if agent_insecure_tls() else "0"
     return f"""#!/usr/bin/env bash
 set -e
 # Leuffen RMM agent installer (Linux)
 export RMM_SERVER_URL="{pub}"
-export RMM_API_KEY="{org['enroll_key']}"
+export RMM_API_KEY="{key}"
 export RMM_INSECURE_TLS="{insecure}"
 TMP=$(mktemp -d)
-curl -fsSL "{pub}/api/orgs/{org_id}/agent.zip" -o "$TMP/agent.zip"
+curl -fsSL "{pub}/api/orgs/{org_id}/agent.zip?token={key}" -o "$TMP/agent.zip"
 unzip -o "$TMP/agent.zip" -d /opt/leuffen-rmm
 pip3 install -r /opt/leuffen-rmm/requirements.txt
 cat >/etc/systemd/system/leuffen-rmm.service <<UNIT
@@ -1074,7 +1109,7 @@ Description=Leuffen RMM Agent
 After=network-online.target
 [Service]
 Environment=RMM_SERVER_URL={pub}
-Environment=RMM_API_KEY={org['enroll_key']}
+Environment=RMM_API_KEY={key}
 Environment=RMM_INSECURE_TLS={insecure}
 ExecStart=/usr/bin/python3 /opt/leuffen-rmm/agent.py
 Nice=10
@@ -1089,19 +1124,20 @@ echo "Leuffen RMM agent installed and started."
 
 
 @app.get("/api/orgs/{org_id}/install.ps1", response_class=PlainTextResponse)
-def install_ps1(org_id: str, user: dict = Depends(auth.current_user)):
-    org = _org_from_request(org_id, user)
+def install_ps1(org_id: str, token: str | None = Query(None),
+                user: dict | None = Depends(auth.optional_user)):
+    org, key = _installer_key(org_id, token, user)
     pub = public_url()
     insecure = "1" if agent_insecure_tls() else "0"
     return f"""# Leuffen RMM agent installer (Windows)
 $ErrorActionPreference = "Stop"
 $dest = "$env:ProgramFiles\\LeuffenRMM"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
-Invoke-WebRequest "{pub}/api/orgs/{org_id}/agent.zip" -OutFile "$env:TEMP\\agent.zip"
+Invoke-WebRequest "{pub}/api/orgs/{org_id}/agent.zip?token={key}" -OutFile "$env:TEMP\\agent.zip"
 Expand-Archive -Force "$env:TEMP\\agent.zip" -DestinationPath $dest
 pip install -r "$dest\\requirements.txt"
 [Environment]::SetEnvironmentVariable("RMM_SERVER_URL", "{pub}", "Machine")
-[Environment]::SetEnvironmentVariable("RMM_API_KEY", "{org['enroll_key']}", "Machine")
+[Environment]::SetEnvironmentVariable("RMM_API_KEY", "{key}", "Machine")
 [Environment]::SetEnvironmentVariable("RMM_INSECURE_TLS", "{insecure}", "Machine")
 $action = New-ScheduledTaskAction -Execute "python" -Argument "$dest\\agent.py"
 $trigger = New-ScheduledTaskTrigger -AtStartup
@@ -1163,10 +1199,11 @@ async def install_msi(org_id: str, user: dict = Depends(auth.current_user)):
 
 
 @app.get("/api/orgs/{org_id}/agent.zip")
-def agent_zip(org_id: str, user: dict = Depends(auth.current_user)):
+def agent_zip(org_id: str, token: str | None = Query(None),
+              user: dict | None = Depends(auth.optional_user)):
     import io
     import zipfile
-    org = _org_from_request(org_id, user)
+    org, key = _installer_key(org_id, token, user)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for root, _dirs, files in os.walk(AGENT_DIR):
@@ -1179,7 +1216,7 @@ def agent_zip(org_id: str, user: dict = Depends(auth.current_user)):
                 z.write(full, os.path.relpath(full, AGENT_DIR))
         # Inject ready-to-run config so the agent connects with no manual setup.
         z.writestr("rmm_config.json",
-                   f'{{"server_url": "{public_url()}", "api_key": "{org["enroll_key"]}", '
+                   f'{{"server_url": "{public_url()}", "api_key": "{key}", '
                    f'"insecure_tls": {str(agent_insecure_tls()).lower()}}}')
     buf.seek(0)
     return Response(buf.read(), media_type="application/zip",

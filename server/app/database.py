@@ -187,6 +187,20 @@ CREATE TABLE IF NOT EXISTS script_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_device ON script_runs(device_id, created_at);
 
+-- One-time, write-once enrolment keys (stored hashed; never shown again).
+CREATE TABLE IF NOT EXISTS enroll_tokens (
+    id         TEXT PRIMARY KEY,
+    org_id     TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    label      TEXT,
+    created_at REAL NOT NULL,
+    expires_at REAL,
+    used_at    REAL,
+    device_id  TEXT,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tokens_hash ON enroll_tokens(token_hash);
+
 CREATE TABLE IF NOT EXISTS schedules (
     id               TEXT PRIMARY KEY,
     org_id           TEXT NOT NULL,
@@ -728,6 +742,72 @@ def rotate_org_key(org_id: str) -> str:
     with write() as conn:
         conn.execute("UPDATE organizations SET enroll_key=? WHERE id=?", (new_key, org_id))
     return new_key
+
+
+# --------------------------------------------------------------------------- #
+# One-time enrolment tokens (write-once, single-use)
+# --------------------------------------------------------------------------- #
+def _sha256_hex(s: str) -> str:
+    import hashlib
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+def create_enroll_token(org_id: str, label: str | None = None,
+                        ttl_hours: float | None = None) -> dict:
+    """Create a one-time enrolment key. Returns the plaintext token ONCE — only
+    its hash is stored, so it can never be shown again."""
+    tid = uuid.uuid4().hex
+    token = "lrmm_" + secrets.token_urlsafe(30)
+    exp = (_now() + ttl_hours * 3600) if ttl_hours else None
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO enroll_tokens (id, org_id, token_hash, label, created_at, expires_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (tid, org_id, _sha256_hex(token), label, _now(), exp),
+        )
+    return {"id": tid, "org_id": org_id, "token": token, "label": label, "expires_at": exp}
+
+
+def list_enroll_tokens(org_id: str) -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT id, label, created_at, expires_at, used_at, device_id "
+        "FROM enroll_tokens WHERE org_id=? ORDER BY created_at DESC", (org_id,)).fetchall()]
+
+
+def token_valid_for(org_id: str, token: str) -> bool:
+    """True if the token is unused, unexpired and belongs to this org (no consume)."""
+    row = get_conn().execute(
+        "SELECT org_id, used_at, expires_at FROM enroll_tokens WHERE token_hash=?",
+        (_sha256_hex(token),)).fetchone()
+    return bool(row and row["org_id"] == org_id and row["used_at"] is None
+                and (not row["expires_at"] or _now() <= row["expires_at"]))
+
+
+def consume_enroll_token(token: str, device_id: str) -> str | None:
+    """Spend a valid token for a device; return its org_id, or None if invalid."""
+    h = _sha256_hex(token)
+    now = _now()
+    with write() as conn:
+        row = conn.execute(
+            "SELECT id, org_id, used_at, expires_at FROM enroll_tokens WHERE token_hash=?",
+            (h,)).fetchone()
+        if not row or row["used_at"] is not None:
+            return None
+        if row["expires_at"] and now > row["expires_at"]:
+            return None
+        conn.execute("UPDATE enroll_tokens SET used_at=?, device_id=? WHERE id=?",
+                     (now, device_id, row["id"]))
+        return row["org_id"]
+
+
+def get_enroll_token(token_id: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM enroll_tokens WHERE id=?", (token_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_enroll_token(token_id: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM enroll_tokens WHERE id=?", (token_id,))
 
 
 def list_orgs() -> list[dict]:

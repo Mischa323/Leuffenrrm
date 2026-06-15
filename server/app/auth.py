@@ -139,6 +139,15 @@ def current_user(request: Request) -> dict:
     return {"email": email, "is_global_admin": is_global_admin(email)}
 
 
+def optional_user(request: Request) -> dict | None:
+    """Like current_user but returns None instead of raising (for token-or-cookie
+    authorised endpoints)."""
+    try:
+        return current_user(request)
+    except HTTPException:
+        return None
+
+
 def require_org(user: dict, org_id: str) -> str:
     """Ensure the user may act in ``org_id``; return their role."""
     if user["is_global_admin"]:
