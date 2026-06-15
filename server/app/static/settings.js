@@ -78,10 +78,10 @@ function render() {
 
     <section class="sec" data-sec="orgs">
       ${secTitle("building", "Organisations", "Tenancy — each org isolates its devices and members.")}
-      <div class="card-block"><div class="cb-head" style="display:flex;align-items:center;justify-content:space-between"><div><h3>${ORGS.length} organisations</h3><p>Open an org in the dashboard to manage its devices.</p></div><a class="btn ghost" href="/">${ICON.external} Open dashboard</a></div>
-        <table class="utable"><thead><tr><th>Organisation</th><th>Devices</th><th>Online</th></tr></thead><tbody>
+      <div class="card-block"><div class="cb-head" style="display:flex;align-items:center;justify-content:space-between"><div><h3>${ORGS.length} organisations</h3><p>Each tenant isolates its devices and members.</p></div><button class="btn" id="org-create">${ICON.plus} New organisation</button></div>
+        <table class="utable"><thead><tr><th>Organisation</th><th>Devices</th><th>Online</th><th></th></tr></thead><tbody>
         ${ORGS.map((o) => `<tr><td><div class="u-cell"><div class="av" style="background:linear-gradient(140deg,${o.color},color-mix(in srgb,${o.color} 55%,#000))">${initials2(o.name)}</div><div><div class="un">${esc(o.name)}</div></div></div></td>
-          <td>${o.devices}</td><td>${o.online}</td></tr>`).join("") || `<tr><td colspan="3" class="muted" style="padding:20px">No organisations.</td></tr>`}
+          <td>${o.devices}</td><td>${o.online}</td><td><div class="u-actions"><a class="btn ghost sm" href="/">${ICON.external} Open</a><button class="btn ghost sm org-del" data-id="${o.id}" data-name="${esc(o.name)}">${ICON.trash}</button></div></td></tr>`).join("") || `<tr><td colspan="4" class="muted" style="padding:20px">No organisations.</td></tr>`}
         </tbody></table></div>
     </section>
 
@@ -105,7 +105,8 @@ function render() {
       ${secTitle("bell", "Alerts & email", "When and how the server notifies you.")}
       ${block("Email delivery (Microsoft Graph)", "Alerts are sent through your Microsoft 365 tenant.",
         `<div class="frow"><label>Sender mailbox</label><input class="inp mono" id="a-sender" value="${esc(cfg.GRAPH_SENDER || "")}" /><div class="hint">A licensed mailbox with <code>Mail.Send</code> granted to the app.</div></div>
-         <div class="frow"><label>From address shown to recipients</label><input class="inp mono" id="a-from" value="${esc(cfg.GRAPH_FROM || "")}" /></div>`, "alerts-mail")}
+         <div class="frow"><label>From address shown to recipients</label><input class="inp mono" id="a-from" value="${esc(cfg.GRAPH_FROM || "")}" /></div>
+         <div class="frow"><label>Alert recipients</label><input class="inp mono" id="a-recipients" value="${esc(cfg.RMM_ALERT_RECIPIENTS || "")}" placeholder="ops@leuffen.it, admin@leuffen.it" /><div class="hint">Who gets device + monitor alert emails (comma-separated).</div></div>`, "alerts-mail")}
       ${block("Alert rules", "Thresholds that trigger an alert.",
         `<div class="frow split">
            <div class="frow"><label>Mark device offline after</label>${select("al-offline", ["2", "5", "10", "30"], offlineMin, (v) => v + " min no heartbeat")}</div>
@@ -250,9 +251,27 @@ function buildAppearance() {
   const rs = $("ap-reset"); if (rs) rs.onclick = () => { Appearance.resetGlobal(); buildAppearance(); toast("Workspace default reset"); };
 }
 
+async function reloadOrgs() {
+  ORGS = await api("/api/overview").then((d) => d.orgs.map((o) => ({ ...o, color: colorFor(o.id) }))).catch(() => ORGS);
+  render(); selectSec("orgs");
+}
+async function createOrg() {
+  const name = (prompt("New organisation name?") || "").trim();
+  if (!name) return;
+  try { await api("/api/orgs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }); toast("Organisation created"); await reloadOrgs(); }
+  catch (e) { toast(e.message); }
+}
+async function deleteOrg(id, name) {
+  if (!confirm(`Delete organisation “${name}”?\n\nAll of its devices, scripts and data are permanently removed.`)) return;
+  try { await api(`/api/orgs/${id}`, { method: "DELETE" }); toast("Organisation deleted"); await reloadOrgs(); }
+  catch (e) { toast(e.message); }
+}
+
 function wire() {
   document.querySelectorAll("[data-toggle]:not([data-toggle='ap-dataviz'])").forEach((t) => t.onclick = () => t.classList.toggle("on"));
   document.querySelectorAll(".save-btn").forEach((b) => b.onclick = () => onSave(b.dataset.save));
+  const oc = $("org-create"); if (oc) oc.onclick = createOrg;
+  document.querySelectorAll(".org-del").forEach((b) => b.onclick = () => deleteOrg(b.dataset.id, b.dataset.name));
   const rc = $("reset-config");
   if (rc) rc.onclick = async () => {
     if (!confirm("Reset ALL server configuration and re-run setup?\n\nDevices, organisations and accounts are kept. You'll be sent to the setup wizard.")) return;
@@ -265,7 +284,7 @@ function onSave(which) {
   if (which === "general") return saveKeys({ RMM_SERVER_NAME: $("g-name").value, RMM_PUBLIC_URL: $("g-url").value }, "General settings saved");
   if (which === "auth") return saveKeys({ RMM_AUTH_MODE: authMethod }, "Auth mode saved — restart to apply");
   if (which === "auth-mfa") return saveKeys({ RMM_ENFORCE_2FA: document.querySelector('[data-toggle="enforce2fa"]').classList.contains("on") ? "1" : "0" }, "Two-factor policy saved");
-  if (which === "alerts-mail") return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value }, "Email settings saved");
+  if (which === "alerts-mail") return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value, RMM_ALERT_RECIPIENTS: $("a-recipients").value }, "Email settings saved");
   if (which === "alerts-rules") return saveKeys({ ALERT_OFFLINE_AFTER: String(parseInt($("al-offline").value, 10) * 60), ALERT_CPU_PCT: $("al-cpu").value, ALERT_DISK_FREE_PCT: $("al-disk").value }, "Alert rules saved");
   if (which === "security-tls") return saveKeys({ RMM_TLS_MODE: tlsMode }, "TLS mode saved — restart to apply");
   if (which === "security-session") return saveKeys({ RMM_SECURE_COOKIES: document.querySelector('[data-toggle="secureCookies"]').classList.contains("on") ? "1" : "0" }, "Security saved");
