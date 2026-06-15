@@ -41,25 +41,35 @@ def _download(url: str, dest: str, insecure: bool) -> None:
             f.write(chunk)
 
 
-def apply_update(msg: dict, install_dir: str) -> dict:
+def apply_update(msg: dict, install_dir: str, cfg: dict | None = None) -> dict:
     """Download and apply the latest agent build. Returns a result dict.
 
     On success the process is scheduled to exit/restart shortly after, so the
-    caller should ack the returned payload before that happens.
+    caller should ack the returned payload before that happens. ``cfg`` is the
+    agent's current configuration, re-applied so the upgrade keeps its identity.
     """
     insecure = bool(msg.get("insecure_tls"))
     if os.name == "nt":
-        return _update_windows(msg.get("msi_url"), insecure)
+        return _update_windows(msg.get("msi_url"), insecure, cfg or {})
     return _update_linux(msg.get("zip_url"), insecure, install_dir)
 
 
-def _update_windows(msi_url: str | None, insecure: bool) -> dict:
+def _update_windows(msi_url: str | None, insecure: bool, cfg: dict) -> dict:
     if not msi_url:
         return {"ok": False, "error": "no MSI URL provided"}
     tmp = tempfile.mkdtemp(prefix="lrmm-upd-")
     msi = os.path.join(tmp, "leuffen-rmm-agent.msi")
     _download(msi_url, msi, insecure)
     log.info("downloaded update MSI to %s", msi)
+    # The MSI stores server URL + key as machine env vars from its properties; a
+    # major-upgrade reinstall without them would wipe the config. Re-pass the
+    # current config so the upgraded agent keeps connecting.
+    props = ""
+    server_url, api_key = (cfg.get("server_url"), cfg.get("api_key"))
+    if server_url and api_key:
+        ins = "1" if cfg.get("insecure_tls") else "0"
+        props = (f' RMM_SERVER_URL="{server_url}" RMM_API_KEY="{api_key}"'
+                 f' RMM_INSECURE_TLS={ins}')
     # A detached helper waits for this PID to release the binaries, upgrades, then
     # relaunches the freshly-installed agent.
     relaunch = sys.executable if getattr(sys, "frozen", False) else ""
@@ -69,7 +79,7 @@ def _update_windows(msi_url: str | None, insecure: bool) -> dict:
         f.write(
             "@echo off\r\n"
             "timeout /t 3 /nobreak >nul\r\n"
-            f'msiexec /i "{msi}" /qn /norestart /l*v "{log_path}"\r\n'
+            f'msiexec /i "{msi}" /qn /norestart{props} /l*v "{log_path}"\r\n'
             + (f'start "" "{relaunch}"\r\n' if relaunch else "")
         )
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

@@ -82,6 +82,28 @@ def _load_config() -> dict:
     return cfg
 
 
+def _persist_config(cfg: dict) -> None:
+    """Write the resolved config to the data dir so it survives an MSI upgrade.
+
+    The Windows MSI keeps server URL + key in machine env vars, which a reinstall
+    can clear; the data dir (%ProgramData%) is never touched by the installer, so
+    a copy here makes the agent self-sufficient across updates."""
+    if not (cfg.get("server_url") and cfg.get("api_key")):
+        return
+    path = os.path.join(_data_dir(), "rmm_config.json")
+    want = {"server_url": cfg["server_url"], "api_key": cfg["api_key"],
+            "insecure_tls": bool(cfg.get("insecure_tls"))}
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                if json.load(f) == want:
+                    return
+        with open(path, "w") as f:
+            json.dump(want, f)
+    except Exception:
+        pass
+
+
 def _device_id() -> str:
     """Stable per-machine id, persisted in the data directory."""
     path = os.path.join(_data_dir(), "rmm_device_id")
@@ -308,7 +330,7 @@ class Agent:
         log.info("update requested from server")
         loop = asyncio.get_event_loop()
         try:
-            res = await loop.run_in_executor(None, updater.apply_update, msg, HERE)
+            res = await loop.run_in_executor(None, updater.apply_update, msg, HERE, self.cfg)
         except Exception as exc:
             log.warning("update failed: %s", exc)
             res = {"ok": False, "error": str(exc)}
@@ -388,6 +410,7 @@ def main() -> None:
         log.error("Missing server_url/api_key. Set RMM_SERVER_URL and RMM_API_KEY "
                   "or ship rmm_config.json next to the agent.")
         sys.exit(1)
+    _persist_config(cfg)
     _grant_users_writable(_data_dir())
     asyncio.run(Agent(cfg).run())
 
