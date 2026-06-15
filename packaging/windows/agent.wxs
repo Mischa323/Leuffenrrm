@@ -62,10 +62,16 @@
     <CustomAction Id="DeleteTask" Directory="INSTALLFOLDER" Impersonate="no" Execute="deferred" Return="ignore"
       ExeCommand="schtasks /delete /tn LeuffenRMMAgent /f" />
 
+    <!-- After an interactive install, open the configuration dialog (server URL + key).
+         Skipped for silent installs (msiexec /qn passes config via properties). -->
+    <CustomAction Id="LaunchConfig" FileRef="trayexe" ExeCommand="--settings"
+      Execute="immediate" Return="asyncNoWait" Impersonate="yes" />
+
     <InstallExecuteSequence>
       <Custom Action="CreateTask" After="InstallFiles" Condition="NOT Installed" />
       <Custom Action="StartTask" After="CreateTask" Condition="NOT Installed" />
       <Custom Action="DeleteTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="LaunchConfig" After="InstallFinalize" Condition="NOT Installed AND UILevel &gt; 3" />
     </InstallExecuteSequence>
   </Package>
 </Wix>
