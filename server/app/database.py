@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS devices (
     ip            TEXT,
     mac           TEXT,
     agent_version TEXT,
+    logged_in_user TEXT,
     is_node       INTEGER NOT NULL DEFAULT 0,
     inventory_json TEXT,
     compliant     INTEGER,
@@ -674,6 +675,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "approved" not in dcols:
         # Existing devices stay approved; new ones can require approval.
         conn.execute("ALTER TABLE devices ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
+    if "logged_in_user" not in dcols:
+        conn.execute("ALTER TABLE devices ADD COLUMN logged_in_user TEXT")
 
 
 def get_conn() -> sqlite3.Connection:
@@ -926,6 +929,7 @@ def upsert_device(org_id: str, dev: dict[str, Any], require_approval: bool = Fal
             serial=inv.get("serial"), cpu=inv.get("cpu"), ram_total=inv.get("ram_total"),
             ip=inv.get("ip") or dev.get("ip"), mac=inv.get("mac") or dev.get("mac"),
             agent_version=inv.get("agent_version"),
+            logged_in_user=inv.get("logged_in_user"),
             inventory_json=json.dumps(inv), last_seen=now,
         )
         if existing:
@@ -1048,6 +1052,9 @@ def get_device(device_id: str) -> dict | None:
     d = dict(row)
     if d.get("inventory_json"):
         d["inventory"] = json.loads(d["inventory_json"])
+    # Attach configured subnets so the device drawer can list them for a node.
+    if d.get("is_node"):
+        d["subnets"] = list_subnets(device_id)
     return d
 
 

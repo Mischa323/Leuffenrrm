@@ -16,6 +16,27 @@ import psutil
 AGENT_VERSION = "0.1.0"
 
 
+def _logged_in_user() -> str | None:
+    """Best-effort name of the interactive/console user currently signed in."""
+    try:
+        users = psutil.users()
+    except Exception:
+        users = []
+    names: list[str] = []
+    for u in users:
+        if u.name and u.name not in names:
+            names.append(u.name)
+    if names:
+        return ", ".join(names)
+    # Fallback to the process owner on Windows (agent runs as SYSTEM there, so
+    # this is mostly useful on Linux/desktop).
+    try:
+        import getpass
+        return getpass.getuser()
+    except Exception:
+        return None
+
+
 def _primary_ip() -> str | None:
     """Best-effort primary outbound IPv4 (no traffic actually sent)."""
     try:
@@ -110,6 +131,7 @@ def collect() -> dict:
         "kernel": platform.release(),
         "hostname": socket.gethostname(),
         "fqdn": socket.getfqdn(),
+        "logged_in_user": _logged_in_user(),
         "agent_version": AGENT_VERSION,
         "cpu": platform.processor() or platform.machine(),
         "cpu_cores_logical": psutil.cpu_count(),
