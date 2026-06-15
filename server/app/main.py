@@ -554,7 +554,8 @@ def _update_message(org_id: str) -> dict:
     keeping its existing config + device id across the upgrade.
     """
     pub = public_url()
-    token = db.create_enroll_token(org_id, label="agent-update", ttl_hours=2)["token"]
+    token = db.create_enroll_token(org_id, label="agent-update", ttl_hours=2,
+                                   kind="internal")["token"]
     return {
         "type": "update_agent",
         "server_url": pub,
@@ -1207,7 +1208,7 @@ def _installer_key(org_id: str, token: str | None, user: dict | None) -> tuple[d
         return org, token
     if user is not None:
         auth.require_org(user, org_id)
-        return org, db.create_enroll_token(org_id, label="installer")["token"]
+        return org, db.create_enroll_token(org_id, label="installer", kind="internal")["token"]
     raise HTTPException(status_code=401,
                         detail="A valid enrolment token (?token=) or an admin session is required")
 
