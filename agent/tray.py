@@ -132,21 +132,24 @@ def settings_dialog() -> None:
     tk.Checkbutton(root, text="Accept self-signed certificate (insecure TLS)",
                    variable=insecure).grid(row=2, column=1, sticky="w", **pad)
 
-    if not admin:
-        tk.Label(root, text="Run as administrator to save changes.",
-                 fg="#b91c1c").grid(row=3, column=1, sticky="w", **pad)
-
     def save():
         u, k = url.get().strip(), key.get().strip()
         if not u or not k:
             messagebox.showerror("Leuffen RMM", "Server URL and enrollment key are required.")
             return
-        if not admin:
-            messagebox.showerror("Leuffen RMM", "Administrator rights are required to change settings.")
-            return
+        denied = False
         for name, val in (("RMM_SERVER_URL", u), ("RMM_API_KEY", k),
                           ("RMM_INSECURE_TLS", "1" if insecure.get() else "0")):
-            subprocess.run(["setx", "/M", name, val], capture_output=True, timeout=20)
+            r = subprocess.run(["setx", "/M", name, val], capture_output=True, timeout=20, text=True)
+            if r.returncode != 0:
+                denied = True
+        if denied:
+            messagebox.showerror(
+                "Leuffen RMM",
+                "Administrator rights are required to save these settings.\n\n"
+                "Right-click the Leuffen RMM tray icon and choose “Settings…” "
+                "(it will prompt for admin), or run this installer as administrator.")
+            return
         _restart_agent()
         messagebox.showinfo("Leuffen RMM", "Settings saved. The agent is reconnecting.")
         root.destroy()
@@ -154,8 +157,7 @@ def settings_dialog() -> None:
     btns = tk.Frame(root)
     btns.grid(row=4, column=1, sticky="e", **pad)
     tk.Button(btns, text="Cancel", command=root.destroy).pack(side="right", padx=4)
-    tk.Button(btns, text="Save", command=save,
-              state=("normal" if admin else "disabled")).pack(side="right", padx=4)
+    tk.Button(btns, text="Save", command=save).pack(side="right", padx=4)
     root.mainloop()
 
 
