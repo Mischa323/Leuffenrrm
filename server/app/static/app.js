@@ -512,46 +512,61 @@ function renderNodes() {
 
 async function renderDownloads() {
   const base = location.origin;
-  let info = { enroll_key: "<enrollment-key>", insecure_tls: location.protocol === "https:" };
-  try { info = await api(`/api/orgs/${state.org}/enroll-key`); } catch {}
-  const msiCmd = (key) => `msiexec /i leuffen-rmm-agent.msi /qn RMM_SERVER_URL=${base} RMM_API_KEY=${key} RMM_INSECURE_TLS=${info.insecure_tls ? 1 : 0}`;
+  let info = { tokens: [], insecure_tls: location.protocol === "https:" };
+  try { info = await api(`/api/orgs/${state.org}/tokens`); } catch {}
+  const ins = info.insecure_tls ? 1 : 0;
   let rel = { available: false };
   try { rel = await api(`/api/agent-release`); } catch {}
   const relLabel = rel.available
     ? `<span class="badge ok" style="margin-left:8px">${escapeHtml(rel.name || rel.tag || "latest")}</span>${rel.size ? ` <span class="h-sub">${(rel.size / 1048576).toFixed(1)} MB${rel.published_at ? " · " + new Date(rel.published_at).toLocaleDateString() : ""}</span>` : ""}`
     : `<span class="badge na" style="margin-left:8px">no build published yet</span>`;
   $("downloads-body").innerHTML = `
+    <div class="dl-block"><div class="lab">${ICON.key} Enrolment key — one-time &amp; write-once</div>
+      <div class="h-sub" style="margin:4px 0 10px">Generate a key per device. It's shown <b>once</b>, can't be retrieved again, and enrols a <b>single</b> device. Already-enrolled agents reconnect by their identity — no key needed.</div>
+      <button class="btn sm" id="gen-token">${ICON.plus} Generate enrolment key</button>
+      <div id="token-result" style="margin-top:12px"></div></div>
     <div class="dl-block"><div class="lab">${ICON.windows} Windows — MSI installer ${relLabel}</div>
-      <div style="margin:6px 0 8px"><a class="btn sm" href="${base}/api/orgs/${state.org}/install.msi">${ICON.download} Download MSI</a></div>
-      <div class="code"><button class="btn ghost sm copy" data-c="${msiCmd(info.enroll_key)}">${ICON.copy} Copy</button>${msiCmd("&lt;enrollment-key&gt;")}</div>
-      <div class="h-sub" style="margin-top:6px">Silent install as SYSTEM; runs at startup. Download the MSI, then run the command (admin). Copy includes the key.</div></div>
-    <div class="dl-block"><div class="lab">${ICON.windows} Windows (PowerShell, admin)</div>
-      <div class="code"><button class="btn ghost sm copy" data-c="iwr ${base}/api/orgs/${state.org}/install.ps1 -UseBasicParsing | iex">${ICON.copy} Copy</button>iwr ${base}/api/orgs/${state.org}/install.ps1 -UseBasicParsing | iex</div></div>
-    <div class="dl-block"><div class="lab">${ICON.linux} Linux (one-liner)</div>
-      <div class="code"><button class="btn ghost sm copy" data-c="curl -fsSL ${base}/api/orgs/${state.org}/install.sh | sudo bash">${ICON.copy} Copy</button>curl -fsSL ${base}/api/orgs/${state.org}/install.sh | sudo bash</div></div>
-    <div class="dl-block"><div class="lab">${ICON.download} Manual install</div>
-      <div class="code">Download: ${base}/api/orgs/${state.org}/agent.zip
-Run: python agent.py  <span style="color:#5f7088"># config bundled inside</span></div></div>
-    <div class="dl-block"><div class="lab">${ICON.key} Enrollment key</div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <code id="enroll-key" class="mono" style="background:var(--surface-3);border:1px solid var(--border);border-radius:var(--r-sm);padding:7px 10px;font-size:13px">••••••••</code>
-        <button class="btn ghost sm" id="key-show">Show</button>
-        <button class="btn ghost sm" id="key-rotate">${ICON.refresh} Rotate</button>
-      </div>
-      <div class="h-sub" style="margin-top:8px">Used by new installers. Rotating issues a new key — already-installed agents keep working.</div></div>`;
-  $("downloads-body").querySelectorAll(".copy").forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.c); toast("Copied to clipboard"); });
-  let keyShown = false, keyVal = null;
-  const loadKey = async () => { if (keyVal == null) keyVal = (await api(`/api/orgs/${state.org}/enroll-key`)).enroll_key; return keyVal; };
-  $("key-show").onclick = async () => {
-    keyShown = !keyShown;
-    $("enroll-key").textContent = keyShown ? await loadKey() : "••••••••";
-    $("key-show").textContent = keyShown ? "Hide" : "Show";
+      <div style="margin:6px 0 8px"><a class="btn sm" href="${base}/api/orgs/${state.org}/install.msi">${ICON.download} Download MSI</a> <span class="h-sub">then install with the generated key</span></div>
+      <div class="code">msiexec /i leuffen-rmm-agent.msi /qn RMM_SERVER_URL=${base} RMM_API_KEY=&lt;enrolment-key&gt; RMM_INSECURE_TLS=${ins}</div></div>
+    <div class="dl-block"><div class="lab">${ICON.key} Active enrolment keys</div>
+      <div id="token-list"></div></div>`;
+  $("gen-token").onclick = async () => {
+    try {
+      const t = await api(`/api/orgs/${state.org}/tokens`, { method: "POST" });
+      showNewToken(t.token, base, ins);
+      info = await api(`/api/orgs/${state.org}/tokens`); renderTokenList(info.tokens);
+    } catch (e) { toast(e.message); }
   };
-  $("key-rotate").onclick = async () => {
-    if (!confirm("Rotate the enrollment key? New installers will use the new key; existing agents are unaffected.")) return;
-    try { keyVal = (await api(`/api/orgs/${state.org}/rotate-key`, { method: "POST" })).enroll_key; keyShown = true; $("enroll-key").textContent = keyVal; $("key-show").textContent = "Hide"; toast("Enrollment key rotated"); }
-    catch (e) { toast(e.message); }
+  renderTokenList(info.tokens);
+}
+function showNewToken(token, base, ins) {
+  const cmds = {
+    msi: `msiexec /i leuffen-rmm-agent.msi /qn RMM_SERVER_URL=${base} RMM_API_KEY=${token} RMM_INSECURE_TLS=${ins}`,
+    win: `iwr "${base}/api/orgs/${state.org}/install.ps1?token=${token}" -UseBasicParsing | iex`,
+    lin: `curl -fsSL "${base}/api/orgs/${state.org}/install.sh?token=${token}" | sudo bash`,
   };
+  const row = (label, c) => `<div style="margin-top:8px"><div class="h-sub">${label}</div><div class="code"><button class="btn ghost sm tcopy" data-c="${escapeHtml(c)}">${ICON.copy} Copy</button>${escapeHtml(c)}</div></div>`;
+  const host = $("token-result");
+  host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.key}</div><div style="flex:1">
+    <div class="ct">Copy this now — it won't be shown again</div>
+    <div style="margin:8px 0"><code style="font-family:var(--font-mono);background:var(--surface-3);border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 11px;font-size:13px;display:inline-block;word-break:break-all">${escapeHtml(token)}</code>
+      <button class="btn ghost sm tcopy" data-c="${escapeHtml(token)}" style="margin-left:8px">${ICON.copy} Copy key</button></div>
+    ${row("Tray Settings: paste as the enrolment key, or MSI:", cmds.msi)}
+    ${row("Windows (PowerShell, admin):", cmds.win)}
+    ${row("Linux (one-liner):", cmds.lin)}
+  </div></div>`;
+  host.querySelectorAll(".tcopy").forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.c); toast("Copied"); });
+}
+function renderTokenList(tokens) {
+  const host = $("token-list");
+  if (!tokens.length) { host.innerHTML = `<div class="h-sub">No keys yet. Generate one above.</div>`; return; }
+  host.innerHTML = `<table class="grid"><thead><tr><th>Created</th><th>Status</th><th></th></tr></thead><tbody>${tokens.map((t) => {
+    const used = t.used_at ? `<span class="badge na">used ${relTime(t.used_at)}</span>` : `<span class="badge ok">unused</span>`;
+    return `<tr><td class="h-sub">${relTime(t.created_at)}</td><td>${used}</td><td style="text-align:right"><button class="btn ghost sm tdel" data-id="${t.id}">${ICON.trash}</button></td></tr>`;
+  }).join("")}</tbody></table>`;
+  host.querySelectorAll(".tdel").forEach((b) => b.onclick = async () => {
+    try { await api(`/api/orgs/tokens/${b.dataset.id}`, { method: "DELETE" }); const info = await api(`/api/orgs/${state.org}/tokens`); renderTokenList(info.tokens); toast("Key revoked"); } catch (e) { toast(e.message); }
+  });
 }
 
 /* ---------- monitors (policies) ---------- */
