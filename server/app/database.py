@@ -1124,7 +1124,17 @@ def delete_subnet(subnet_id: int) -> None:
 
 def upsert_network_hosts(org_id: str, node_id: str, hosts: list[dict]) -> None:
     now = _now()
+    seen_ips = [h.get("ip") for h in hosts if h.get("ip")]
     with write() as conn:
+        # Hosts this node saw before but not in this scan have left the network —
+        # age them to offline (keeping their last_seen for the UI).
+        if seen_ips:
+            ph = ",".join("?" * len(seen_ips))
+            conn.execute(
+                f"UPDATE network_hosts SET online=0 WHERE node_id=? AND ip NOT IN ({ph})",
+                (node_id, *seen_ips))
+        else:
+            conn.execute("UPDATE network_hosts SET online=0 WHERE node_id=?", (node_id,))
         for h in hosts:
             existing = conn.execute(
                 "SELECT id, first_seen FROM network_hosts WHERE node_id=? AND ip=?",
