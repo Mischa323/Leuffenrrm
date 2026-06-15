@@ -327,7 +327,24 @@ def _grant_users_writable(path: str) -> None:
         pass
 
 
+def _setup_file_logging() -> None:
+    """Write the agent's logs to a rotating file in the data directory.
+
+    On Windows that's %ProgramData%\\LeuffenRMM\\agent.log (the no-console service
+    has nowhere else to log); elsewhere it sits next to the agent."""
+    try:
+        from logging.handlers import RotatingFileHandler
+        path = os.path.join(_data_dir(), "agent.log")
+        handler = RotatingFileHandler(path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logging.getLogger().addHandler(handler)
+        log.info("Leuffen RMM agent — logging to %s", path)
+    except Exception:
+        pass
+
+
 def main() -> None:
+    _setup_file_logging()
     cfg = _load_config()
     if not cfg.get("server_url") or not cfg.get("api_key"):
         log.error("Missing server_url/api_key. Set RMM_SERVER_URL and RMM_API_KEY "
