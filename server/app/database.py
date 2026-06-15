@@ -735,6 +735,12 @@ def list_orgs() -> list[dict]:
         "SELECT * FROM organizations ORDER BY name").fetchall()]
 
 
+def org_member_count(org_id: str) -> int:
+    row = get_conn().execute(
+        "SELECT COUNT(*) AS n FROM org_users WHERE org_id=?", (org_id,)).fetchone()
+    return row["n"] if row else 0
+
+
 def add_org_user(org_id: str, email: str, role: str = "admin") -> None:
     with write() as conn:
         conn.execute(
