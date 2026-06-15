@@ -33,11 +33,11 @@ jobs:
 
       - name: Build agent exe
         working-directory: agent
-        run: pyinstaller --onefile --noconsole --name leuffen-rmm-agent --paths . agent.py
+        run: pyinstaller --onefile --noconsole --icon ..\packaging\windows\leuffen.ico --name leuffen-rmm-agent --paths . agent.py
 
       - name: Build tray exe
         working-directory: agent
-        run: pyinstaller --onefile --noconsole --name leuffen-rmm-tray --paths . tray.py
+        run: pyinstaller --onefile --noconsole --icon ..\packaging\windows\leuffen.ico --name leuffen-rmm-tray --paths . tray.py
 
       - name: Prepare signing certificate
         if: env.HAS_CERT == 'true'

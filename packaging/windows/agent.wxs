@@ -22,6 +22,9 @@
     <!-- Publisher / about info shown in Programs &amp; Features. -->
     <Property Id="ARPURLINFOABOUT" Value="https://leuffen.it" />
     <Property Id="ARPHELPLINK" Value="https://leuffen.it" />
+    <!-- App icon in Programs &amp; Features. -->
+    <Icon Id="leuffen.ico" SourceFile="leuffen.ico" />
+    <Property Id="ARPPRODUCTICON" Value="leuffen.ico" />
 
     <!-- Per-install configuration. -->
     <Property Id="RMM_SERVER_URL" Secure="yes" />
