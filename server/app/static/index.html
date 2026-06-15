@@ -36,7 +36,8 @@
         <div class="page-head"><div><h1>Fleet overview</h1><p>Monitoring across all organisations</p></div>
           <button class="btn ghost" id="refresh-global"><span id="refresh-ico"></span> Refresh</button></div>
         <div class="kpis" id="kpis"></div>
-        <div class="page-head" style="margin:8px 0 16px"><div><h1 style="font-size:16px">Organisations</h1></div></div>
+        <div class="page-head" style="margin:8px 0 16px"><div><h1 style="font-size:16px">Organisations</h1></div>
+          <button class="btn sm" id="org-new"><span id="orgnew-ico"></span> New organisation</button></div>
         <div class="cards" id="org-cards"></div>
       </section>
 
@@ -46,6 +47,7 @@
           <aside class="sidebar">
             <nav class="nav">
               <button data-tab="devices" class="active"><span class="ni" data-i="monitor"></span> Devices <span class="count" id="nav-devices-count">0</span></button>
+              <button data-tab="approvals"><span class="ni" data-i="shieldCheck"></span> Approvals <span class="count" id="nav-approvals-count">0</span></button>
               <button data-tab="network"><span class="ni" data-i="network"></span> Network <span class="count" id="nav-network-count">0</span></button>
               <button data-tab="nodes"><span class="ni" data-i="nodes"></span> Nodes <span class="count" id="nav-nodes-count">0</span></button>
               <button data-tab="scripts"><span class="ni" data-i="terminal"></span> Scripts <span class="count" id="nav-scripts-count">0</span></button>
@@ -65,6 +67,16 @@
                 <div style="overflow-x:auto"><table class="grid">
                   <thead><tr><th>Device</th><th>Status</th><th>CPU</th><th>Memory</th><th>Disk</th><th>Compliance</th></tr></thead>
                   <tbody id="device-rows"></tbody>
+                </table></div>
+              </div>
+            </div>
+            <!-- Approvals -->
+            <div id="tab-approvals" class="hidden">
+              <div class="panel">
+                <div class="panel-head"><h2>Pending approval</h2><span class="sub" id="approvals-sub"></span></div>
+                <div style="overflow-x:auto"><table class="grid">
+                  <thead><tr><th>Device</th><th>OS</th><th>IP</th><th>First seen</th><th></th></tr></thead>
+                  <tbody id="approval-rows"></tbody>
                 </table></div>
               </div>
             </div>

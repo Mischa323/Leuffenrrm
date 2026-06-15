@@ -656,6 +656,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     scols = {r[1] for r in conn.execute("PRAGMA table_info(scripts)")}
     if "category" not in scols:
         conn.execute("ALTER TABLE scripts ADD COLUMN category TEXT DEFAULT 'Script'")
+    dcols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
+    if "approved" not in dcols:
+        # Existing devices stay approved; new ones can require approval.
+        conn.execute("ALTER TABLE devices ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
 
 
 def get_conn() -> sqlite3.Connection:
@@ -814,8 +818,12 @@ def alert_config(org_id: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Devices & metrics
 # --------------------------------------------------------------------------- #
-def upsert_device(org_id: str, dev: dict[str, Any]) -> dict:
-    """Insert or update a device from an agent ``register`` payload."""
+def upsert_device(org_id: str, dev: dict[str, Any], require_approval: bool = False) -> dict:
+    """Insert or update a device from an agent ``register`` payload.
+
+    A brand-new device is created with ``approved=0`` when ``require_approval`` is
+    set, so it lands in the approval queue; existing devices keep their state.
+    """
     now = _now()
     inv = dev.get("inventory") or {}
     os_kind = dev.get("os_kind") or _classify_os(inv)
@@ -839,6 +847,7 @@ def upsert_device(org_id: str, dev: dict[str, Any]) -> dict:
             conn.execute(f"UPDATE devices SET {sets} WHERE id=?",
                          (*fields.values(), dev["id"]))
         else:
+            fields["approved"] = 0 if require_approval else 1
             cols = ["id", "created_at", *fields.keys()]
             vals = [dev["id"], now, *fields.values()]
             conn.execute(
@@ -846,6 +855,40 @@ def upsert_device(org_id: str, dev: dict[str, Any]) -> dict:
                 vals,
             )
     return get_device(dev["id"])
+
+
+def set_device_org(device_id: str, org_id: str) -> None:
+    """Move a device to another organisation, re-homing its group."""
+    dev = get_device(device_id)
+    if not dev:
+        return
+    new_group = default_group_for_os(org_id, dev.get("os_kind") or "linux")
+    with write() as conn:
+        conn.execute("UPDATE devices SET org_id=?, group_id=? WHERE id=?",
+                     (org_id, new_group, device_id))
+
+
+def set_device_approved(device_id: str, approved: bool) -> None:
+    with write() as conn:
+        conn.execute("UPDATE devices SET approved=? WHERE id=?",
+                     (1 if approved else 0, device_id))
+
+
+def list_pending(org_id: str | None = None) -> list[dict]:
+    conn = get_conn()
+    if org_id:
+        rows = conn.execute(
+            "SELECT * FROM devices WHERE approved=0 AND org_id=? ORDER BY created_at DESC",
+            (org_id,)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM devices WHERE approved=0 ORDER BY created_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_org(org_id: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM organizations WHERE id=?", (org_id,))
 
 
 def _classify_os(inv: dict) -> str:
@@ -891,11 +934,12 @@ def list_devices(org_id: str, group_id: str | None = None) -> list[dict]:
     conn = get_conn()
     if group_id:
         rows = conn.execute(
-            "SELECT * FROM devices WHERE org_id=? AND group_id=? ORDER BY hostname",
+            "SELECT * FROM devices WHERE org_id=? AND group_id=? AND approved=1 ORDER BY hostname",
             (org_id, group_id)).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM devices WHERE org_id=? ORDER BY hostname", (org_id,)).fetchall()
+            "SELECT * FROM devices WHERE org_id=? AND approved=1 ORDER BY hostname",
+            (org_id,)).fetchall()
     out = []
     for row in rows:
         d = dict(row)
