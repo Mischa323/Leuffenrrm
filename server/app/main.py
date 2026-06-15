@@ -30,6 +30,40 @@ from .models import (GroupRequest, MonitorRequest, MoveDeviceRequest, MoveOrgReq
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
 
+SERVER_VERSION = "0.1.0"
+
+
+class _RingLogHandler(logging.Handler):
+    """Keep the most recent log records in memory so the Settings → Logs view can
+    show them without a filesystem dependency (works the same in Docker)."""
+
+    def __init__(self, capacity: int = 1000) -> None:
+        super().__init__()
+        from collections import deque
+        self.records: deque = deque(maxlen=capacity)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.records.append({"t": record.created, "level": record.levelname,
+                                 "name": record.name, "msg": record.getMessage()})
+        except Exception:
+            pass
+
+
+_ring_log = _RingLogHandler()
+
+
+def _install_ring_log() -> None:
+    """Attach the ring buffer to the root + uvicorn loggers (idempotent)."""
+    targets = ["", "uvicorn", "uvicorn.error", "uvicorn.access"]
+    for name in targets:
+        lg = logging.getLogger(name)
+        if not any(isinstance(h, _RingLogHandler) for h in lg.handlers):
+            lg.addHandler(_ring_log)
+
+
+_install_ring_log()
+
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 AGENT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "agent")
 OFFLINE_AFTER = float(os.environ.get("RMM_OFFLINE_AFTER", "120"))
@@ -55,7 +89,7 @@ def require_approval() -> bool:
     """Whether brand-new devices land in the approval queue (default: yes)."""
     return os.environ.get("RMM_REQUIRE_APPROVAL", "1").lower() in ("1", "true", "yes")
 
-app = FastAPI(title="Leuffen RMM", version="0.1.0")
+app = FastAPI(title="Leuffen RMM", version=SERVER_VERSION)
 
 
 # --------------------------------------------------------------------------- #
@@ -1440,7 +1474,26 @@ def get_settings(user: dict = Depends(auth.current_user)):
     out = {k: (stored.get(k) if stored.get(k) is not None else os.environ.get(k, ""))
            for k in SETTINGS_KEYS}
     out["RMM_AUTH_MODE"] = auth.AUTH_MODE
+    out["RMM_VERSION"] = SERVER_VERSION
     return out
+
+
+@app.get("/api/version")
+def get_version(user: dict = Depends(auth.current_user)):
+    return {"version": SERVER_VERSION}
+
+
+@app.get("/api/logs")
+def get_logs(limit: int = 300, level: str | None = None,
+             user: dict = Depends(auth.current_user)):
+    """Recent in-memory server logs (newest last) for the Settings → Logs view."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    records = list(_ring_log.records)
+    if level:
+        wanted = level.upper()
+        records = [r for r in records if r["level"] == wanted]
+    return {"version": SERVER_VERSION, "logs": records[-max(1, min(limit, 1000)):]}
 
 
 @app.post("/api/settings")
