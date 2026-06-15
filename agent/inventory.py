@@ -13,7 +13,7 @@ import uuid
 
 import psutil
 
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.1.1"
 
 
 def _logged_in_user() -> str | None:
