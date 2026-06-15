@@ -677,6 +677,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
     if "logged_in_user" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN logged_in_user TEXT")
+    # Remove any duplicate (node, subnet) rows from before dedup, keeping one.
+    conn.execute("DELETE FROM subnets WHERE id NOT IN "
+                 "(SELECT MIN(id) FROM subnets GROUP BY node_id, cidr)")
 
 
 def get_conn() -> sqlite3.Connection:
@@ -1111,10 +1114,15 @@ def list_subnets(node_id: str) -> list[dict]:
         "SELECT * FROM subnets WHERE node_id=? ORDER BY cidr", (node_id,)).fetchall()]
 
 
-def add_subnet(node_id: str, cidr: str, broadcast: str | None) -> None:
+def add_subnet(node_id: str, cidr: str, broadcast: str | None) -> bool:
+    """Add a subnet to a node, ignoring an exact duplicate. Returns True if added."""
     with write() as conn:
+        if conn.execute("SELECT 1 FROM subnets WHERE node_id=? AND cidr=?",
+                        (node_id, cidr)).fetchone():
+            return False
         conn.execute("INSERT INTO subnets (node_id, cidr, broadcast) VALUES (?,?,?)",
                      (node_id, cidr, broadcast))
+        return True
 
 
 def delete_subnet(subnet_id: int) -> None:

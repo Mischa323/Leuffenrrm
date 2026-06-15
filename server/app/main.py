@@ -1026,17 +1026,18 @@ async def demote(device_id: str, user: dict = Depends(auth.current_user)):
 @app.post("/api/devices/{device_id}/subnets")
 async def add_subnet(device_id: str, req: SubnetRequest, user: dict = Depends(auth.current_user)):
     _device_for_user(device_id, user)
-    bcast = req.broadcast
-    if not bcast:
-        try:
-            bcast = str(ipaddress.ip_network(req.cidr, False).broadcast_address)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Bad CIDR: {exc}")
-    db.add_subnet(device_id, req.cidr, bcast)
+    try:
+        net = ipaddress.ip_network(req.cidr, strict=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Bad CIDR: {exc}")
+    # Normalise to the network address so 10.0.0.5/24 and 10.0.0.0/24 dedupe.
+    cidr = str(net)
+    bcast = req.broadcast or str(net.broadcast_address)
+    added = db.add_subnet(device_id, cidr, bcast)
     if manager.is_online(device_id):
         subs = [s["cidr"] for s in db.list_subnets(device_id)]
         await manager.get(device_id).send({"type": "set_role", "role": "node", "subnets": subs})
-    return {"status": "ok", "broadcast": bcast}
+    return {"status": "ok", "cidr": cidr, "broadcast": bcast, "added": added}
 
 
 @app.delete("/api/subnets/{subnet_id}")
