@@ -78,10 +78,10 @@ function render() {
 
     <section class="sec" data-sec="orgs">
       ${secTitle("building", "Organisations", "Tenancy — each org isolates its devices and members.")}
-      <div class="card-block"><div class="cb-head" style="display:flex;align-items:center;justify-content:space-between"><div><h3>${ORGS.length} organisations</h3><p>Each tenant isolates its devices and members.</p></div><button class="btn" id="org-create">${ICON.plus} New organisation</button></div>
-        <table class="utable"><thead><tr><th>Organisation</th><th>Devices</th><th>Online</th><th></th></tr></thead><tbody>
+      <div class="card-block"><div class="cb-head" style="display:flex;align-items:center;justify-content:space-between"><div><h3>${ORGS.length} organisations</h3><p>Each tenant isolates its devices and members.</p></div><button class="btn" id="add-org">${ICON.plus} New organisation</button></div>
+        <table class="utable"><thead><tr><th>Organisation</th><th>Devices</th><th>Members</th><th></th></tr></thead><tbody>
         ${ORGS.map((o) => `<tr><td><div class="u-cell"><div class="av" style="background:linear-gradient(140deg,${o.color},color-mix(in srgb,${o.color} 55%,#000))">${initials2(o.name)}</div><div><div class="un">${esc(o.name)}</div></div></div></td>
-          <td>${o.devices}</td><td>${o.online}</td><td><div class="u-actions"><a class="btn ghost sm" href="/">${ICON.external} Open</a><button class="btn ghost sm org-del" data-id="${o.id}" data-name="${esc(o.name)}">${ICON.trash}</button></div></td></tr>`).join("") || `<tr><td colspan="4" class="muted" style="padding:20px">No organisations.</td></tr>`}
+          <td>${o.devices}</td><td>${o.members ?? "—"}</td><td><div class="u-actions"><a class="btn ghost sm" href="/">Manage</a><button class="btn ghost sm org-del" data-id="${o.id}" data-name="${esc(o.name)}">${ICON.trash}</button></div></td></tr>`).join("") || `<tr><td colspan="4" class="muted" style="padding:20px">No organisations.</td></tr>`}
         </tbody></table></div>
     </section>
 
@@ -270,7 +270,7 @@ async function deleteOrg(id, name) {
 function wire() {
   document.querySelectorAll("[data-toggle]:not([data-toggle='ap-dataviz'])").forEach((t) => t.onclick = () => t.classList.toggle("on"));
   document.querySelectorAll(".save-btn").forEach((b) => b.onclick = () => onSave(b.dataset.save));
-  const oc = $("org-create"); if (oc) oc.onclick = createOrg;
+  const oc = $("add-org"); if (oc) oc.onclick = createOrg;
   document.querySelectorAll(".org-del").forEach((b) => b.onclick = () => deleteOrg(b.dataset.id, b.dataset.name));
   const rc = $("reset-config");
   if (rc) rc.onclick = async () => {

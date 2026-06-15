@@ -288,7 +288,7 @@ def overview(user: dict = Depends(auth.current_user)):
         noncompliant = sum(1 for d in devs if d.get("compliant") == 0)
         out.append({"id": o["id"], "name": o["name"], "devices": len(devs),
                     "online": on, "offline": len(devs) - on,
-                    "noncompliant": noncompliant})
+                    "noncompliant": noncompliant, "members": db.org_member_count(o["id"])})
     return {"orgs": out,
             "totals": {"devices": sum(o["devices"] for o in out),
                        "online": sum(o["online"] for o in out)}}
