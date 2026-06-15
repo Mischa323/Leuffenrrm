@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS enroll_tokens (
     expires_at REAL,
     used_at    REAL,
     device_id  TEXT,
+    kind       TEXT NOT NULL DEFAULT 'enroll',  -- 'enroll' (user) | 'internal' (download/update)
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_hash ON enroll_tokens(token_hash);
@@ -680,6 +681,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Remove any duplicate (node, subnet) rows from before dedup, keeping one.
     conn.execute("DELETE FROM subnets WHERE id NOT IN "
                  "(SELECT MIN(id) FROM subnets GROUP BY node_id, cidr)")
+    tcols = {r[1] for r in conn.execute("PRAGMA table_info(enroll_tokens)")}
+    if "kind" not in tcols:
+        conn.execute("ALTER TABLE enroll_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'enroll'")
+        # Reclassify machine-minted download/update tokens created before this split.
+        conn.execute("UPDATE enroll_tokens SET kind='internal' "
+                     "WHERE label IN ('agent-update','installer')")
+    # Tidy up: drop expired internal download tokens so they don't accumulate.
+    conn.execute("DELETE FROM enroll_tokens WHERE kind='internal' "
+                 "AND expires_at IS NOT NULL AND expires_at < ?", (_now(),))
 
 
 def get_conn() -> sqlite3.Connection:
@@ -759,25 +769,31 @@ def _sha256_hex(s: str) -> str:
 
 
 def create_enroll_token(org_id: str, label: str | None = None,
-                        ttl_hours: float | None = None) -> dict:
+                        ttl_hours: float | None = None, kind: str = "enroll") -> dict:
     """Create a one-time enrolment key. Returns the plaintext token ONCE — only
-    its hash is stored, so it can never be shown again."""
+    its hash is stored, so it can never be shown again.
+
+    ``kind='internal'`` marks machine-minted download/update tokens that authorise
+    a re-download for an already-enrolled device; these are hidden from the
+    onboarding-keys list and auto-pruned when they expire."""
     tid = uuid.uuid4().hex
     token = "lrmm_" + secrets.token_urlsafe(30)
     exp = (_now() + ttl_hours * 3600) if ttl_hours else None
     with write() as conn:
         conn.execute(
-            "INSERT INTO enroll_tokens (id, org_id, token_hash, label, created_at, expires_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (tid, org_id, _sha256_hex(token), label, _now(), exp),
+            "INSERT INTO enroll_tokens (id, org_id, token_hash, label, created_at, "
+            "expires_at, kind) VALUES (?,?,?,?,?,?,?)",
+            (tid, org_id, _sha256_hex(token), label, _now(), exp, kind),
         )
     return {"id": tid, "org_id": org_id, "token": token, "label": label, "expires_at": exp}
 
 
 def list_enroll_tokens(org_id: str) -> list[dict]:
+    """User-facing onboarding keys only (machine-minted download tokens excluded)."""
     return [dict(r) for r in get_conn().execute(
         "SELECT id, label, created_at, expires_at, used_at, device_id "
-        "FROM enroll_tokens WHERE org_id=? ORDER BY created_at DESC", (org_id,)).fetchall()]
+        "FROM enroll_tokens WHERE org_id=? AND kind='enroll' ORDER BY created_at DESC",
+        (org_id,)).fetchall()]
 
 
 def token_valid_for(org_id: str, token: str) -> bool:
