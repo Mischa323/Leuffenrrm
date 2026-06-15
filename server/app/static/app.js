@@ -674,7 +674,7 @@ async function openDrawer(id) {
   state.deviceObj = d;
   $("drawer-os-ico").innerHTML = osIcon(d.os);
   $("drawer-title").textContent = d.hostname;
-  $("drawer-meta").innerHTML = `${statusPill(d.online)}<span>${ICON.monitor.replace("<svg", '<svg style="width:13px;height:13px"')} ${d.os || "—"}</span><span class="mono">${d.ip || "—"}</span><span>Agent v${d.agent_version || "—"}</span>`;
+  $("drawer-meta").innerHTML = `${statusPill(d.online)}<span>${ICON.monitor.replace("<svg", '<svg style="width:13px;height:13px"')} ${d.os || "—"}</span><span class="mono">${d.ip || "—"}</span>${d.logged_in_user ? `<span>${ICON.user.replace("<svg", '<svg style="width:13px;height:13px"')} ${escapeHtml(d.logged_in_user)}</span>` : ""}<span>Agent v${d.agent_version || "—"}</span>`;
   selectDrawerTab("overview");
   $("term-output").innerHTML = `<span style="color:#6b7c90">Leuffen RMM agent shell · ${d.hostname} · ${d.os || ""}</span>\n` + (d.online ? "Connected. Type a command and press Enter.\n" : "Device is offline — terminal unavailable.\n");
   renderActions(d);
@@ -699,7 +699,7 @@ function renderOverview(d) {
     ["Operating system", `${d.os || ""} ${d.os_version || ""}`.trim()], ["Architecture", d.os_arch], ["Type", d.os_kind],
     ["Manufacturer", d.manufacturer], ["Model", d.model], ["Serial", d.serial],
     ["Processor", `${d.cpu || ""}${d.cores ? " · " + d.cores + " cores" : ""}`.trim()], ["Memory", ram ? ram + " GB" : null],
-    ["Primary IP", d.ip], ["MAC", d.mac], ["Agent version", d.agent_version],
+    ["Primary IP", d.ip], ["MAC", d.mac], ["Logged-in user", d.logged_in_user], ["Agent version", d.agent_version],
   ].filter((r) => r[1]);
   let nicHtml = "";
   if (d.nics && d.nics.length) nicHtml = `<dt>Interfaces</dt><dd>${d.nics.map((n) => `${n.name}: ${(n.ipv4 || []).join(", ") || "—"}${n.mac ? " · " + n.mac : ""}`).join("<br>")}</dd>`;
