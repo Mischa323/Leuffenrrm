@@ -1121,8 +1121,11 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
 async def _handle_agent_msg(device_id: str, org_id: str, data: dict) -> None:
     mtype = data.get("type")
     if mtype == "metrics":
-        db.insert_metric(device_id, data.get("metrics", {}))
+        m = data.get("metrics", {})
+        db.insert_metric(device_id, m)
         db.touch_device(device_id)
+        if "logged_in_user" in m:
+            db.set_logged_in_user(device_id, m.get("logged_in_user"))
     elif mtype == "ack":
         manager.resolve(data.get("rid", ""), data.get("payload", data))
     elif mtype == "shell_output":

@@ -995,6 +995,15 @@ def touch_device(device_id: str) -> None:
         conn.execute("UPDATE devices SET last_seen=? WHERE id=?", (_now(), device_id))
 
 
+def set_logged_in_user(device_id: str, user: str | None) -> None:
+    """Update the signed-in user from a heartbeat — only writes when it changes."""
+    with write() as conn:
+        conn.execute(
+            "UPDATE devices SET logged_in_user=? "
+            "WHERE id=? AND IFNULL(logged_in_user,'') != IFNULL(?,'')",
+            (user, device_id, user))
+
+
 def set_node(device_id: str, is_node: bool) -> None:
     with write() as conn:
         conn.execute("UPDATE devices SET is_node=? WHERE id=?",

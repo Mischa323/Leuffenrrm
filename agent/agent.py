@@ -128,6 +128,9 @@ def _collect_metrics() -> dict:
         "disk_used": disk.used if disk else None,
         "uptime": (__import__("time").time() - psutil.boot_time()),
         "net_sent": net.bytes_sent, "net_recv": net.bytes_recv,
+        # Lightweight, refreshed every heartbeat so the dashboard tracks the
+        # signed-in user without waiting for a re-register.
+        "logged_in_user": inventory._logged_in_user(),
     }
 
 
