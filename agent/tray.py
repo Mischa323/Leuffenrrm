@@ -141,22 +141,30 @@ def settings_dialog() -> None:
     except Exception:
         pass
 
-    admin = _is_admin()
-    pad = {"padx": 12, "pady": 6}
+    pad = {"padx": 12, "pady": (6, 0)}
+    hint = {"fg": "#6b7280", "font": ("Segoe UI", 8)}
 
-    tk.Label(root, text="Server URL").grid(row=0, column=0, sticky="w", **pad)
-    url = tk.Entry(root, width=44)
+    tk.Label(root, text="Leuffen RMM — agent settings",
+             font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2,
+                                                  sticky="w", padx=12, pady=(12, 8))
+
+    tk.Label(root, text="Server URL").grid(row=1, column=0, sticky="w", **pad)
+    url = tk.Entry(root, width=46)
     url.insert(0, os.environ.get("RMM_SERVER_URL") or status.get("server_url") or "")
-    url.grid(row=0, column=1, **pad)
+    url.grid(row=1, column=1, **pad)
+    tk.Label(root, text="e.g.  https://rmm.leuffen.it:8000   (include https:// and the port)",
+             **hint).grid(row=2, column=1, sticky="w", padx=12)
 
-    tk.Label(root, text="Enrollment key").grid(row=1, column=0, sticky="w", **pad)
-    key = tk.Entry(root, width=44)
+    tk.Label(root, text="Enrollment key").grid(row=3, column=0, sticky="w", **pad)
+    key = tk.Entry(root, width=46)
     key.insert(0, os.environ.get("RMM_API_KEY") or "")
-    key.grid(row=1, column=1, **pad)
+    key.grid(row=3, column=1, **pad)
+    tk.Label(root, text="from the dashboard → open an org → Downloads → Enrollment key",
+             **hint).grid(row=4, column=1, sticky="w", padx=12)
 
     insecure = tk.BooleanVar(value=(os.environ.get("RMM_INSECURE_TLS", "1") == "1"))
-    tk.Checkbutton(root, text="Accept self-signed certificate (insecure TLS)",
-                   variable=insecure).grid(row=2, column=1, sticky="w", **pad)
+    tk.Checkbutton(root, text="Accept self-signed certificate (leave on for the default setup)",
+                   variable=insecure).grid(row=5, column=1, sticky="w", padx=12, pady=(8, 0))
 
     def save():
         u, k = url.get().strip(), key.get().strip()
@@ -180,9 +188,9 @@ def settings_dialog() -> None:
         root.destroy()
 
     btns = tk.Frame(root)
-    btns.grid(row=4, column=1, sticky="e", **pad)
+    btns.grid(row=6, column=1, sticky="e", padx=12, pady=12)
     tk.Button(btns, text="Cancel", command=root.destroy).pack(side="right", padx=4)
-    tk.Button(btns, text="Save", command=save).pack(side="right", padx=4)
+    tk.Button(btns, text="Save", command=save, width=10).pack(side="right", padx=4)
     root.mainloop()
 
 
