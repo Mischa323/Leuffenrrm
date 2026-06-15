@@ -372,12 +372,17 @@ def _grant_users_writable(path: str) -> None:
 
 
 def _allow_inbound_ping() -> None:
-    """Allow inbound ICMP echo (ping) on Windows so a network node in the same
-    organisation can reliably discover this device and confirm it's on the LAN.
+    """Allow inbound ICMP echo (ping) on Windows so a network node can reliably
+    discover this device and confirm it's reachable.
 
-    Best-effort and idempotent; scoped to the local subnet so it only opens ping
-    to hosts on the same network (where the relay node lives). The agent runs as
-    SYSTEM, so it has rights to manage the firewall."""
+    A relay node often lives in a *different VLAN/subnet*, so when it pings across
+    subnets the device sees the node's (non-local) source address — scoping to the
+    local subnet would block that, so the rule allows ICMP echo from any source
+    (echo only — nothing else is opened).
+
+    For safety it applies only to the **Domain and Private** firewall profiles, so
+    a laptop on an untrusted **Public** network (e.g. café/airport WiFi) still
+    won't answer pings. Best-effort and idempotent; the agent runs as SYSTEM."""
     if os.name != "nt":
         return  # Linux hosts answer ICMP echo by default.
     try:
@@ -389,9 +394,35 @@ def _allow_inbound_ping() -> None:
         for proto in ("icmpv4:8,any", "icmpv6:128,any"):
             subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule",
                             f"name={name}", f"protocol={proto}", "dir=in",
-                            "action=allow", "remoteip=localsubnet"],
+                            "action=allow", "remoteip=any", "profile=domain,private"],
                            capture_output=True, timeout=15)
-        log.info("ensured inbound ICMP (ping) firewall rule for LAN discovery")
+        log.info("ensured inbound ICMP (ping) firewall rule (domain/private profiles)")
+    except Exception:
+        pass
+
+
+def _enable_wol() -> None:
+    """Enable 'Wake on Magic Packet' on physical NICs (Windows), so the device can
+    actually be woken by the relay node.
+
+    The OS firewall doesn't block Wake-on-LAN (the magic packet is handled by the
+    NIC in hardware while the machine is off) — what matters is that the adapter is
+    configured to wake on it. Best-effort across drivers that support it."""
+    if os.name != "nt":
+        return
+    try:
+        import subprocess
+        ps = (
+            "Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } | "
+            "ForEach-Object { "
+            "try { Set-NetAdapterPowerManagement -Name $_.Name -WakeOnMagicPacket Enabled "
+            "-NoRestart -ErrorAction SilentlyContinue } catch {}; "
+            "try { Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName 'Wake on Magic Packet' "
+            "-DisplayValue 'Enabled' -NoRestart -ErrorAction SilentlyContinue } catch {} }"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                       capture_output=True, timeout=30)
+        log.info("ensured Wake-on-Magic-Packet is enabled on physical NICs")
     except Exception:
         pass
 
@@ -438,6 +469,7 @@ def main() -> None:
     _persist_config(cfg)
     _grant_users_writable(_data_dir())
     _allow_inbound_ping()
+    _enable_wol()
     asyncio.run(Agent(cfg).run())
 
 
