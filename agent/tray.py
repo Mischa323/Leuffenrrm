@@ -94,7 +94,9 @@ def _rel(ts) -> str:
 # Settings dialog (admin only)
 # --------------------------------------------------------------------------- #
 def _restart_agent() -> None:
+    # Kill any stray agent processes, then start a single fresh one via the task.
     for args in (["schtasks", "/end", "/tn", "LeuffenRMMAgent"],
+                 ["taskkill", "/F", "/IM", "leuffen-rmm-agent.exe"],
                  ["schtasks", "/run", "/tn", "LeuffenRMMAgent"]):
         try:
             subprocess.run(args, capture_output=True, timeout=20)

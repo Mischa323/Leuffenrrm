@@ -73,6 +73,11 @@ def _load_config() -> dict:
     if env_insecure is not None:
         cfg["insecure_tls"] = env_insecure.lower() in ("1", "true", "yes")
     cfg["insecure_tls"] = bool(cfg.get("insecure_tls", False))
+    # Tolerate a server URL typed without a scheme (default to https).
+    su = (cfg.get("server_url") or "").strip()
+    if su and not su.startswith(("http://", "https://")):
+        su = "https://" + su
+    cfg["server_url"] = su.rstrip("/") or None
     return cfg
 
 
@@ -344,8 +349,23 @@ def _setup_file_logging() -> None:
         pass
 
 
+def _single_instance() -> bool:
+    """Ensure only one agent runs (a named mutex on Windows)."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\LeuffenRMMAgentSingleton")
+        return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+    except Exception:
+        return True
+
+
 def main() -> None:
     _setup_file_logging()
+    if not _single_instance():
+        log.info("Another Leuffen RMM agent is already running; exiting.")
+        sys.exit(0)
     cfg = _load_config()
     if not cfg.get("server_url") or not cfg.get("api_key"):
         log.error("Missing server_url/api_key. Set RMM_SERVER_URL and RMM_API_KEY "
