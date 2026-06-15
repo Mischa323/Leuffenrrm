@@ -30,6 +30,72 @@ from .models import (GroupRequest, MonitorRequest, MoveDeviceRequest, MoveOrgReq
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
 
+def _resolve_version() -> str:
+    """Server version, resolved automatically at startup (first hit wins):
+
+    1. ``RMM_VERSION`` env var — injected at deploy (compose/Dockge build arg).
+    2. A ``VERSION`` file baked next to the app or at the repo root.
+    3. ``git describe`` at runtime — for native/source installs.
+    4. A static fallback.
+    """
+    env = os.environ.get("RMM_VERSION", "").strip()
+    if env:
+        return env[1:] if env[:1] == "v" else env
+    here = os.path.dirname(__file__)
+    for path in (os.path.join(here, "VERSION"), os.path.join(here, "..", "VERSION"),
+                 os.path.join(here, "..", "..", "VERSION")):
+        try:
+            with open(path) as f:
+                v = f.read().strip()
+            if v:
+                return v
+        except OSError:
+            pass
+    try:
+        import subprocess
+        v = subprocess.run(["git", "describe", "--tags", "--always", "--dirty"],
+                           cwd=here, capture_output=True, text=True, timeout=3)
+        if v.returncode == 0 and v.stdout.strip():
+            return v.stdout.strip().lstrip("v")
+    except Exception:
+        pass
+    return "0.1.0"
+
+
+SERVER_VERSION = _resolve_version()
+
+
+class _RingLogHandler(logging.Handler):
+    """Keep the most recent log records in memory so the Settings → Logs view can
+    show them without a filesystem dependency (works the same in Docker)."""
+
+    def __init__(self, capacity: int = 1000) -> None:
+        super().__init__()
+        from collections import deque
+        self.records: deque = deque(maxlen=capacity)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.records.append({"t": record.created, "level": record.levelname,
+                                 "name": record.name, "msg": record.getMessage()})
+        except Exception:
+            pass
+
+
+_ring_log = _RingLogHandler()
+
+
+def _install_ring_log() -> None:
+    """Attach the ring buffer to the root + uvicorn loggers (idempotent)."""
+    targets = ["", "uvicorn", "uvicorn.error", "uvicorn.access"]
+    for name in targets:
+        lg = logging.getLogger(name)
+        if not any(isinstance(h, _RingLogHandler) for h in lg.handlers):
+            lg.addHandler(_ring_log)
+
+
+_install_ring_log()
+
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 AGENT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "agent")
 OFFLINE_AFTER = float(os.environ.get("RMM_OFFLINE_AFTER", "120"))
@@ -55,7 +121,7 @@ def require_approval() -> bool:
     """Whether brand-new devices land in the approval queue (default: yes)."""
     return os.environ.get("RMM_REQUIRE_APPROVAL", "1").lower() in ("1", "true", "yes")
 
-app = FastAPI(title="Leuffen RMM", version="0.1.0")
+app = FastAPI(title="Leuffen RMM", version=SERVER_VERSION)
 
 
 # --------------------------------------------------------------------------- #
@@ -363,9 +429,16 @@ def create_group(org_id: str, req: GroupRequest, user: dict = Depends(auth.curre
 
 @app.get("/api/orgs/{org_id}/tokens")
 def list_tokens(org_id: str, user: dict = Depends(auth.current_user)):
-    """One-time enrolment keys for this org (metadata only — never the secret)."""
+    """One-time enrolment keys for this org (metadata only — never the secret).
+
+    Each used key is annotated with the device it enrolled, so you can see which
+    key belongs to which device."""
     auth.require_org(user, org_id)
-    return {"tokens": db.list_enroll_tokens(org_id), "insecure_tls": agent_insecure_tls()}
+    tokens = db.list_enroll_tokens(org_id)
+    for t in tokens:
+        dev = db.get_device(t["device_id"]) if t.get("device_id") else None
+        t["device_hostname"] = dev["hostname"] if dev else None
+    return {"tokens": tokens, "insecure_tls": agent_insecure_tls()}
 
 
 @app.post("/api/orgs/{org_id}/tokens")
@@ -471,6 +544,54 @@ async def shell(device_id: str, req: ShellRequest, user: dict = Depends(auth.cur
     except Exception as exc:
         raise HTTPException(status_code=504, detail=str(exc))
     return res
+
+
+def _update_message(org_id: str) -> dict:
+    """Build the self-update instruction sent to an agent over its socket.
+
+    Carries a short-lived one-time token so the agent can pull the latest
+    installer (MSI on Windows, agent.zip on Linux) without a browser session,
+    keeping its existing config + device id across the upgrade.
+    """
+    pub = public_url()
+    token = db.create_enroll_token(org_id, label="agent-update", ttl_hours=2)["token"]
+    return {
+        "type": "update_agent",
+        "server_url": pub,
+        "org_id": org_id,
+        "insecure_tls": agent_insecure_tls(),
+        "msi_url": f"{pub}/api/orgs/{org_id}/install.msi?token={token}",
+        "zip_url": f"{pub}/api/orgs/{org_id}/agent.zip?token={token}",
+    }
+
+
+@app.post("/api/devices/{device_id}/update-agent")
+async def update_agent_device(device_id: str, user: dict = Depends(auth.current_user)):
+    """Tell an online agent to download and apply the latest installer in place."""
+    dev = _device_for_user(device_id, user)
+    if not manager.is_online(device_id):
+        raise HTTPException(status_code=409, detail="Device offline")
+    try:
+        res = await manager.request(device_id, _update_message(dev["org_id"]), timeout=120)
+    except Exception as exc:
+        raise HTTPException(status_code=504, detail=str(exc))
+    return res
+
+
+@app.post("/api/orgs/{org_id}/update-agents")
+async def update_agents_org(org_id: str, user: dict = Depends(auth.current_user)):
+    """Push a self-update to every online agent in the organisation (best effort)."""
+    auth.require_org(user, org_id)
+    msg = _update_message(org_id)
+    targets = [d["id"] for d in db.list_devices(org_id) if manager.is_online(d["id"])]
+    started = 0
+    for did in targets:
+        try:
+            await manager.get(did).send(msg)
+            started += 1
+        except Exception:
+            pass
+    return {"started": started, "online": len(targets)}
 
 
 # --------------------------------------------------------------------------- #
@@ -1177,14 +1298,22 @@ async def agent_release(user: dict = Depends(auth.current_user)):
 
 
 @app.get("/api/orgs/{org_id}/install.msi")
-async def install_msi(org_id: str, user: dict = Depends(auth.current_user)):
+async def install_msi(org_id: str, token: str | None = Query(None),
+                      user: dict | None = Depends(auth.optional_user)):
     """Stream the latest Windows MSI from the release, fresh each time.
 
     Fetching server-side (rather than redirecting the browser to a fixed URL)
     avoids stale browser/CDN copies, so you always get the newest build.
     Configure it at install via msiexec properties — see the Downloads tab.
+
+    A valid one-time ``token`` query authorises the download (used by the agent
+    self-update, which has no browser session); otherwise an org admin session.
     """
-    _org_from_request(org_id, user)
+    if not (token and db.token_valid_for(org_id, token)):
+        if user is None:
+            raise HTTPException(status_code=401,
+                                detail="A valid token (?token=) or an admin session is required")
+        _org_from_request(org_id, user)
     import httpx
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
@@ -1377,7 +1506,62 @@ def get_settings(user: dict = Depends(auth.current_user)):
     out = {k: (stored.get(k) if stored.get(k) is not None else os.environ.get(k, ""))
            for k in SETTINGS_KEYS}
     out["RMM_AUTH_MODE"] = auth.AUTH_MODE
+    out["RMM_VERSION"] = SERVER_VERSION
     return out
+
+
+@app.get("/api/version")
+def get_version(user: dict = Depends(auth.current_user)):
+    return {"version": SERVER_VERSION}
+
+
+@app.get("/api/server/update")
+def server_update_status(user: dict = Depends(auth.current_user)):
+    """Whether the server container can self-update via the Docker socket."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    from . import docker_update
+    return {"version": SERVER_VERSION, **docker_update.status()}
+
+
+@app.post("/api/server/update/check")
+def server_update_check(user: dict = Depends(auth.current_user)):
+    """Pull the latest image and report whether it differs from the running one."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    from . import docker_update
+    try:
+        return {"version": SERVER_VERSION, **docker_update.check_for_update()}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/api/server/update/apply")
+def server_update_apply(user: dict = Depends(auth.current_user)):
+    """Pull the latest image and recreate this container (server will restart)."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    from . import docker_update
+    if not docker_update.available():
+        raise HTTPException(status_code=409,
+                            detail="Docker socket not mounted — in-UI update unavailable")
+    try:
+        return docker_update.start_update()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/api/logs")
+def get_logs(limit: int = 300, level: str | None = None,
+             user: dict = Depends(auth.current_user)):
+    """Recent in-memory server logs (newest last) for the Settings → Logs view."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    records = list(_ring_log.records)
+    if level:
+        wanted = level.upper()
+        records = [r for r in records if r["level"] == wanted]
+    return {"version": SERVER_VERSION, "logs": records[-max(1, min(limit, 1000)):]}
 
 
 @app.post("/api/settings")

@@ -528,8 +528,17 @@ async function renderDownloads() {
     <div class="dl-block"><div class="lab">${ICON.windows} Windows — MSI installer ${relLabel}</div>
       <div style="margin:6px 0 8px"><a class="btn sm" href="${base}/api/orgs/${state.org}/install.msi">${ICON.download} Download MSI</a> <span class="h-sub">then install with the generated key</span></div>
       <div class="code">msiexec /i leuffen-rmm-agent.msi /qn RMM_SERVER_URL=${base} RMM_API_KEY=&lt;enrolment-key&gt; RMM_INSECURE_TLS=${ins}</div></div>
+    <div class="dl-block"><div class="lab">${ICON.refresh} Update installed agents</div>
+      <div class="h-sub" style="margin:4px 0 10px">Push the latest build to every online agent in this organisation. Each updates in place and reconnects automatically.</div>
+      <button class="btn sm" id="update-all">${ICON.download} Update all online agents</button></div>
     <div class="dl-block"><div class="lab">${ICON.key} Active enrolment keys</div>
       <div id="token-list"></div></div>`;
+  $("update-all").onclick = async () => {
+    if (!confirm("Push the latest agent to all online devices in this organisation?")) return;
+    const b = $("update-all"); b.disabled = true; const old = b.innerHTML; b.innerHTML = "Sending…";
+    try { const r = await api(`/api/orgs/${state.org}/update-agents`, { method: "POST" }); toast(`Update sent to ${r.started} of ${r.online} online agent(s)`); }
+    catch (e) { toast(e.message); } finally { b.disabled = false; b.innerHTML = old; }
+  };
   $("gen-token").onclick = async () => {
     try {
       const t = await api(`/api/orgs/${state.org}/tokens`, { method: "POST" });
@@ -560,9 +569,10 @@ function showNewToken(token, base, ins) {
 function renderTokenList(tokens) {
   const host = $("token-list");
   if (!tokens.length) { host.innerHTML = `<div class="h-sub">No keys yet. Generate one above.</div>`; return; }
-  host.innerHTML = `<table class="grid"><thead><tr><th>Created</th><th>Status</th><th></th></tr></thead><tbody>${tokens.map((t) => {
+  host.innerHTML = `<table class="grid"><thead><tr><th>Created</th><th>Status</th><th>Device</th><th></th></tr></thead><tbody>${tokens.map((t) => {
     const used = t.used_at ? `<span class="badge na">used ${relTime(t.used_at)}</span>` : `<span class="badge ok">unused</span>`;
-    return `<tr><td class="h-sub">${relTime(t.created_at)}</td><td>${used}</td><td style="text-align:right"><button class="btn ghost sm tdel" data-id="${t.id}">${ICON.trash}</button></td></tr>`;
+    const dev = t.device_hostname ? `<span class="mono">${escapeHtml(t.device_hostname)}</span>` : (t.device_id ? `<span class="h-sub">removed device</span>` : `<span class="h-sub">—</span>`);
+    return `<tr><td class="h-sub">${relTime(t.created_at)}</td><td>${used}</td><td>${dev}</td><td style="text-align:right"><button class="btn ghost sm tdel" data-id="${t.id}">${ICON.trash}</button></td></tr>`;
   }).join("")}</tbody></table>`;
   host.querySelectorAll(".tdel").forEach((b) => b.onclick = async () => {
     try { await api(`/api/orgs/tokens/${b.dataset.id}`, { method: "DELETE" }); const info = await api(`/api/orgs/${state.org}/tokens`); renderTokenList(info.tokens); toast("Key revoked"); } catch (e) { toast(e.message); }
@@ -705,6 +715,10 @@ function renderActions(d) {
     { t: "Remove", d: "Delete from RMM", i: ICON.trash, c: "danger", f: async () => { if (confirm("Remove " + d.hostname + "?")) { try { await api(`/api/devices/${d.id}`, { method: "DELETE" }); toast("Device removed"); closeDrawer(); refreshOrgCaches().then(() => { buildNav(); renderDevices(); }); } catch (e) { toast(e.message); } } } },
   ];
   let html = `<div class="actions-grid">${acts.map((a, i) => `<button class="action ${a.c}" data-i="${i}"><span class="ai">${a.i}</span><span><span class="at">${a.t}</span><br><span class="ad">${a.d}</span></span></button>`).join("")}</div>`;
+  html += `<div class="sec-label">Agent</div><div class="tile"><div class="field" style="align-items:center">
+      <div style="flex:1;font-size:12.5px" class="muted">Installed: <b>v${d.agent_version || "—"}</b><span id="upd-latest"></span></div>
+      <button class="btn" id="update-agent"${d.online ? "" : " disabled"}>${ICON.download} Update agent</button></div>
+      <div class="muted" style="font-size:12px;margin-top:8px">Downloads &amp; installs the latest build in place, keeping this device's config.</div></div>`;
   const otherOrgs = (state.me.orgs || []).filter((o) => o.id !== d.org_id);
   if (otherOrgs.length) {
     html += `<div class="sec-label">Organisation</div><div class="tile"><div class="field">
@@ -723,6 +737,16 @@ function renderActions(d) {
   }
   $("dtab-actions").innerHTML = html;
   $("dtab-actions").querySelectorAll(".action").forEach((b) => b.onclick = () => acts[+b.dataset.i].f());
+  const upd = $("update-agent");
+  if (upd) {
+    upd.onclick = async () => {
+      if (!confirm("Download and install the latest agent on " + d.hostname + "?\nThe agent will briefly restart.")) return;
+      upd.disabled = true; const old = upd.innerHTML; upd.innerHTML = "Updating…";
+      try { await api(`/api/devices/${d.id}/update-agent`, { method: "POST" }); toast("Update sent — agent is upgrading"); }
+      catch (e) { toast(e.message); upd.disabled = false; upd.innerHTML = old; }
+    };
+    api(`/api/agent-release`).then((r) => { const el = $("upd-latest"); if (el && r && r.tag) el.innerHTML = ` · Latest: <b>${escapeHtml(r.tag)}</b>`; }).catch(() => {});
+  }
   const mob = $("move-org-btn");
   if (mob) mob.onclick = async () => {
     const oid = $("move-org").value;

@@ -13,6 +13,7 @@ const NAV = {
   alerts: { icon: "bell", t: "Alerts & email" },
   security: { icon: "shieldCheck", t: "Security" },
   agents: { icon: "monitor", t: "Agents" },
+  logs: { icon: "terminal", t: "Logs" },
   appearance: { icon: "sliders", t: "Appearance" },
 };
 
@@ -47,6 +48,25 @@ function selectSec(sec) {
   document.querySelectorAll("#settings-nav button").forEach((b) => b.classList.toggle("active", b.dataset.sec === sec));
   document.querySelectorAll(".sec").forEach((s) => s.classList.toggle("on", s.dataset.sec === sec));
   window.scrollTo(0, 0);
+  if (sec === "logs") loadLogs();
+}
+
+async function loadLogs() {
+  const view = $("log-view");
+  if (!view) return;
+  const lvl = $("log-level") ? $("log-level").value : "all";
+  try {
+    const r = await api(`/api/logs?limit=400${lvl && lvl !== "all" ? "&level=" + lvl : ""}`);
+    if (!r.logs.length) { view.innerHTML = `<div class="muted" style="padding:14px">No log entries yet.</div>`; return; }
+    view.innerHTML = r.logs.map((e) => {
+      const ts = new Date(e.t * 1000).toLocaleTimeString();
+      const cls = e.level === "ERROR" || e.level === "CRITICAL" ? "err" : e.level === "WARNING" ? "warn" : "info";
+      return `<div class="log-line"><span class="lt">${ts}</span><span class="ll ${cls}">${esc(e.level)}</span><span class="ln">${esc(e.name)}</span><span class="lm">${esc(e.msg)}</span></div>`;
+    }).join("");
+    view.scrollTop = view.scrollHeight;
+  } catch (e) {
+    view.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Couldn't load logs</div><div class="cd">${esc(e.message)}</div></div></div>`;
+  }
 }
 
 function block(title, desc, bodyHtml, saveId) {
@@ -74,6 +94,9 @@ function render() {
       ${block("Server identity", "Shown in the header, emails and agent installers.",
         `<div class="frow"><label>Display name</label><input class="inp" id="g-name" value="${esc(cfg.RMM_SERVER_NAME || "Leuffen RMM")}" /></div>
          <div class="frow"><label>Public URL</label><input class="inp mono" id="g-url" value="${esc(cfg.RMM_PUBLIC_URL || location.origin)}" /><div class="hint">Used to build agent install commands and email links.</div></div>`, "general")}
+      ${block("About this server", "Software version and container updates for the Leuffen RMM server.",
+        `<div class="frow"><label>Server version</label><div class="ver-pill mono">${ICON.server} v${esc(cfg.RMM_VERSION || "—")}</div></div>
+         <div class="frow"><label>Container update</label><div id="srv-update"><div class="muted">Checking…</div></div></div>`)}
     </section>
 
     <section class="sec" data-sec="orgs">
@@ -132,8 +155,22 @@ function render() {
       ${secTitle("monitor", "Agents", "Defaults applied to every connected agent.")}
       ${block("Enrolment", "",
         `${toggle("requireApproval", "Require approval for new devices", "New agents wait in the Approvals queue until you approve them, instead of appearing automatically.", (cfg.RMM_REQUIRE_APPROVAL ?? "1") === "1")}`, "agents-approval")}
-      <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Heartbeat interval</div><div class="cd">Agents report every ~30s by default (set <code>RMM_INTERVAL</code> on the agent). Per-agent auto-update arrives in a later release.</div></div></div>
+      <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Heartbeat interval</div><div class="cd">Agents report every ~30s by default (set <code>RMM_INTERVAL</code> on the agent). Update agents in place from a device's <b>Agent</b> panel, or all at once from <b>Downloads</b>.</div></div></div>
       <div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Danger zone</div><div class="cd">Removing an agent (from a device's Actions) stops monitoring and revokes its key. Re-enrol with a fresh installer from Downloads.</div></div></div>
+    </section>
+
+    <section class="sec" data-sec="logs">
+      ${secTitle("terminal", "Logs", "Recent server activity. Held in memory — newest at the bottom.")}
+      <div class="card-block">
+        <div class="cb-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <div><h3>Server log</h3><p>Leuffen RMM server <span class="mono">v${esc(cfg.RMM_VERSION || "—")}</span></p></div>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${select("log-level", ["all", "INFO", "WARNING", "ERROR"], "all")}
+            <button class="btn ghost sm" id="log-refresh">${ICON.refresh} Refresh</button>
+          </div>
+        </div>
+        <div class="cb-body"><div class="log-view" id="log-view"><div class="muted" style="padding:14px">Loading…</div></div></div>
+      </div>
     </section>
 
     <section class="sec" data-sec="appearance">
@@ -267,11 +304,62 @@ async function deleteOrg(id, name) {
   catch (e) { toast(e.message); }
 }
 
+async function loadServerUpdate() {
+  const host = $("srv-update");
+  if (!host) return;
+  let st;
+  try { st = await api("/api/server/update"); }
+  catch (e) { host.innerHTML = `<div class="muted">${esc(e.message)}</div>`; return; }
+  renderServerUpdate(st);
+}
+function renderServerUpdate(st) {
+  const host = $("srv-update");
+  if (!host) return;
+  if (!st.available) {
+    host.innerHTML = `<div class="upd-row"><span class="badge na">unavailable</span>
+      <span class="hint">${esc(st.reason || "In-UI updates are off")}. Mount <code>/var/run/docker.sock</code> and use a registry image to enable one-click updates.</span></div>`;
+    return;
+  }
+  const staged = st.update_staged;
+  host.innerHTML = `<div class="upd-row">
+      ${staged ? `<span class="badge ok">update ready</span>` : `<span class="badge na">up to date</span>`}
+      <button class="btn ghost sm" id="srv-check">${ICON.refresh} Check for updates</button>
+      <button class="btn sm" id="srv-apply" ${staged ? "" : "disabled"}>${ICON.download} Update &amp; restart</button>
+    </div>
+    <div class="hint" style="margin-top:8px">Image <span class="mono">${esc(st.image || "—")}</span></div>`;
+  $("srv-check").onclick = async () => {
+    const b = $("srv-check"), o = b.innerHTML; b.disabled = true; b.innerHTML = "Checking…";
+    try { const r = await api("/api/server/update/check", { method: "POST" }); renderServerUpdate(r); toast(r.update_staged ? "Update available" : "Already up to date"); }
+    catch (e) { toast(e.message); b.disabled = false; b.innerHTML = o; }
+  };
+  $("srv-apply").onclick = async () => {
+    if (!confirm("Pull the latest image and restart the server container now?\n\nThe dashboard will be briefly unavailable while it restarts.")) return;
+    const b = $("srv-apply"), o = b.innerHTML; b.disabled = true; b.innerHTML = "Updating…";
+    try {
+      const r = await api("/api/server/update/apply", { method: "POST" });
+      host.innerHTML = `<div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Updating…</div><div class="cd">${esc(r.note || "The server is restarting.")} This page will reconnect automatically.</div></div></div>`;
+      waitForServerBack();
+    } catch (e) { toast(e.message); b.disabled = false; b.innerHTML = o; }
+  };
+}
+function waitForServerBack() {
+  let tries = 0;
+  const t = setInterval(async () => {
+    tries++;
+    try { const r = await fetch("/api/health", { cache: "no-store" }); if (r.ok) { clearInterval(t); toast("Server is back — reloading"); setTimeout(() => location.reload(), 800); } }
+    catch {}
+    if (tries > 60) clearInterval(t);
+  }, 3000);
+}
+
 function wire() {
   document.querySelectorAll("[data-toggle]:not([data-toggle='ap-dataviz'])").forEach((t) => t.onclick = () => t.classList.toggle("on"));
   document.querySelectorAll(".save-btn").forEach((b) => b.onclick = () => onSave(b.dataset.save));
   const oc = $("add-org"); if (oc) oc.onclick = createOrg;
   document.querySelectorAll(".org-del").forEach((b) => b.onclick = () => deleteOrg(b.dataset.id, b.dataset.name));
+  const lr = $("log-refresh"); if (lr) lr.onclick = loadLogs;
+  const ll = $("log-level"); if (ll) ll.onchange = loadLogs;
+  loadServerUpdate();
   const rc = $("reset-config");
   if (rc) rc.onclick = async () => {
     if (!confirm("Reset ALL server configuration and re-run setup?\n\nDevices, organisations and accounts are kept. You'll be sent to the setup wizard.")) return;
