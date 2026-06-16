@@ -70,6 +70,13 @@ async function init() {
   $("home-crumb").onclick = (e) => { e.preventDefault(); showGlobal(); };
   $("drawer-close-btn").onclick = closeDrawer;
   $("refresh-global").onclick = () => showGlobal();
+  $("cust-ico").innerHTML = ICON.sliders;
+  $("cust-close-ico").textContent = "✕";
+  $("customize-dash").onclick = openCustomise;
+  $("cust-close").onclick = closeCustomise;
+  $("cust-scrim").onclick = closeCustomise;
+  $("cust-save").onclick = saveCustomise;
+  $("cust-reset").onclick = () => { custDraft = state.dash.catalog.map((w) => ({ id: w.id, enabled: ["totals", "orgs", "attention", "approvals"].includes(w.id) })); renderCustList(); };
   $("org-switch").onclick = cycleOrg;
   document.querySelectorAll(".nav button").forEach((b) => b.onclick = () => selectTab(b.dataset.tab));
   document.querySelectorAll(".dtabs button").forEach((b) => b.onclick = () => selectDrawerTab(b.dataset.dtab));
@@ -112,40 +119,128 @@ async function showGlobal() {
   state.refresh = setInterval(() => { if (!document.hidden && !state.org) loadGlobal().catch(() => {}); }, 10000);
 }
 async function loadGlobal() {
-  const data = await api("/api/overview");
-  const orgs = data.orgs.map((o) => ({ ...o, color: colorFor(o.id) }));
-  state.orgs = orgs;
-  const tot = orgs.reduce((a, o) => ({ devices: a.devices + o.devices, online: a.online + o.online, offline: a.offline + o.offline, noncompliant: a.noncompliant + o.noncompliant }), { devices: 0, online: 0, offline: 0, noncompliant: 0 });
-  const uptime = tot.devices ? ((tot.online / tot.devices) * 100).toFixed(1) : "0";
-  $("kpis").innerHTML = [
-    kpi("Organisations", orgs.length, "blue", ICON.building, ""),
-    kpi("Total devices", tot.devices, "blue", ICON.monitor, ""),
-    kpi("Online now", tot.online, "green", ICON.zap, "", `<span class="kdelta up">${ICON.arrowUp} ${uptime}% uptime</span>`),
-    kpi("Non-compliant", tot.noncompliant, "amber", ICON.shield, "", tot.noncompliant ? `<span class="kdelta down">needs attention</span>` : `<span class="kdelta up">all clear</span>`),
-    kpi("Offline", tot.offline, "red", ICON.bell, "", tot.offline ? `<span class="kdelta down">${tot.offline} down</span>` : `<span class="kdelta">none</span>`),
-  ].join("");
-
-  const wrap = $("org-cards"); wrap.innerHTML = "";
-  if (!orgs.length) { wrap.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="big">${ICON.building}</div>No organisations yet. Add one in Settings → Organisations.</div>`; return; }
-  for (const o of orgs) {
-    const c = el("div", "orgcard");
-    const onPct = o.devices ? (o.online / o.devices) * 100 : 0, offPct = o.devices ? (o.offline / o.devices) * 100 : 0, ncPct = o.devices ? (o.noncompliant / o.devices) * 100 : 0;
-    c.innerHTML = `
-      <div class="oc-head">
-        <div class="oc-mark" style="background:linear-gradient(140deg, ${o.color}, color-mix(in srgb, ${o.color} 55%, #000))">${initials(o.name)}</div>
-        <div style="flex:1"><h3>${o.name}</h3><small>${o.devices} devices · ${o.online} online</small></div>
-        <div class="oc-arrow">${ICON.chevR}</div>
-      </div>
-      <div class="health-bar"><i class="on" style="width:${onPct}%"></i><i class="nc" style="width:${ncPct}%"></i><i class="off" style="width:${offPct}%"></i></div>
-      <div class="oc-stats">
-        <div class="s"><b><span class="dot-led g"></span>${o.online}</b><span>Online</span></div>
-        <div class="s"><b><span class="dot-led m"></span>${o.offline}</b><span>Offline</span></div>
-        <div class="s"><b><span class="dot-led r"></span>${o.noncompliant}</b><span>Non-compliant</span></div>
-      </div>`;
-    c.onclick = () => showOrg(o.id, o.name);
-    wrap.appendChild(c);
-  }
+  const res = await api("/api/dashboard");
+  state.dash = res;
+  state.orgs = res.data.orgs.map((o) => ({ ...o, color: colorFor(o.id) }));
+  renderDashboard(res.layout, res.data);
 }
+function renderDashboard(layout, data) {
+  const host = $("dashboard-widgets");
+  const on = (layout || []).filter((w) => w.enabled);
+  if (!on.length) { host.innerHTML = `<div class="empty"><div class="big">${ICON.grid}</div>No widgets enabled.<br><span class="muted">Click <b>Customise</b> to add some.</span></div>`; return; }
+  host.innerHTML = on.map((w) => (DASH_WIDGETS[w.id] ? DASH_WIDGETS[w.id](data) : "")).join("");
+  host.querySelectorAll("[data-org]").forEach((c) => c.onclick = () => { const o = state.orgs.find((x) => x.id === c.dataset.org); showOrg(c.dataset.org, o ? o.name : c.dataset.org); });
+  host.querySelectorAll("[data-dev]").forEach((r) => r.onclick = () => gotoDevice(r.dataset.orgId, r.dataset.dev));
+  host.querySelectorAll("[data-approve]").forEach((r) => r.onclick = () => { const o = state.orgs.find((x) => x.id === r.dataset.approve); showOrg(r.dataset.approve, o ? o.name : r.dataset.approve).then(() => selectTab("approvals")); });
+}
+async function gotoDevice(orgId, devId) {
+  const o = state.orgs.find((x) => x.id === orgId);
+  await showOrg(orgId, o ? o.name : orgId);
+  selectTab("devices");
+  openDrawer(devId);
+}
+
+/* ---------- dashboard customise ---------- */
+let custDraft = null;
+function openCustomise() {
+  if (!state.dash) return;
+  custDraft = state.dash.layout.map((w) => ({ ...w }));
+  renderCustList();
+  $("cust-scrim").classList.remove("hidden");
+  $("cust-panel").classList.remove("hidden");
+}
+function closeCustomise() { $("cust-scrim").classList.add("hidden"); $("cust-panel").classList.add("hidden"); }
+function renderCustList() {
+  const cat = Object.fromEntries(state.dash.catalog.map((w) => [w.id, w]));
+  $("cust-list").innerHTML = custDraft.map((w, i) => {
+    const c = cat[w.id] || { title: w.id, desc: "" };
+    return `<div class="cust-row" data-i="${i}">
+      <div class="cust-move"><button class="icon-btn xs cust-up" ${i === 0 ? "disabled" : ""}>${ICON.arrowUp}</button><button class="icon-btn xs cust-down" ${i === custDraft.length - 1 ? "disabled" : ""}>${ICON.arrowDown}</button></div>
+      <div style="flex:1"><div class="cust-t">${escapeHtml(c.title)}</div><div class="cust-d">${escapeHtml(c.desc)}</div></div>
+      <div class="switch ${w.enabled ? "on" : ""}" data-toggle></div></div>`;
+  }).join("");
+  $("cust-list").querySelectorAll(".cust-row").forEach((row) => {
+    const i = +row.dataset.i;
+    row.querySelector("[data-toggle]").onclick = () => { custDraft[i].enabled = !custDraft[i].enabled; renderCustList(); };
+    row.querySelector(".cust-up").onclick = () => { if (i > 0) { [custDraft[i - 1], custDraft[i]] = [custDraft[i], custDraft[i - 1]]; renderCustList(); } };
+    row.querySelector(".cust-down").onclick = () => { if (i < custDraft.length - 1) { [custDraft[i + 1], custDraft[i]] = [custDraft[i], custDraft[i + 1]]; renderCustList(); } };
+  });
+}
+async function saveCustomise() {
+  try {
+    await api("/api/dashboard", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ layout: custDraft }) });
+    state.dash.layout = custDraft;
+    renderDashboard(custDraft, state.dash.data);
+    closeCustomise(); toast("Dashboard saved");
+  } catch (e) { toast(e.message); }
+}
+function dwidget(title, body, sub) {
+  return `<section class="dwidget"><div class="dw-head"><h3>${title}</h3>${sub != null ? `<span class="dw-sub">${sub}</span>` : ""}</div>${body}</section>`;
+}
+function miniDevRow(x) {
+  const dot = x.online ? `<span class="dot-led g"></span>` : `<span class="dot-led m"></span>`;
+  return `<tr data-dev="${x.id}" data-org-id="${x.org_id}"><td>${dot} ${escapeHtml(x.hostname)}</td><td class="muted">${escapeHtml(x.org)}</td><td style="text-align:right">${x.reason ? `<span class="badge ${x.reason === "offline" ? "na" : "warn"}">${x.reason}</span>` : ""}</td></tr>`;
+}
+const DASH_WIDGETS = {
+  totals: (d) => {
+    const t = d.totals, uptime = t.devices ? ((t.online / t.devices) * 100).toFixed(1) : "0";
+    return `<div class="kpis" style="margin-bottom:16px">${[
+      kpi("Organisations", t.orgs, "blue", ICON.building, ""),
+      kpi("Total devices", t.devices, "blue", ICON.monitor, ""),
+      kpi("Online now", t.online, "green", ICON.zap, "", `<span class="kdelta up">${ICON.arrowUp} ${uptime}% uptime</span>`),
+      kpi("Non-compliant", t.noncompliant, "amber", ICON.shield, "", t.noncompliant ? `<span class="kdelta down">needs attention</span>` : `<span class="kdelta up">all clear</span>`),
+      kpi("Offline", t.offline, "red", ICON.bell, "", t.offline ? `<span class="kdelta down">${t.offline} down</span>` : `<span class="kdelta">none</span>`),
+    ].join("")}</div>`;
+  },
+  orgs: (d) => {
+    if (!d.orgs.length) return dwidget("Organisations", `<div class="empty" style="padding:24px">No organisations yet. Add one in Settings → Organisations.</div>`);
+    const cards = d.orgs.map((o) => {
+      const color = colorFor(o.id);
+      const onPct = o.devices ? (o.online / o.devices) * 100 : 0, offPct = o.devices ? (o.offline / o.devices) * 100 : 0, ncPct = o.devices ? (o.noncompliant / o.devices) * 100 : 0;
+      return `<div class="orgcard" data-org="${o.id}">
+        <div class="oc-head"><div class="oc-mark" style="background:linear-gradient(140deg, ${color}, color-mix(in srgb, ${color} 55%, #000))">${initials(o.name)}</div>
+          <div style="flex:1"><h3>${escapeHtml(o.name)}</h3><small>${o.devices} devices · ${o.online} online</small></div><div class="oc-arrow">${ICON.chevR}</div></div>
+        <div class="health-bar"><i class="on" style="width:${onPct}%"></i><i class="nc" style="width:${ncPct}%"></i><i class="off" style="width:${offPct}%"></i></div>
+        <div class="oc-stats"><div class="s"><b><span class="dot-led g"></span>${o.online}</b><span>Online</span></div>
+          <div class="s"><b><span class="dot-led m"></span>${o.offline}</b><span>Offline</span></div>
+          <div class="s"><b><span class="dot-led r"></span>${o.noncompliant}</b><span>Non-compliant</span></div></div></div>`;
+    }).join("");
+    return dwidget("Organisations", `<div class="cards">${cards}</div>`);
+  },
+  attention: (d) => {
+    const body = d.attention.length
+      ? `<table class="grid mini"><tbody>${d.attention.map(miniDevRow).join("")}</tbody></table>`
+      : `<div class="dw-empty">${ICON.check} All devices online &amp; compliant.</div>`;
+    return dwidget("Needs attention", body, d.attention.length || null);
+  },
+  approvals: (d) => {
+    const body = d.approvals.length
+      ? `<table class="grid mini"><tbody>${d.approvals.map((x) => `<tr data-approve="${x.org_id}"><td>${osIcon(x.os)} ${escapeHtml(x.hostname)}</td><td class="muted">${escapeHtml(x.org)}</td><td style="text-align:right" class="h-sub">${relTime(x.created_at)}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="dw-empty">${ICON.shieldCheck} Nothing waiting for approval.</div>`;
+    return dwidget("Pending approvals", body, d.approvals.length || null);
+  },
+  disk: (d) => {
+    const body = d.disk.length
+      ? `<table class="grid mini"><tbody>${d.disk.map((x) => `<tr data-dev="${x.id}" data-org-id="${x.org_id}"><td>${escapeHtml(x.hostname)} <span class="mono muted">${escapeHtml((x.mount || "").replace(/\\$/, ""))}</span></td><td class="muted">${escapeHtml(x.org)}</td><td style="text-align:right"><span class="badge ${x.percent >= 95 ? "na" : "warn"}">${Math.round(x.percent)}%</span></td></tr>`).join("")}</tbody></table>`
+      : `<div class="dw-empty">${ICON.check} No drives under pressure.</div>`;
+    return dwidget("Storage pressure", body, d.disk.length || null);
+  },
+  monitors: (d) => {
+    const body = d.monitors.length
+      ? `<table class="grid mini"><tbody>${d.monitors.map((x) => `<tr><td>${ICON.bell} ${escapeHtml(x.name)}</td><td class="muted" style="text-align:right">${escapeHtml(x.org)}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="dw-empty">${ICON.check} All monitors healthy.</div>`;
+    return dwidget("Monitor alerts", body, d.monitors.length || null);
+  },
+  versions: (d) => {
+    const counts = d.versions.counts || {}, latest = d.versions.latest;
+    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    const total = entries.reduce((a, e) => a + e[1], 0) || 1;
+    const body = entries.length
+      ? `<div class="ver-bars">${entries.map(([v, n]) => `<div class="ver-row"><span class="ver-name mono">${escapeHtml(v)}${v.replace(/^v/, "") === String(latest) ? ` <span class="badge ok">latest</span>` : ""}</span><div class="ver-track"><i style="width:${(n / total) * 100}%"></i></div><span class="ver-n">${n}</span></div>`).join("")}</div>`
+      : `<div class="dw-empty">No agents reporting yet.</div>`;
+    return dwidget("Agent versions", body, `latest v${latest}`);
+  },
+};
 function renderApprovals() {
   const pend = state.cache.pending || [];
   $("approvals-sub").textContent = `${pend.length} device${pend.length === 1 ? "" : "s"} waiting`;

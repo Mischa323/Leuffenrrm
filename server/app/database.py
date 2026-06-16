@@ -204,6 +204,13 @@ CREATE TABLE IF NOT EXISTS enroll_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_hash ON enroll_tokens(token_hash);
 
+-- Per-user configurable dashboard layout.
+CREATE TABLE IF NOT EXISTS dashboard_prefs (
+    user_email  TEXT PRIMARY KEY,
+    layout_json TEXT,
+    updated_at  REAL
+);
+
 CREATE TABLE IF NOT EXISTS schedules (
     id               TEXT PRIMARY KEY,
     org_id           TEXT NOT NULL,
@@ -833,6 +840,26 @@ def get_enroll_token(token_id: str) -> dict | None:
 def delete_enroll_token(token_id: str) -> None:
     with write() as conn:
         conn.execute("DELETE FROM enroll_tokens WHERE id=?", (token_id,))
+
+
+def get_dashboard_layout(email: str) -> list | None:
+    row = get_conn().execute(
+        "SELECT layout_json FROM dashboard_prefs WHERE user_email=?", (email.lower(),)).fetchone()
+    if row and row["layout_json"]:
+        try:
+            return json.loads(row["layout_json"])
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def set_dashboard_layout(email: str, layout: list) -> None:
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO dashboard_prefs (user_email, layout_json, updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(user_email) DO UPDATE SET layout_json=excluded.layout_json, "
+            "updated_at=excluded.updated_at",
+            (email.lower(), json.dumps(layout), _now()))
 
 
 def list_orgs() -> list[dict]:

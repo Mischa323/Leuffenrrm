@@ -35,11 +35,21 @@
       <!-- ===== Global view ===== -->
       <section id="global-view">
         <div class="page-head"><div><h1>Fleet overview</h1><p>Monitoring across all organisations</p></div>
-          <button class="btn ghost" id="refresh-global"><span id="refresh-ico"></span> Refresh</button></div>
-        <div class="kpis" id="kpis"></div>
-        <div class="page-head" style="margin:8px 0 16px"><div><h1 style="font-size:16px">Organisations</h1></div></div>
-        <div class="cards" id="org-cards"></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn ghost" id="customize-dash"><span id="cust-ico"></span> Customise</button>
+            <button class="btn ghost" id="refresh-global"><span id="refresh-ico"></span> Refresh</button>
+          </div></div>
+        <div id="dashboard-widgets"></div>
       </section>
+
+      <!-- Dashboard customise panel -->
+      <div id="cust-scrim" class="modal-scrim hidden"></div>
+      <aside id="cust-panel" class="cust-panel hidden">
+        <div class="cust-head"><h3>Customise dashboard</h3><button class="icon-btn" id="cust-close"><span id="cust-close-ico"></span></button></div>
+        <p class="muted" style="font-size:12.5px;margin:0 0 14px">Toggle widgets and reorder them. Saved to your account.</p>
+        <div id="cust-list"></div>
+        <div class="cust-foot"><button class="btn ghost sm" id="cust-reset">Reset to default</button><button class="btn" id="cust-save">Save</button></div>
+      </aside>
 
       <!-- ===== Org view ===== -->
       <section id="org-view" class="hidden">

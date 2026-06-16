@@ -362,6 +362,98 @@ def overview(user: dict = Depends(auth.current_user)):
 
 
 # --------------------------------------------------------------------------- #
+# Configurable dashboard widgets (per user)
+# --------------------------------------------------------------------------- #
+DASHBOARD_WIDGETS = [
+    {"id": "totals", "title": "Fleet totals", "desc": "Org, device and online counts"},
+    {"id": "orgs", "title": "Organisations", "desc": "Per-organisation health cards"},
+    {"id": "attention", "title": "Needs attention", "desc": "Offline & non-compliant devices"},
+    {"id": "approvals", "title": "Pending approvals", "desc": "Devices awaiting approval"},
+    {"id": "disk", "title": "Storage pressure", "desc": "Devices low on disk space"},
+    {"id": "monitors", "title": "Monitor alerts", "desc": "Monitors currently in alert"},
+    {"id": "versions", "title": "Agent versions", "desc": "Agent version spread across the fleet"},
+]
+_DEFAULT_ENABLED = {"totals", "orgs", "attention", "approvals"}
+
+
+def _default_layout() -> list[dict]:
+    return [{"id": w["id"], "enabled": w["id"] in _DEFAULT_ENABLED} for w in DASHBOARD_WIDGETS]
+
+
+def _normalise_layout(layout: list | None) -> list[dict]:
+    """Keep only known widgets, in saved order, then append any new ones (off)."""
+    known = {w["id"] for w in DASHBOARD_WIDGETS}
+    out, seen = [], set()
+    for w in (layout or []):
+        wid = w.get("id")
+        if wid in known and wid not in seen:
+            out.append({"id": wid, "enabled": bool(w.get("enabled"))})
+            seen.add(wid)
+    for w in DASHBOARD_WIDGETS:
+        if w["id"] not in seen:
+            out.append({"id": w["id"], "enabled": w["id"] in _DEFAULT_ENABLED})
+    return out
+
+
+def _dashboard_data(user: dict) -> dict:
+    import json as _json
+    orgs = db.orgs_for_user(user["email"], user["is_global_admin"])
+    online = manager.online_ids()
+    totals = {"orgs": len(orgs), "devices": 0, "online": 0, "offline": 0, "noncompliant": 0}
+    org_cards, attention, disk, pending, mon_alerts = [], [], [], [], []
+    versions: dict[str, int] = {}
+    for o in orgs:
+        devs = db.list_devices(o["id"])
+        on = sum(1 for d in devs if d["id"] in online)
+        nc = sum(1 for d in devs if d.get("compliant") == 0)
+        org_cards.append({"id": o["id"], "name": o["name"], "devices": len(devs),
+                          "online": on, "offline": len(devs) - on, "noncompliant": nc})
+        totals["devices"] += len(devs); totals["online"] += on
+        totals["offline"] += len(devs) - on; totals["noncompliant"] += nc
+        for d in devs:
+            is_on = d["id"] in online
+            if not is_on or d.get("compliant") == 0:
+                attention.append({"id": d["id"], "hostname": d["hostname"], "org": o["name"],
+                                  "org_id": o["id"], "online": is_on, "last_seen": d.get("last_seen"),
+                                  "reason": "offline" if not is_on else "non-compliant"})
+            try:
+                disks = _json.loads(d["disks_json"]) if d.get("disks_json") else []
+            except (ValueError, TypeError):
+                disks = []
+            prim = next((x for x in disks if x.get("primary")), disks[0] if disks else None)
+            if prim and (prim.get("percent") or 0) >= 85:
+                disk.append({"id": d["id"], "hostname": d["hostname"], "org": o["name"],
+                             "org_id": o["id"], "mount": prim.get("mount"),
+                             "percent": prim.get("percent")})
+            ver = d.get("agent_version") or "unknown"
+            versions[ver] = versions.get(ver, 0) + 1
+        for m in db.list_monitors(o["id"]):
+            if m.get("last_status") == "alert":
+                mon_alerts.append({"id": m["id"], "name": m["name"], "org": o["name"]})
+        for p in db.list_pending(o["id"]):
+            pending.append({"id": p["id"], "hostname": p["hostname"], "org": o["name"],
+                            "org_id": o["id"], "os": p.get("os"), "created_at": p.get("created_at")})
+    attention.sort(key=lambda x: (x["online"], x["hostname"].lower()))
+    disk.sort(key=lambda x: -(x["percent"] or 0))
+    return {"totals": totals, "orgs": org_cards, "attention": attention[:10],
+            "disk": disk[:10], "monitors": mon_alerts[:10], "approvals": pending[:10],
+            "versions": {"counts": versions, "latest": SERVER_VERSION}}
+
+
+@app.get("/api/dashboard")
+def get_dashboard(user: dict = Depends(auth.current_user)):
+    layout = _normalise_layout(db.get_dashboard_layout(user["email"]) or _default_layout())
+    return {"layout": layout, "catalog": DASHBOARD_WIDGETS, "data": _dashboard_data(user)}
+
+
+@app.put("/api/dashboard")
+async def save_dashboard(request: Request, user: dict = Depends(auth.current_user)):
+    body = await request.json()
+    db.set_dashboard_layout(user["email"], _normalise_layout(body.get("layout")))
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
 # Organisations & groups
 # --------------------------------------------------------------------------- #
 @app.get("/api/orgs")
