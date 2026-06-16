@@ -60,7 +60,7 @@ def _resolve_version() -> str:
             return v.stdout.strip().lstrip("v")
     except Exception:
         pass
-    return "1.1.4"
+    return "1.1.5"
 
 
 SERVER_VERSION = _resolve_version()
@@ -121,6 +121,13 @@ def agent_insecure_tls() -> bool:
 def require_approval() -> bool:
     """Whether brand-new devices land in the approval queue (default: yes)."""
     return os.environ.get("RMM_REQUIRE_APPROVAL", "1").lower() in ("1", "true", "yes")
+
+
+def _enable_wol_policy() -> bool:
+    """Wake-on-LAN policy (off by default). When on, agents configure their NIC
+    for WoL and disable Windows Fast Startup; when off, they leave/restore the
+    Windows defaults — so nothing is changed unless an admin opts in."""
+    return os.environ.get("RMM_ENABLE_WOL", "0").lower() in ("1", "true", "yes")
 
 app = FastAPI(title="Leuffen RMM", version=SERVER_VERSION)
 
@@ -1506,6 +1513,9 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
             return
         db.upsert_device(org["id"], first, require_approval=require_approval())
         await manager.register(device_id, org["id"], ws)
+        # Push admin-controlled device policy (Wake-on-LAN configuration).
+        await ws.send_json({"type": "agent_policy",
+                            "enable_wol": _enable_wol_policy()})
         if db.get_device(device_id).get("is_node"):
             subs = [s["cidr"] for s in db.list_subnets(device_id)]
             await ws.send_json({"type": "set_role", "role": "node", "subnets": subs})
@@ -1640,8 +1650,14 @@ export RMM_SERVER_URL="{pub}"
 export RMM_API_KEY="{key}"
 export RMM_INSECURE_TLS="{insecure}"
 TMP=$(mktemp -d)
+mkdir -p /opt/leuffen-rmm
 curl -fsSL "{pub}/api/orgs/{org_id}/agent.zip?token={key}" -o "$TMP/agent.zip"
-unzip -o "$TMP/agent.zip" -d /opt/leuffen-rmm
+# Extract with Python's stdlib (avoids a hard dependency on the 'unzip' package).
+if command -v unzip >/dev/null 2>&1; then
+  unzip -o "$TMP/agent.zip" -d /opt/leuffen-rmm
+else
+  python3 -m zipfile -e "$TMP/agent.zip" /opt/leuffen-rmm
+fi
 pip3 install -r /opt/leuffen-rmm/requirements.txt
 cat >/etc/systemd/system/leuffen-rmm.service <<UNIT
 [Unit]
@@ -1912,7 +1928,7 @@ async def do_setup(request: Request):
 SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
-    "RMM_REQUIRE_APPROVAL", "RMM_ALERT_RECIPIENTS",
+    "RMM_REQUIRE_APPROVAL", "RMM_ALERT_RECIPIENTS", "RMM_ENABLE_WOL",
 ]
 
 
@@ -1993,6 +2009,16 @@ async def save_settings(request: Request, user: dict = Depends(auth.current_user
             db.set_setting(key, str(value))
             os.environ[key] = str(value)
             saved[key] = str(value)
+    # Push the Wake-on-LAN policy to already-connected agents straight away.
+    if "RMM_ENABLE_WOL" in saved:
+        policy = {"type": "agent_policy", "enable_wol": _enable_wol_policy()}
+        for did in list(manager.online_ids()):
+            conn = manager.get(did)
+            if conn:
+                try:
+                    await conn.send(policy)
+                except Exception:
+                    pass
     return {"ok": True, "saved": saved}
 
 

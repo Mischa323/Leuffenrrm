@@ -306,6 +306,14 @@ class Agent:
             self.role = msg.get("role", "agent")
             self.subnets = msg.get("subnets", [])
             log.info("role set to %s, subnets=%s", self.role, self.subnets)
+        elif t == "agent_policy":
+            # Admin-controlled device policy pushed from the server.
+            if "enable_wol" in msg:
+                if msg.get("enable_wol"):
+                    _enable_wol()                       # arm NIC for magic packet
+                    _set_fast_startup(enabled=False)    # keep NIC powered on shutdown
+                else:
+                    _set_fast_startup(enabled=True)     # restore Windows default
         elif t == "shell_run":
             res = await handlers.run_command(msg.get("cmd", ""))
             await self._ack(rid, res)
@@ -430,35 +438,62 @@ def _allow_inbound_ping() -> None:
 
 
 def _enable_wol() -> None:
-    """Make this device wakeable: enable 'Wake on Magic Packet' on physical NICs
-    and disable Fast Startup (Windows).
+    """Apply the full set of NIC settings Wake-on-LAN needs (Windows), best-effort.
 
-    The OS firewall doesn't block Wake-on-LAN (the magic packet is handled by the
-    NIC in hardware while the machine is off) — what matters is that the adapter is
-    armed AND that the machine actually powers the NIC during shutdown. Windows
-    **Fast Startup** (hybrid shutdown) powers the NIC fully down, so WoL fails from
-    a normal shutdown even with the adapter setting enabled — the single most
-    common cause of "WoL stopped working". Best-effort across drivers."""
+    This is benign — it only makes the adapter able to wake the machine on a magic
+    packet; it doesn't change shutdown/power behaviour. Covers, where the driver
+    exposes them:
+      * Wake on Magic Packet = Enabled, wake on pattern off (magic-packet only)
+      * 'Allow this device to wake the computer' (powercfg -deviceenablewake)
+      * Shutdown Wake-On-Lan = Enabled (Intel)
+      * Energy-Efficient / Green Ethernet / Ultra-Low-Power = Disabled (these can
+        stop the NIC waking)
+    Whether to also disable Fast Startup is a separate admin-controlled policy."""
     if os.name != "nt":
         return
     try:
         import subprocess
-        ps = (
-            "Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } | "
-            "ForEach-Object { "
-            "try { Set-NetAdapterPowerManagement -Name $_.Name -WakeOnMagicPacket Enabled "
-            "-NoRestart -ErrorAction SilentlyContinue } catch {}; "
-            "try { Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName 'Wake on Magic Packet' "
-            "-DisplayValue 'Enabled' -NoRestart -ErrorAction SilentlyContinue } catch {} }"
-        )
+        ps = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } | ForEach-Object {
+  $n = $_.Name
+  try { Set-NetAdapterPowerManagement -Name $n -WakeOnMagicPacket Enabled -WakeOnPattern Disabled -NoRestart } catch {}
+  foreach ($p in @(
+      @('Wake on Magic Packet','Enabled'),
+      @('Shutdown Wake-On-Lan','Enabled'),
+      @('Shutdown Wake Up','Enabled'),
+      @('Energy Efficient Ethernet','Disabled'),
+      @('Green Ethernet','Disabled'),
+      @('Ultra Low Power Mode','Disabled'),
+      @('System Idle Power Saver','Disabled'))) {
+    try { Set-NetAdapterAdvancedProperty -Name $n -DisplayName $p[0] -DisplayValue $p[1] -NoRestart } catch {}
+  }
+  try { & powercfg -deviceenablewake "$($_.InterfaceDescription)" } catch {}
+}
+"""
         subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                       capture_output=True, timeout=30)
-        # Disable Fast Startup without disabling hibernation (HiberbootEnabled=0).
+                       capture_output=True, timeout=45)
+        log.info("applied Wake-on-LAN NIC settings on physical adapters")
+    except Exception:
+        pass
+
+
+def _set_fast_startup(enabled: bool) -> None:
+    """Enable/disable Windows Fast Startup (HiberbootEnabled) per server policy.
+
+    Fast Startup (hybrid shutdown) powers the NIC fully down, defeating WoL from a
+    shutdown — so an admin who relies on WoL can turn it off. Default leaves it at
+    the Windows default (on). Hibernation itself is unaffected."""
+    if os.name != "nt":
+        return
+    try:
+        import subprocess
         subprocess.run(["reg", "add",
                         r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power",
-                        "/v", "HiberbootEnabled", "/t", "REG_DWORD", "/d", "0", "/f"],
+                        "/v", "HiberbootEnabled", "/t", "REG_DWORD",
+                        "/d", "1" if enabled else "0", "/f"],
                        capture_output=True, timeout=15)
-        log.info("ensured Wake-on-Magic-Packet enabled and Fast Startup disabled")
+        log.info("Fast Startup %s per server policy", "enabled" if enabled else "disabled")
     except Exception:
         pass
 
@@ -505,7 +540,8 @@ def main() -> None:
     _persist_config(cfg)
     _grant_users_writable(_data_dir())
     _allow_inbound_ping()
-    _enable_wol()
+    # Wake-on-LAN (NIC settings + Fast Startup) is applied only when the server's
+    # agent_policy enables it — not unconditionally.
     asyncio.run(Agent(cfg).run())
 
 
