@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS devices (
     mac           TEXT,
     agent_version TEXT,
     logged_in_user TEXT,
+    disks_json    TEXT,
     is_node       INTEGER NOT NULL DEFAULT 0,
     inventory_json TEXT,
     compliant     INTEGER,
@@ -678,6 +679,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
     if "logged_in_user" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN logged_in_user TEXT")
+    if "disks_json" not in dcols:
+        conn.execute("ALTER TABLE devices ADD COLUMN disks_json TEXT")
     # Remove any duplicate (node, subnet) rows from before dedup, keeping one.
     conn.execute("DELETE FROM subnets WHERE id NOT IN "
                  "(SELECT MIN(id) FROM subnets GROUP BY node_id, cidr)")
@@ -1023,6 +1026,15 @@ def set_logged_in_user(device_id: str, user: str | None) -> None:
             (user, device_id, user))
 
 
+def set_device_disks(device_id: str, disks: list | None) -> None:
+    """Store the latest per-volume disk usage reported on a heartbeat."""
+    if not disks:
+        return
+    with write() as conn:
+        conn.execute("UPDATE devices SET disks_json=? WHERE id=?",
+                     (json.dumps(disks), device_id))
+
+
 def set_node(device_id: str, is_node: bool) -> None:
     with write() as conn:
         conn.execute("UPDATE devices SET is_node=? WHERE id=?",
@@ -1080,6 +1092,11 @@ def get_device(device_id: str) -> dict | None:
     d = dict(row)
     if d.get("inventory_json"):
         d["inventory"] = json.loads(d["inventory_json"])
+    if d.get("disks_json"):
+        try:
+            d["disks"] = json.loads(d["disks_json"])
+        except (ValueError, TypeError):
+            d["disks"] = []
     # Attach configured subnets so the device drawer can list them for a node.
     if d.get("is_node"):
         d["subnets"] = list_subnets(device_id)

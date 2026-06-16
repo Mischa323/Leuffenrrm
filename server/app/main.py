@@ -14,7 +14,8 @@ import os
 import secrets
 import time
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (Depends, FastAPI, File, HTTPException, Query, Request, UploadFile,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
@@ -59,7 +60,7 @@ def _resolve_version() -> str:
             return v.stdout.strip().lstrip("v")
     except Exception:
         pass
-    return "1.1.1"
+    return "1.1.2"
 
 
 SERVER_VERSION = _resolve_version()
@@ -488,6 +489,77 @@ def delete_device(device_id: str, user: dict = Depends(auth.current_user)):
     _device_for_user(device_id, user)
     db.delete_device(device_id)
     return {"status": "deleted"}
+
+
+# --------------------------------------------------------------------------- #
+# Remote file management (bridged to the agent over its socket)
+# --------------------------------------------------------------------------- #
+async def _agent_file_op(device_id: str, user: dict, msg: dict, timeout: float = 30.0) -> dict:
+    _device_for_user(device_id, user)
+    if not manager.is_online(device_id):
+        raise HTTPException(status_code=409, detail="Device offline")
+    try:
+        res = await manager.request(device_id, msg, timeout=timeout)
+    except Exception as exc:
+        raise HTTPException(status_code=504, detail=str(exc))
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error", "File operation failed"))
+    return res
+
+
+@app.get("/api/devices/{device_id}/files")
+async def files_list(device_id: str, path: str = Query(""),
+                     user: dict = Depends(auth.current_user)):
+    """List a directory (empty path → drive/root list)."""
+    return await _agent_file_op(device_id, user, {"type": "file_list", "path": path})
+
+
+@app.get("/api/devices/{device_id}/files/size")
+async def files_size(device_id: str, path: str = Query(...),
+                     user: dict = Depends(auth.current_user)):
+    """Compute the total size of a folder tree (bounded server-side)."""
+    return await _agent_file_op(device_id, user, {"type": "dir_size", "path": path}, timeout=40)
+
+
+@app.post("/api/devices/{device_id}/files/mkdir")
+async def files_mkdir(device_id: str, req: Request, user: dict = Depends(auth.current_user)):
+    body = await req.json()
+    return await _agent_file_op(device_id, user, {"type": "file_mkdir", "path": body.get("path", "")})
+
+
+@app.post("/api/devices/{device_id}/files/delete")
+async def files_delete(device_id: str, req: Request, user: dict = Depends(auth.current_user)):
+    body = await req.json()
+    return await _agent_file_op(device_id, user, {"type": "file_delete", "path": body.get("path", "")})
+
+
+@app.get("/api/devices/{device_id}/files/download")
+async def files_download(device_id: str, path: str = Query(...),
+                         user: dict = Depends(auth.current_user)):
+    import base64
+    res = await _agent_file_op(device_id, user, {"type": "file_get", "path": path}, timeout=120)
+    try:
+        data = base64.b64decode(res.get("data", ""))
+    except Exception:
+        raise HTTPException(status_code=502, detail="Bad file data from agent")
+    name = res.get("name") or os.path.basename(path.rstrip("\\/")) or "download"
+    return Response(data, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"',
+                             "Cache-Control": "no-store"})
+
+
+@app.post("/api/devices/{device_id}/files/upload")
+async def files_upload(device_id: str, path: str = Query(...), file: UploadFile = File(...),
+                       user: dict = Depends(auth.current_user)):
+    import base64
+    raw = await file.read()
+    if len(raw) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (25 MB max)")
+    sep = "\\" if ("\\" in path or (len(path) >= 2 and path[1] == ":")) else "/"
+    dest = path.rstrip("\\/") + sep + file.filename
+    return await _agent_file_op(device_id, user,
+                                {"type": "file_put", "path": dest,
+                                 "data": base64.b64encode(raw).decode()}, timeout=120)
 
 
 @app.post("/api/devices/{device_id}/move")
@@ -1128,6 +1200,8 @@ async def _handle_agent_msg(device_id: str, org_id: str, data: dict) -> None:
         db.touch_device(device_id)
         if "logged_in_user" in m:
             db.set_logged_in_user(device_id, m.get("logged_in_user"))
+        if m.get("disks"):
+            db.set_device_disks(device_id, m.get("disks"))
     elif mtype == "ack":
         manager.resolve(data.get("rid", ""), data.get("payload", data))
     elif mtype == "shell_output":

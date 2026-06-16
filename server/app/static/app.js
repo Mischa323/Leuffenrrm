@@ -699,6 +699,7 @@ async function saveMonitor() {
 let termSocket = null;
 async function openDrawer(id) {
   state.device = id;
+  state.filePath = "";
   $("scrim").classList.remove("hidden");
   $("drawer").classList.remove("hidden");
   setTimeout(() => { $("drawer").style.transform = "translateX(0)"; }, 20);
@@ -721,20 +722,27 @@ async function openDrawer(id) {
 }
 function selectDrawerTab(tab) {
   document.querySelectorAll(".dtabs button").forEach((b) => b.classList.toggle("active", b.dataset.dtab === tab));
-  ["overview", "terminal", "actions"].forEach((t) => $("dtab-" + t).classList.toggle("hidden", t !== tab));
+  ["overview", "files", "terminal", "actions"].forEach((t) => $("dtab-" + t).classList.toggle("hidden", t !== tab));
   if (tab === "overview") renderOverview(state.deviceObj);
+  if (tab === "files") openFiles();
   if (tab === "terminal") openTerminal(); else closeTerminal();
 }
 function renderOverview(d) {
   const m = d.latest || {};
   const ram = d.ram_total ? (d.ram_total / 1e9).toFixed(0) : null;
+  const disks = d.disks || [];
+  const primary = disks.find((x) => x.primary) || disks[0] || null;
+  const diskPct = primary ? primary.percent : m.disk_percent;
+  const diskLabel = primary ? primary.mount.replace(/\\$/, "") : "Disk";
+  const multi = disks.length > 1;
   const cards = d.online ? `
     <div class="stat-grid">
       <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">CPU</div><div class="v">${Math.round(m.cpu_percent || 0)}<small>%</small></div></div>${ringChart(m.cpu_percent, (m.cpu_percent >= 75) ? "var(--bad)" : "var(--accent)")}</div></div>
       <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">Memory</div><div class="v">${Math.round(m.mem_percent || 0)}<small>%</small></div></div>${ringChart(m.mem_percent, "var(--good)")}</div></div>
-      <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">Disk</div><div class="v">${Math.round(m.disk_percent || 0)}<small>%</small></div></div>${ringChart(m.disk_percent, (m.disk_percent >= 90) ? "var(--bad)" : "var(--warn)")}</div></div>
+      <div class="sg ${multi ? "clickable" : ""}" id="disk-card"${multi ? ' title="Show all drives"' : ""}><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">Disk ${diskLabel !== "Disk" ? `<span class="mono" style="opacity:.7">${escapeHtml(diskLabel)}</span>` : ""} ${multi ? `<span style="opacity:.6">${ICON.chevD.replace("<svg", '<svg style="width:11px;height:11px;vertical-align:middle"')}</span>` : ""}</div><div class="v">${Math.round(diskPct || 0)}<small>%</small></div></div>${ringChart(diskPct, (diskPct >= 90) ? "var(--bad)" : "var(--warn)")}</div></div>
       <div class="sg"><div class="l">Uptime</div><div class="v" style="font-size:15px;margin-top:8px">${d.uptimeStr}</div></div>
-    </div>` : `<div class="tile" style="margin-bottom:20px;text-align:center;color:var(--text-dim)">Device offline · last seen ${relTime(d.last_seen)}</div>`;
+    </div>
+    <div id="disk-detail" class="hidden tile" style="margin-bottom:18px">${diskRows(disks)}</div>` : `<div class="tile" style="margin-bottom:20px;text-align:center;color:var(--text-dim)">Device offline · last seen ${relTime(d.last_seen)}</div>`;
   const rows = [
     ["Operating system", `${d.os || ""} ${d.os_version || ""}`.trim()], ["Architecture", d.os_arch], ["Type", d.os_kind],
     ["Manufacturer", d.manufacturer], ["Model", d.model], ["Serial", d.serial],
@@ -744,6 +752,24 @@ function renderOverview(d) {
   let nicHtml = "";
   if (d.nics && d.nics.length) nicHtml = `<dt>Interfaces</dt><dd>${d.nics.map((n) => `${n.name}: ${(n.ipv4 || []).join(", ") || "—"}${n.mac ? " · " + n.mac : ""}`).join("<br>")}</dd>`;
   $("dtab-overview").innerHTML = cards + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
+  const dc = $("disk-card");
+  if (dc && multi) dc.onclick = () => $("disk-detail").classList.toggle("hidden");
+}
+function diskRows(disks) {
+  if (!disks.length) return `<div class="muted" style="font-size:12.5px">No drive details reported yet.</div>`;
+  return `<div class="sec-label" style="margin-top:0">All drives</div>` + disks.map((x) => {
+    const col = x.percent >= 90 ? "var(--bad)" : x.percent >= 75 ? "var(--warn)" : "var(--good)";
+    return `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px">
+      <span><b class="mono">${escapeHtml(x.mount.replace(/\\$/, ""))}</b>${x.fs ? ` <span class="muted">${escapeHtml(x.fs)}</span>` : ""}</span>
+      <span class="muted">${fmtBytes(x.used)} / ${fmtBytes(x.total)} · ${Math.round(x.percent)}%</span></div>
+      <div class="bar" style="height:6px;background:var(--surface-3);border-radius:99px;overflow:hidden"><i style="display:block;height:100%;width:${x.percent}%;background:${col}"></i></div></div>`;
+  }).join("");
+}
+function fmtBytes(n) {
+  if (n == null) return "—";
+  const u = ["B", "KB", "MB", "GB", "TB", "PB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
 }
 function renderActions(d) {
   const acts = [
@@ -840,6 +866,73 @@ function cmpVer(a, b) {
   return 0;
 }
 function closeDrawer() { closeTerminal(); const d = $("drawer"); d.style.transform = "translateX(100%)"; setTimeout(() => d.classList.add("hidden"), 280); $("scrim").classList.add("hidden"); state.device = null; }
+
+/* ---------- remote file management ---------- */
+function openFiles() {
+  if (!state.deviceObj) return;
+  if (!state.deviceObj.online) { $("dtab-files").innerHTML = `<div class="tile" style="text-align:center;color:var(--text-dim)">Device is offline — file management unavailable.</div>`; return; }
+  renderFiles(state.filePath || "");
+}
+async function renderFiles(path) {
+  state.filePath = path;
+  const host = $("dtab-files");
+  host.innerHTML = `<div class="muted" style="padding:14px">Loading…</div>`;
+  let res;
+  try { res = await api(`/api/devices/${state.device}/files?path=${encodeURIComponent(path)}`); }
+  catch (e) { host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Can't open folder</div><div class="cd">${escapeHtml(e.message)}</div></div></div>`; return; }
+  const entries = res.entries || [];
+  const atRoot = !!res.roots || !path;
+  const bar = `<div class="file-bar">
+      <button class="btn ghost sm" id="f-up" ${atRoot ? "disabled" : ""}>${ICON.arrowUp} Up</button>
+      <span class="file-path mono" title="${escapeHtml(path)}">${escapeHtml(path || "Drives")}</span>
+      <span style="flex:1"></span>
+      <button class="btn ghost sm" id="f-refresh">${ICON.refresh}</button>
+      ${atRoot ? "" : `<button class="btn ghost sm" id="f-mkdir">${ICON.plus} Folder</button>
+      <label class="btn ghost sm" style="cursor:pointer;margin:0">${ICON.upload} Upload<input type="file" id="f-upload" hidden></label>`}
+    </div>`;
+  const rows = entries.map((e, i) => `<tr data-i="${i}">
+      <td><span class="file-ico">${e.is_dir ? ICON.folder : ICON.file}</span>${e.is_dir ? `<a class="file-open" data-p="${escapeHtml(e.path)}">${escapeHtml(e.name)}</a>` : `<span>${escapeHtml(e.name)}</span>`}</td>
+      <td class="mono file-size" data-p="${escapeHtml(e.path)}">${e.is_dir ? `<button class="btn ghost sm fsize">calc</button>` : fmtBytes(e.size)}</td>
+      <td class="muted">${e.modified ? relTime(e.modified) : "—"}</td>
+      <td style="text-align:right;white-space:nowrap">${e.is_dir ? "" : `<button class="btn ghost sm fdl" title="Download" data-p="${escapeHtml(e.path)}" data-n="${escapeHtml(e.name)}">${ICON.download}</button>`}<button class="btn ghost sm fdel" title="Delete" data-p="${escapeHtml(e.path)}" data-n="${escapeHtml(e.name)}" data-dir="${e.is_dir ? 1 : 0}">${ICON.trash}</button></td>
+    </tr>`).join("");
+  host.innerHTML = bar + `<table class="grid file-table"><thead><tr><th>Name</th><th>Size</th><th>Modified</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted" style="padding:18px">Empty folder.</td></tr>`}</tbody></table>`;
+
+  const up = $("f-up"); if (up) up.onclick = () => renderFiles(res.parent || "");
+  $("f-refresh").onclick = () => renderFiles(path);
+  const mk = $("f-mkdir");
+  if (mk) mk.onclick = async () => {
+    const name = (prompt("New folder name?") || "").trim(); if (!name) return;
+    const sep = path.includes("\\") || /^[A-Za-z]:/.test(path) ? "\\" : "/";
+    try { await api(`/api/devices/${state.device}/files/mkdir`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: path.replace(/[\\/]$/, "") + sep + name }) }); toast("Folder created"); renderFiles(path); } catch (e) { toast(e.message); }
+  };
+  const upl = $("f-upload");
+  if (upl) upl.onchange = async () => {
+    const f = upl.files[0]; if (!f) return;
+    const fd = new FormData(); fd.append("file", f);
+    toast("Uploading " + f.name + "…");
+    try {
+      const r = await fetch(`/api/devices/${state.device}/files/upload?path=${encodeURIComponent(path)}`, { method: "POST", body: fd });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      toast("Uploaded " + f.name); renderFiles(path);
+    } catch (e) { toast(e.message); }
+  };
+  host.querySelectorAll(".file-open").forEach((a) => a.onclick = () => renderFiles(a.dataset.p));
+  host.querySelectorAll(".fsize").forEach((b) => b.onclick = async () => {
+    const cell = b.closest(".file-size"); b.disabled = true; b.textContent = "…";
+    try { const r = await api(`/api/devices/${state.device}/files/size?path=${encodeURIComponent(cell.dataset.p)}`); cell.textContent = fmtBytes(r.size) + (r.truncated ? "+" : ""); }
+    catch (e) { b.disabled = false; b.textContent = "calc"; toast(e.message); }
+  });
+  host.querySelectorAll(".fdl").forEach((b) => b.onclick = () => {
+    const a = document.createElement("a");
+    a.href = `/api/devices/${state.device}/files/download?path=${encodeURIComponent(b.dataset.p)}`;
+    a.download = b.dataset.n; document.body.appendChild(a); a.click(); a.remove();
+  });
+  host.querySelectorAll(".fdel").forEach((b) => b.onclick = async () => {
+    if (!confirm(`Delete ${b.dataset.dir === "1" ? "folder" : "file"} "${b.dataset.n}"?${b.dataset.dir === "1" ? "\nThis removes everything inside it." : ""}`)) return;
+    try { await api(`/api/devices/${state.device}/files/delete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: b.dataset.p }) }); toast("Deleted"); renderFiles(path); } catch (e) { toast(e.message); }
+  });
+}
 
 /* ---------- terminal (real WebSocket bridge) ---------- */
 function openTerminal() {

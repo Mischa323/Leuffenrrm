@@ -199,3 +199,94 @@ def file_put(path: str, b64: str) -> dict:
         return {"ok": True, "path": path}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _drives() -> list[dict]:
+    """Top-level roots to browse: drive letters on Windows, '/' on Linux."""
+    out = []
+    if IS_WIN:
+        import psutil
+        for p in psutil.disk_partitions(all=False):
+            mp = p.mountpoint
+            entry = {"name": mp, "path": mp, "is_dir": True, "size": None, "modified": None}
+            try:
+                u = __import__("psutil").disk_usage(mp)
+                entry["size"] = u.total
+                entry["used"] = u.used
+                entry["percent"] = u.percent
+            except Exception:
+                pass
+            out.append(entry)
+    else:
+        out.append({"name": "/", "path": "/", "is_dir": True, "size": None, "modified": None})
+    return out
+
+
+def file_list(path: str) -> dict:
+    """List a directory. An empty path returns the drive/root list."""
+    try:
+        if not path:
+            return {"ok": True, "path": "", "parent": None, "entries": _drives(), "roots": True}
+        if not os.path.isdir(path):
+            return {"ok": False, "error": "Not a directory"}
+        entries = []
+        with os.scandir(path) as it:
+            for e in it:
+                try:
+                    st = e.stat(follow_symlinks=False)
+                    is_dir = e.is_dir(follow_symlinks=False)
+                    entries.append({
+                        "name": e.name, "path": e.path, "is_dir": is_dir,
+                        "size": None if is_dir else st.st_size,
+                        "modified": st.st_mtime,
+                    })
+                except OSError:
+                    continue
+        entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+        parent = os.path.dirname(path.rstrip("\\/")) or (None if IS_WIN else "/")
+        # On Windows, a drive root (C:\) has no meaningful parent → drive list.
+        if IS_WIN and len(path.rstrip("\\/")) <= 2:
+            parent = ""
+        return {"ok": True, "path": path, "parent": parent, "entries": entries}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def dir_size(path: str, time_budget: float = 15.0) -> dict:
+    """Sum the size of a folder tree (bounded by a time budget)."""
+    import time
+    total, files, start, truncated = 0, 0, time.time(), False
+    try:
+        for root, _dirs, names in os.walk(path):
+            for n in names:
+                try:
+                    total += os.path.getsize(os.path.join(root, n))
+                    files += 1
+                except OSError:
+                    pass
+            if time.time() - start > time_budget:
+                truncated = True
+                break
+        return {"ok": True, "path": path, "size": total, "files": files, "truncated": truncated}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def file_delete(path: str) -> dict:
+    import shutil
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+        return {"ok": True, "path": path}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def file_mkdir(path: str) -> dict:
+    try:
+        os.makedirs(path, exist_ok=True)
+        return {"ok": True, "path": path}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
