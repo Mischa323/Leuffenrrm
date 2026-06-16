@@ -13,7 +13,7 @@ import uuid
 
 import psutil
 
-AGENT_VERSION = "1.1.3"
+AGENT_VERSION = "1.1.4"
 
 
 def _gpus() -> str | None:
