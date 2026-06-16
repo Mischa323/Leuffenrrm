@@ -60,7 +60,7 @@ def _resolve_version() -> str:
             return v.stdout.strip().lstrip("v")
     except Exception:
         pass
-    return "1.1.2"
+    return "1.1.3"
 
 
 SERVER_VERSION = _resolve_version()
@@ -100,7 +100,7 @@ _install_ring_log()
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 AGENT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "agent")
 OFFLINE_AFTER = float(os.environ.get("RMM_OFFLINE_AFTER", "120"))
-METRIC_RETENTION = float(os.environ.get("RMM_METRIC_RETENTION", str(7 * 24 * 3600)))
+METRIC_RETENTION = float(os.environ.get("RMM_METRIC_RETENTION", str(30 * 24 * 3600)))
 ALERT_INTERVAL = float(os.environ.get("RMM_ALERT_INTERVAL", "60"))
 # TLS mode the process booted with (used to decide if a restart is needed after
 # the setup wizard changes it). Read live values via the helpers below.
@@ -579,9 +579,18 @@ def get_device(device_id: str, user: dict = Depends(auth.current_user)):
     return _decorate(_device_for_user(device_id, user))
 
 
+_METRIC_RANGES = {"24h": 24 * 3600, "7d": 7 * 24 * 3600, "30d": 30 * 24 * 3600}
+
+
 @app.get("/api/devices/{device_id}/metrics")
-def device_metrics(device_id: str, limit: int = 200, user: dict = Depends(auth.current_user)):
+def device_metrics(device_id: str, limit: int = 200, range: str | None = Query(None),
+                   user: dict = Depends(auth.current_user)):
     _device_for_user(device_id, user)
+    if range:
+        secs = _METRIC_RANGES.get(range)
+        if not secs:
+            raise HTTPException(status_code=400, detail="range must be 24h, 7d or 30d")
+        return db.get_metrics_series(device_id, time.time() - secs, points=120)
     return db.get_metrics(device_id, limit=limit)
 
 
@@ -1358,12 +1367,20 @@ async def _wake(org_id: str, mac: str, broadcast: str | None, port: int,
     node, sub_bcast = _resolve_wake(org_id, target_ip, node_id)
     bcast = broadcast or sub_bcast or "255.255.255.255"
     if node and manager.is_online(node["id"]):
-        await manager.request(node["id"], {"type": "wol", "mac": mac,
-                                           "broadcast": bcast, "port": port})
-        return {"status": "sent", "via": "node", "node": node["hostname"], "broadcast": bcast}
-    # Fallback: broadcast from the server itself.
-    wol_local.send_magic_packet(mac, broadcast_ip=broadcast or "255.255.255.255", port=port)
-    return {"status": "sent", "via": "server", "broadcast": broadcast or "255.255.255.255"}
+        log.info("WoL: sending magic packet for %s to broadcast %s:%s via node %s (%s)",
+                 mac, bcast, port, node["hostname"], node["id"])
+        res = await manager.request(node["id"], {"type": "wol", "mac": mac,
+                                                 "broadcast": bcast, "port": port})
+        ok = isinstance(res, dict) and res.get("ok")
+        log.info("WoL: node %s %s sending to %s (target %s)", node["hostname"],
+                 "confirmed" if ok else f"reported {res}", bcast, target_ip or "?")
+        return {"status": "sent", "via": "node", "node": node["hostname"],
+                "broadcast": bcast, "mac": mac, "agent_ok": bool(ok)}
+    bc = broadcast or "255.255.255.255"
+    log.info("WoL: no relay node online for org %s — broadcasting %s to %s from the server",
+             org_id, mac, bc)
+    wol_local.send_magic_packet(mac, broadcast_ip=bc, port=port)
+    return {"status": "sent", "via": "server", "broadcast": bc, "mac": mac}
 
 
 @app.post("/api/devices/{device_id}/wake")
