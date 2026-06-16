@@ -123,11 +123,6 @@ def require_approval() -> bool:
     return os.environ.get("RMM_REQUIRE_APPROVAL", "1").lower() in ("1", "true", "yes")
 
 
-def _enable_wol_policy() -> bool:
-    """Wake-on-LAN policy (off by default). When on, agents configure their NIC
-    for WoL and disable Windows Fast Startup; when off, they leave/restore the
-    Windows defaults — so nothing is changed unless an admin opts in."""
-    return os.environ.get("RMM_ENABLE_WOL", "0").lower() in ("1", "true", "yes")
 
 app = FastAPI(title="Leuffen RMM", version=SERVER_VERSION)
 
@@ -583,7 +578,9 @@ def list_devices(org_id: str, group_id: str | None = None,
 
 @app.get("/api/devices/{device_id}")
 def get_device(device_id: str, user: dict = Depends(auth.current_user)):
-    return _decorate(_device_for_user(device_id, user))
+    dev = _decorate(_device_for_user(device_id, user))
+    dev["policies"] = _effective_policies(dev)
+    return dev
 
 
 _METRIC_RANGES = {"24h": 24 * 3600, "7d": 7 * 24 * 3600, "30d": 30 * 24 * 3600}
@@ -1234,23 +1231,73 @@ def delete_monitor(monitor_id: str, user: dict = Depends(auth.current_user)):
 # ordinary, user-managed record — site-scoped or global, just like monitors.
 # --------------------------------------------------------------------------- #
 MONITOR_TEMPLATES = [
-    {"id": "disk", "name": "Low disk space", "category": "Storage",
+    {"id": "disk", "name": "Low disk space", "category": "Storage", "kind": "monitor",
      "description": "Alert when disk usage stays above the threshold for a sustained period.",
      "metric": "disk_percent", "unit": "%", "default_threshold": 90, "default_duration_minutes": 5,
-     "default_severity": "warning"},
-    {"id": "cpu", "name": "High CPU usage", "category": "Performance",
+     "default_severity": "warning", "os_support": None},
+    {"id": "cpu", "name": "High CPU usage", "category": "Performance", "kind": "monitor",
      "description": "Alert when CPU usage stays above the threshold for a sustained period.",
      "metric": "cpu_percent", "unit": "%", "default_threshold": 90, "default_duration_minutes": 10,
-     "default_severity": "warning"},
-    {"id": "mem", "name": "High memory usage", "category": "Performance",
+     "default_severity": "warning", "os_support": None},
+    {"id": "mem", "name": "High memory usage", "category": "Performance", "kind": "monitor",
      "description": "Alert when memory usage stays above the threshold for a sustained period.",
      "metric": "mem_percent", "unit": "%", "default_threshold": 90, "default_duration_minutes": 10,
-     "default_severity": "warning"},
-    {"id": "offline", "name": "Device offline", "category": "Availability",
+     "default_severity": "warning", "os_support": None},
+    {"id": "offline", "name": "Device offline", "category": "Availability", "kind": "monitor",
      "description": "Alert when a device hasn't sent a heartbeat for a while.",
      "metric": "offline", "unit": "s", "default_threshold": 120, "default_duration_minutes": None,
-     "default_severity": "critical"},
+     "default_severity": "critical", "os_support": None},
+    {"id": "wol", "name": "Wake-on-LAN", "category": "Power", "kind": "policy",
+     "description": "Configure agents' NICs for Wake-on-LAN and disable Fast Startup so they can be "
+                    "woken. Windows only.",
+     "metric": "wol", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
+     "default_severity": "info", "os_support": ["windows", "windows_server"]},
 ]
+
+
+def _template(template_id: str) -> dict | None:
+    return next((t for t in MONITOR_TEMPLATES if t["id"] == template_id), None)
+
+
+def _os_supported(template_id: str, os_kind: str | None) -> bool:
+    """Whether a template/policy supports a device's OS (None = all OSes)."""
+    tmpl = _template(template_id)
+    support = tmpl.get("os_support") if tmpl else None
+    return support is None or (os_kind in support)
+
+
+def _device_wol_enabled(dev: dict | None) -> bool:
+    """True if an enabled Wake-on-LAN policy targets this (supported) device."""
+    if not dev or not _os_supported("wol", dev.get("os_kind")):
+        return False
+    return any(r["template_id"] == "wol" for r in db.list_effective_monitor_rules(dev))
+
+
+def _effective_policies(dev: dict) -> list[dict]:
+    """All policy/monitor rules that apply to a device, with OS-support status,
+    for the device drawer."""
+    out = []
+    for r in db.list_effective_monitor_rules(dev):
+        tmpl = _template(r["template_id"]) or {}
+        out.append({"name": r["name"], "template_id": r["template_id"],
+                    "kind": tmpl.get("kind", "monitor"), "severity": r.get("severity"),
+                    "supported": _os_supported(r["template_id"], dev.get("os_kind")),
+                    "value": ("Windows only" if r["template_id"] == "wol"
+                              else f"{r['metric']} ≥ {r['threshold']:.0f}"
+                                   f"{'%' if r['metric'] != 'offline' else 's'}")})
+    return out
+
+
+async def _push_wol_policy() -> None:
+    """Re-push the Wake-on-LAN policy to every online agent (after a rule change)."""
+    for did in list(manager.online_ids()):
+        dev = db.get_device(did)
+        conn = manager.get(did)
+        if dev and conn:
+            try:
+                await conn.send({"type": "agent_policy", "enable_wol": _device_wol_enabled(dev)})
+            except Exception:
+                pass
 
 
 @app.get("/api/monitor-templates")
@@ -1283,15 +1330,21 @@ def list_monitor_rules(org_id: str, user: dict = Depends(auth.current_user)):
 
 
 @app.post("/api/orgs/{org_id}/monitor-rules")
-def add_monitor_rule(org_id: str, req: MonitorRuleRequest, user: dict = Depends(auth.current_user)):
+async def add_monitor_rule(org_id: str, req: MonitorRuleRequest, user: dict = Depends(auth.current_user)):
     auth.require_org(user, org_id)
-    return _build_monitor_rule(org_id, req)
+    res = _build_monitor_rule(org_id, req)
+    if req.template_id == "wol":
+        await _push_wol_policy()
+    return res
 
 
 @app.post("/api/monitor-rules/global")
-def add_global_monitor_rule(req: MonitorRuleRequest, user: dict = Depends(auth.current_user)):
+async def add_global_monitor_rule(req: MonitorRuleRequest, user: dict = Depends(auth.current_user)):
     auth.require_global(user)
-    return _build_monitor_rule(None, req)
+    res = _build_monitor_rule(None, req)
+    if req.template_id == "wol":
+        await _push_wol_policy()
+    return res
 
 
 @app.put("/api/monitor-rules/{rule_id}")
@@ -1320,23 +1373,27 @@ def update_monitor_rule(rule_id: str, req: MonitorRuleRequest, user: dict = Depe
 
 
 @app.post("/api/monitor-rules/{rule_id}/toggle")
-def toggle_monitor_rule(rule_id: str, user: dict = Depends(auth.current_user)):
+async def toggle_monitor_rule(rule_id: str, user: dict = Depends(auth.current_user)):
     rule = db.get_monitor_rule(rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Monitor rule not found")
     auth.require_scope(user, rule["org_id"])
     enabled = not rule["enabled"]
     db.set_monitor_rule_enabled(rule_id, enabled)
+    if rule["template_id"] == "wol":
+        await _push_wol_policy()
     return {"enabled": enabled}
 
 
 @app.delete("/api/monitor-rules/{rule_id}")
-def delete_monitor_rule(rule_id: str, user: dict = Depends(auth.current_user)):
+async def delete_monitor_rule(rule_id: str, user: dict = Depends(auth.current_user)):
     rule = db.get_monitor_rule(rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Monitor rule not found")
     auth.require_scope(user, rule["org_id"])
     db.delete_monitor_rule(rule_id)
+    if rule["template_id"] == "wol":
+        await _push_wol_policy()
     return {"status": "deleted"}
 
 
@@ -1513,9 +1570,10 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
             return
         db.upsert_device(org["id"], first, require_approval=require_approval())
         await manager.register(device_id, org["id"], ws)
-        # Push admin-controlled device policy (Wake-on-LAN configuration).
+        # Push admin-controlled device policy (Wake-on-LAN), per the policies that
+        # target this device and whether its OS supports it.
         await ws.send_json({"type": "agent_policy",
-                            "enable_wol": _enable_wol_policy()})
+                            "enable_wol": _device_wol_enabled(db.get_device(device_id))})
         if db.get_device(device_id).get("is_node"):
             subs = [s["cidr"] for s in db.list_subnets(device_id)]
             await ws.send_json({"type": "set_role", "role": "node", "subnets": subs})
@@ -1928,7 +1986,7 @@ async def do_setup(request: Request):
 SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
-    "RMM_REQUIRE_APPROVAL", "RMM_ALERT_RECIPIENTS", "RMM_ENABLE_WOL",
+    "RMM_REQUIRE_APPROVAL", "RMM_ALERT_RECIPIENTS",
 ]
 
 
@@ -2009,16 +2067,6 @@ async def save_settings(request: Request, user: dict = Depends(auth.current_user
             db.set_setting(key, str(value))
             os.environ[key] = str(value)
             saved[key] = str(value)
-    # Push the Wake-on-LAN policy to already-connected agents straight away.
-    if "RMM_ENABLE_WOL" in saved:
-        policy = {"type": "agent_policy", "enable_wol": _enable_wol_policy()}
-        for did in list(manager.online_ids()):
-            conn = manager.get(did)
-            if conn:
-                try:
-                    await conn.send(policy)
-                except Exception:
-                    pass
     return {"ok": True, "saved": saved}
 
 

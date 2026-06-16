@@ -136,7 +136,6 @@
                   <button class="btn sm" id="mon-new"><span class="hi" data-i="shieldCheck"></span> New monitor</button></div>
                 <div id="mon-policies-view" style="padding:18px"><div id="mon-body"></div></div>
                 <div id="mon-templates-view" class="hidden" style="padding:18px">
-                  <div id="mon-device-policies"></div>
                   <div id="mon-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-bottom:22px"></div>
                   <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><h3 style="margin:0;font-size:13px;color:var(--text-dim);font-weight:650;letter-spacing:.02em;text-transform:uppercase">Active rules</h3><span class="sub" id="mon-rules-sub"></span></div>
                   <div id="mon-rules-body"></div>
@@ -282,12 +281,12 @@
       <div style="padding:20px 22px;display:flex;flex-direction:column;gap:14px">
         <div id="rm-desc" class="h-sub"></div>
         <div><label class="ml2">Rule name</label><input id="rm-name" class="mm-inp" placeholder="Low disk space" /></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div id="rm-metric-row" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
           <div id="rm-threshold-wrap"><label class="ml2" id="rm-threshold-label">Threshold</label><input id="rm-threshold" class="mm-inp" type="number" /></div>
           <div id="rm-duration-wrap"><label class="ml2">Sustained for (minutes)</label><input id="rm-duration" class="mm-inp" type="number" /></div>
         </div>
         <div><label class="ml2">Target</label><select id="rm-target" class="mm-inp"></select></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div id="rm-alert-row" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
           <div><label class="ml2">Severity</label><select id="rm-severity" class="mm-inp"><option value="info">Info</option><option value="warning" selected>Warning</option><option value="critical">Critical</option></select></div>
           <div style="display:flex;align-items:center;justify-content:space-between"><label class="ml2" style="margin:0">Email notifications</label><div class="switch on" id="rm-notify-switch"></div></div>
         </div>
