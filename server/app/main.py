@@ -1110,29 +1110,43 @@ def delete_monitor(monitor_id: str, user: dict = Depends(auth.current_user)):
 # --------------------------------------------------------------------------- #
 # Wake-on-LAN (direct or via a relay node)
 # --------------------------------------------------------------------------- #
-def _pick_node(org_id: str, target_ip: str | None) -> dict | None:
+def _resolve_wake(org_id: str, target_ip: str | None,
+                  node_id: str | None) -> tuple[dict | None, str | None]:
+    """Pick the relay node and the directed broadcast to use for a wake.
+
+    The broadcast is the target subnet's directed broadcast (e.g. 192.168.50.255)
+    so a node in a *different* VLAN can have the packet routed into the target's
+    segment — a limited 255.255.255.255 broadcast would never leave the node's
+    own subnet."""
     nodes = [n for n in db.list_nodes(org_id) if manager.is_online(n["id"])]
+    forced = None
+    if node_id:
+        forced = next((n for n in nodes if n["id"] == node_id), None) or db.get_device(node_id)
     if target_ip:
-        for n in nodes:
-            for s in n["subnets"]:
+        for n in ([forced] if forced else nodes):
+            if not n:
+                continue
+            for s in (n.get("subnets") or []):
                 try:
-                    if ipaddress.ip_address(target_ip) in ipaddress.ip_network(s["cidr"], False):
-                        return n
+                    net = ipaddress.ip_network(s["cidr"], False)
+                    if ipaddress.ip_address(target_ip) in net:
+                        return n, (s.get("broadcast") or str(net.broadcast_address))
                 except ValueError:
                     continue
-    return nodes[0] if nodes else None
+    return (forced or (nodes[0] if nodes else None)), None
 
 
 async def _wake(org_id: str, mac: str, broadcast: str | None, port: int,
                 target_ip: str | None, node_id: str | None) -> dict:
-    node = db.get_device(node_id) if node_id else _pick_node(org_id, target_ip)
+    node, sub_bcast = _resolve_wake(org_id, target_ip, node_id)
+    bcast = broadcast or sub_bcast or "255.255.255.255"
     if node and manager.is_online(node["id"]):
         await manager.request(node["id"], {"type": "wol", "mac": mac,
-                                           "broadcast": broadcast, "port": port})
-        return {"status": "sent", "via": "node", "node": node["hostname"]}
+                                           "broadcast": bcast, "port": port})
+        return {"status": "sent", "via": "node", "node": node["hostname"], "broadcast": bcast}
     # Fallback: broadcast from the server itself.
     wol_local.send_magic_packet(mac, broadcast_ip=broadcast or "255.255.255.255", port=port)
-    return {"status": "sent", "via": "server"}
+    return {"status": "sent", "via": "server", "broadcast": broadcast or "255.255.255.255"}
 
 
 @app.post("/api/devices/{device_id}/wake")
