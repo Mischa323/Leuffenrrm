@@ -61,7 +61,7 @@
               <button data-tab="network"><span class="ni" data-i="network"></span> Network <span class="count" id="nav-network-count">0</span></button>
               <button data-tab="nodes"><span class="ni" data-i="nodes"></span> Nodes <span class="count" id="nav-nodes-count">0</span></button>
               <button data-tab="scripts"><span class="ni" data-i="terminal"></span> Scripts <span class="count" id="nav-scripts-count">0</span></button>
-              <button data-tab="monitors"><span class="ni" data-i="shieldCheck"></span> Monitors <span class="count" id="nav-monitors-count">0</span></button>
+              <button data-tab="monitors"><span class="ni" data-i="shieldCheck"></span> Policies <span class="count" id="nav-monitors-count">0</span></button>
               <button data-tab="downloads"><span class="ni" data-i="download"></span> Downloads</button>
             </nav>
             <div class="side-label">Groups</div>
@@ -128,7 +128,7 @@
             <!-- Monitors -->
             <div id="tab-monitors" class="hidden">
               <div class="panel">
-                <div class="panel-head"><h2>Monitors</h2><span class="sub" id="mon-sub"></span><div class="spacer"></div>
+                <div class="panel-head"><h2>Policies</h2><span class="sub" id="mon-sub">Add monitors or standards</span><div class="spacer"></div>
                   <div class="seg" id="mon-view-seg">
                     <button data-view="policies" class="active">Script policies</button>
                     <button data-view="templates">Template rules</button>
@@ -136,6 +136,7 @@
                   <button class="btn sm" id="mon-new"><span class="hi" data-i="shieldCheck"></span> New monitor</button></div>
                 <div id="mon-policies-view" style="padding:18px"><div id="mon-body"></div></div>
                 <div id="mon-templates-view" class="hidden" style="padding:18px">
+                  <div id="mon-device-policies"></div>
                   <div id="mon-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-bottom:22px"></div>
                   <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><h3 style="margin:0;font-size:13px;color:var(--text-dim);font-weight:650;letter-spacing:.02em;text-transform:uppercase">Active rules</h3><span class="sub" id="mon-rules-sub"></span></div>
                   <div id="mon-rules-body"></div>

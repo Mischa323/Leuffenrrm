@@ -896,7 +896,30 @@ function renderMonitorGallery() {
     btn.onclick = () => openRuleForm((state.templates || []).find((t) => t.id === id));
   });
 }
+async function renderDevicePolicies() {
+  const host = $("mon-device-policies");
+  if (!host) return;
+  if (!state.me.is_global_admin) { host.innerHTML = ""; return; }   // global policy
+  let on = false;
+  try { on = (await api("/api/settings")).RMM_ENABLE_WOL === "1"; }
+  catch { host.innerHTML = ""; return; }
+  host.innerHTML = `<div class="sec-label" style="margin-top:0">Device policies</div>
+    <div class="tile" style="display:flex;align-items:center;gap:12px;margin-bottom:22px">
+      <div class="os-ico">${ICON.power}</div>
+      <div style="flex:1"><div style="font-weight:650">Wake-on-LAN</div>
+        <div class="h-sub">Configures Windows agents' NICs for Wake-on-LAN and disables Fast Startup so they can be woken. Applies to every agent on next connect; off leaves Windows defaults.</div></div>
+      <span class="badge ${on ? "ok" : "na"}">${on ? "enabled" : "disabled"}</span>
+      <button class="btn ghost sm" id="wol-toggle">${on ? "Disable" : "Enable"}</button></div>`;
+  $("wol-toggle").onclick = async () => {
+    try {
+      await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ RMM_ENABLE_WOL: on ? "0" : "1" }) });
+      toast("Wake-on-LAN " + (on ? "disabled" : "enabled"));
+      renderDevicePolicies();
+    } catch (e) { toast(e.message); }
+  };
+}
 function renderMonitorRules() {
+  renderDevicePolicies();
   renderMonitorGallery();
   const rules = state.cache.monitorRules || [];
   $("mon-rules-sub").textContent = `${rules.length} rule${rules.length === 1 ? "" : "s"}`;
