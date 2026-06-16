@@ -45,6 +45,8 @@ def evaluate_once() -> None:
         metrics = db.get_metrics(dev["id"], limit=200)
         latest = metrics[-1] if metrics else None
         for rule in rules:
+            if rule["metric"] == "wol":
+                continue  # config policy, not an alerting monitor
             rule_key = f"rule:{rule['id']}"
             notify = bool(rule.get("notify_email", 1))
             severity = rule.get("severity") or "warning"
