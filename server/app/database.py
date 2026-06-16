@@ -241,10 +241,9 @@ CREATE TABLE IF NOT EXISTS script_files (
 );
 
 -- Monitoring policies: a monitor script + optional remediation, with variables.
--- org_id NULL = global monitor, applied across every organisation's devices.
 CREATE TABLE IF NOT EXISTS monitors (
     id               TEXT PRIMARY KEY,
-    org_id           TEXT,
+    org_id           TEXT NOT NULL,
     name             TEXT NOT NULL,
     monitor_script_id     TEXT NOT NULL,
     remediation_script_id TEXT,
@@ -255,35 +254,25 @@ CREATE TABLE IF NOT EXISTS monitors (
     at_time          TEXT,
     variables_json   TEXT,
     enabled          INTEGER NOT NULL DEFAULT 1,
-    notify_email     INTEGER NOT NULL DEFAULT 1,
-    severity         TEXT NOT NULL DEFAULT 'warning',
     last_run         REAL,
     next_run         REAL,
     last_status      TEXT,
     created_at       REAL NOT NULL,
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
-
--- Template-backed metric-threshold monitors (the disk/CPU/memory/offline
--- "alert if X stays above Y for Z minutes" rules). org_id NULL = global rule,
--- evaluated against every device in every organisation.
-CREATE TABLE IF NOT EXISTS monitor_rules (
-    id               TEXT PRIMARY KEY,
-    org_id           TEXT,
-    template_id      TEXT NOT NULL,
-    name             TEXT NOT NULL,
-    metric           TEXT NOT NULL,    -- 'cpu_percent' | 'mem_percent' | 'disk_percent' | 'offline'
-    threshold        REAL NOT NULL,    -- percent, or seconds-unseen for 'offline'
-    duration_minutes REAL,             -- sustained period (ignored for 'offline')
-    target_type      TEXT NOT NULL DEFAULT 'all',
-    target_id        TEXT,
-    enabled          INTEGER NOT NULL DEFAULT 1,
-    notify_email     INTEGER NOT NULL DEFAULT 1,
-    severity         TEXT NOT NULL DEFAULT 'warning',
-    created_at       REAL NOT NULL,
-    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
-);
 """
+
+# Default monitoring policy used to seed a new org's standard. Overridable per
+# standard via the dashboard later.
+DEFAULT_POLICY = {
+    "offline_after": float(os.environ.get("ALERT_OFFLINE_AFTER", "120")),
+    "cpu_pct": float(os.environ.get("ALERT_CPU_PCT", "90")),
+    "cpu_minutes": float(os.environ.get("ALERT_CPU_MINUTES", "10")),
+    "disk_free_pct": float(os.environ.get("ALERT_DISK_FREE_PCT", "10")),
+    "mem_pct": float(os.environ.get("ALERT_MEM_PCT", "90")),
+    "mem_minutes": float(os.environ.get("ALERT_MEM_MINUTES", "10")),
+    "metric_interval": float(os.environ.get("RMM_INTERVAL", "30")),
+}
 
 
 def _now() -> float:
@@ -607,41 +596,21 @@ def delete_script_file(file_id: str) -> None:
 # --------------------------------------------------------------------------- #
 # Monitoring policies
 # --------------------------------------------------------------------------- #
-def create_monitor(org_id: str | None, name: str, monitor_script_id: str,
+def create_monitor(org_id: str, name: str, monitor_script_id: str,
                    remediation_script_id: str | None, target_type: str, target_id: str | None,
                    trigger: str, interval_minutes: int | None, at_time: str | None,
-                   variables_json: str | None, next_run: float,
-                   notify_email: bool = True, severity: str = "warning") -> dict:
+                   variables_json: str | None, next_run: float) -> dict:
     mid = uuid.uuid4().hex
     with write() as conn:
         conn.execute(
             """INSERT INTO monitors (id, org_id, name, monitor_script_id, remediation_script_id,
                    target_type, target_id, trigger, interval_minutes, at_time, variables_json,
-                   enabled, notify_email, severity, next_run, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)""",
+                   enabled, next_run, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
             (mid, org_id, name, monitor_script_id, remediation_script_id, target_type, target_id,
-             trigger, interval_minutes, at_time, variables_json,
-             1 if notify_email else 0, severity, next_run, _now()),
+             trigger, interval_minutes, at_time, variables_json, next_run, _now()),
         )
     return get_monitor(mid)
-
-
-def update_monitor(monitor_id: str, name: str, monitor_script_id: str,
-                   remediation_script_id: str | None, target_type: str, target_id: str | None,
-                   trigger: str, interval_minutes: int | None, at_time: str | None,
-                   variables_json: str | None, next_run: float,
-                   notify_email: bool = True, severity: str = "warning") -> dict | None:
-    with write() as conn:
-        conn.execute(
-            """UPDATE monitors SET name=?, monitor_script_id=?, remediation_script_id=?,
-                   target_type=?, target_id=?, trigger=?, interval_minutes=?, at_time=?,
-                   variables_json=?, notify_email=?, severity=?, next_run=?
-               WHERE id=?""",
-            (name, monitor_script_id, remediation_script_id, target_type, target_id,
-             trigger, interval_minutes, at_time, variables_json,
-             1 if notify_email else 0, severity, next_run, monitor_id),
-        )
-    return get_monitor(monitor_id)
 
 
 def get_monitor(monitor_id: str) -> dict | None:
@@ -650,15 +619,8 @@ def get_monitor(monitor_id: str) -> dict | None:
 
 
 def list_monitors(org_id: str) -> list[dict]:
-    """Monitors visible to an org: its own site monitors plus every global one."""
     return [dict(r) for r in get_conn().execute(
-        "SELECT * FROM monitors WHERE org_id=? OR org_id IS NULL ORDER BY created_at DESC",
-        (org_id,)).fetchall()]
-
-
-def list_global_monitors() -> list[dict]:
-    return [dict(r) for r in get_conn().execute(
-        "SELECT * FROM monitors WHERE org_id IS NULL ORDER BY created_at DESC").fetchall()]
+        "SELECT * FROM monitors WHERE org_id=? ORDER BY created_at DESC", (org_id,)).fetchall()]
 
 
 def due_monitors() -> list[dict]:
@@ -682,89 +644,6 @@ def mark_monitor_ran(monitor_id: str, next_run: float | None, status: str) -> No
 def delete_monitor(monitor_id: str) -> None:
     with write() as conn:
         conn.execute("DELETE FROM monitors WHERE id=?", (monitor_id,))
-
-
-# --------------------------------------------------------------------------- #
-# Monitor rules — template-backed metric thresholds (CPU/mem/disk/offline).
-# --------------------------------------------------------------------------- #
-def create_monitor_rule(org_id: str | None, template_id: str, name: str, metric: str,
-                        threshold: float, duration_minutes: float | None,
-                        target_type: str, target_id: str | None,
-                        notify_email: bool = True, severity: str = "warning") -> dict:
-    rid = uuid.uuid4().hex
-    with write() as conn:
-        conn.execute(
-            """INSERT INTO monitor_rules (id, org_id, template_id, name, metric, threshold,
-                   duration_minutes, target_type, target_id, enabled, notify_email, severity,
-                   created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?)""",
-            (rid, org_id, template_id, name, metric, threshold, duration_minutes,
-             target_type, target_id, 1 if notify_email else 0, severity, _now()),
-        )
-    return get_monitor_rule(rid)
-
-
-def update_monitor_rule(rule_id: str, name: str, threshold: float,
-                        duration_minutes: float | None, target_type: str,
-                        target_id: str | None, notify_email: bool = True,
-                        severity: str = "warning") -> dict | None:
-    with write() as conn:
-        conn.execute(
-            """UPDATE monitor_rules SET name=?, threshold=?, duration_minutes=?,
-                   target_type=?, target_id=?, notify_email=?, severity=?
-               WHERE id=?""",
-            (name, threshold, duration_minutes, target_type, target_id,
-             1 if notify_email else 0, severity, rule_id),
-        )
-    return get_monitor_rule(rule_id)
-
-
-def get_monitor_rule(rule_id: str) -> dict | None:
-    row = get_conn().execute("SELECT * FROM monitor_rules WHERE id=?", (rule_id,)).fetchone()
-    return dict(row) if row else None
-
-
-def list_monitor_rules(org_id: str) -> list[dict]:
-    """Rules visible to an org: its own site rules plus every global one."""
-    return [dict(r) for r in get_conn().execute(
-        "SELECT * FROM monitor_rules WHERE org_id=? OR org_id IS NULL ORDER BY created_at DESC",
-        (org_id,)).fetchall()]
-
-
-def list_global_monitor_rules() -> list[dict]:
-    return [dict(r) for r in get_conn().execute(
-        "SELECT * FROM monitor_rules WHERE org_id IS NULL ORDER BY created_at DESC").fetchall()]
-
-
-def list_effective_monitor_rules(device: dict) -> list[dict]:
-    """Enabled rules that apply to ``device``: its org's site rules ∪ global rules,
-    filtered down by each rule's target (device / group / all)."""
-    rows = get_conn().execute(
-        "SELECT * FROM monitor_rules WHERE enabled=1 AND (org_id=? OR org_id IS NULL)",
-        (device["org_id"],),
-    ).fetchall()
-    out = []
-    for r in rows:
-        r = dict(r)
-        if r["target_type"] == "all":
-            out.append(r)
-        elif r["target_type"] == "group" and device.get("group_id") and r["target_id"] == device["group_id"]:
-            out.append(r)
-        elif r["target_type"] == "device" and r["target_id"] == device["id"]:
-            out.append(r)
-    return out
-
-
-def set_monitor_rule_enabled(rule_id: str, enabled: bool) -> None:
-    with write() as conn:
-        conn.execute("UPDATE monitor_rules SET enabled=? WHERE id=?",
-                     (1 if enabled else 0, rule_id))
-
-
-def delete_monitor_rule(rule_id: str) -> None:
-    with write() as conn:
-        conn.execute("DELETE FROM monitor_rules WHERE id=?", (rule_id,))
-        conn.execute("DELETE FROM alert_state WHERE rule=?", (f"rule:{rule_id}",))
 
 
 def list_runs(org_id: str, device_id: str | None = None, limit: int = 50) -> list[dict]:
@@ -821,50 +700,6 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Tidy up: drop expired internal download tokens so they don't accumulate.
     conn.execute("DELETE FROM enroll_tokens WHERE kind='internal' "
                  "AND expires_at IS NOT NULL AND expires_at < ?", (_now(),))
-    # monitors.org_id used to be NOT NULL; rebuild the table to allow NULL
-    # (global monitors) on databases created before that changed.
-    mcol = next((r for r in conn.execute("PRAGMA table_info(monitors)") if r[1] == "org_id"), None)
-    if mcol is not None and mcol[3] == 1:  # notnull flag set
-        conn.executescript("""
-            CREATE TABLE monitors_new (
-                id               TEXT PRIMARY KEY,
-                org_id           TEXT,
-                name             TEXT NOT NULL,
-                monitor_script_id     TEXT NOT NULL,
-                remediation_script_id TEXT,
-                target_type      TEXT NOT NULL DEFAULT 'all',
-                target_id        TEXT,
-                trigger          TEXT NOT NULL DEFAULT 'interval',
-                interval_minutes INTEGER,
-                at_time          TEXT,
-                variables_json   TEXT,
-                enabled          INTEGER NOT NULL DEFAULT 1,
-                last_run         REAL,
-                next_run         REAL,
-                last_status      TEXT,
-                created_at       REAL NOT NULL,
-                FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
-            );
-            INSERT INTO monitors_new SELECT id, org_id, name, monitor_script_id,
-                remediation_script_id, target_type, target_id, trigger, interval_minutes,
-                at_time, variables_json, enabled, last_run, next_run, last_status, created_at
-                FROM monitors;
-            DROP TABLE monitors;
-            ALTER TABLE monitors_new RENAME TO monitors;
-        """)
-    # Removed standard-policy alerting (cpu/mem/disk/offline are now ordinary
-    # monitor_rules rows) — drop stale state left by the old hardcoded rules.
-    conn.execute("DELETE FROM alert_state WHERE rule IN ('offline', 'cpu', 'disk', 'mem')")
-    mocols = {r[1] for r in conn.execute("PRAGMA table_info(monitors)")}
-    if "notify_email" not in mocols:
-        conn.execute("ALTER TABLE monitors ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 1")
-    if "severity" not in mocols:
-        conn.execute("ALTER TABLE monitors ADD COLUMN severity TEXT NOT NULL DEFAULT 'warning'")
-    mrcols = {r[1] for r in conn.execute("PRAGMA table_info(monitor_rules)")}
-    if "notify_email" not in mrcols:
-        conn.execute("ALTER TABLE monitor_rules ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 1")
-    if "severity" not in mrcols:
-        conn.execute("ALTER TABLE monitor_rules ADD COLUMN severity TEXT NOT NULL DEFAULT 'warning'")
 
 
 def get_conn() -> sqlite3.Connection:
@@ -896,14 +731,13 @@ def create_org(name: str, enroll_key: str | None = None, org_id: str | None = No
             "INSERT INTO organizations (id, name, enroll_key, created_at) VALUES (?,?,?,?)",
             (org_id, name, enroll_key, _now()),
         )
-        # Seed default standard (compliance baseline + alert recipients only —
-        # monitoring rules are now ordinary monitor_rules rows, added explicitly).
+        # Seed default monitoring standard.
         std_id = uuid.uuid4().hex
         conn.execute(
             """INSERT INTO standards (id, org_id, name, policy_json, baseline_json, alert_json)
                VALUES (?,?,?,?,?,?)""",
-            (std_id, org_id, "Default", None, json.dumps({}),
-             json.dumps({"recipients": []})),
+            (std_id, org_id, "Default", json.dumps(DEFAULT_POLICY), json.dumps({}),
+             json.dumps({"recipients": [], "rules": ["offline", "cpu", "disk", "mem"]})),
         )
         # Seed default OS groups.
         for name_, os_match in (("Windows", "windows"), ("Linux", "linux"),
@@ -1088,6 +922,28 @@ def default_group_for_os(org_id: str, os_kind: str) -> str | None:
         (org_id, os_kind),
     ).fetchone()
     return row["id"] if row else None
+
+
+def get_effective_policy(device: dict) -> dict:
+    """Resolve the monitoring policy for a device: device→group→org standard."""
+    conn = get_conn()
+    policy = dict(DEFAULT_POLICY)
+    std_row = None
+    # Group override first.
+    if device.get("group_id"):
+        g = conn.execute("SELECT standard_id FROM groups WHERE id=?",
+                         (device["group_id"],)).fetchone()
+        if g and g["standard_id"]:
+            std_row = conn.execute("SELECT policy_json FROM standards WHERE id=?",
+                                   (g["standard_id"],)).fetchone()
+    if std_row is None:
+        std_row = conn.execute(
+            "SELECT policy_json FROM standards WHERE org_id=? ORDER BY rowid LIMIT 1",
+            (device["org_id"],),
+        ).fetchone()
+    if std_row and std_row["policy_json"]:
+        policy.update(json.loads(std_row["policy_json"]))
+    return policy
 
 
 def alert_config(org_id: str) -> dict:
@@ -1392,17 +1248,3 @@ def set_alert_state(device_id: str, rule: str, state: str,
                VALUES (?,?,?,?,?)""",
             (device_id, rule, state, since, last_email),
         )
-
-
-def list_raised_rule_alerts(org_id: str) -> list[dict]:
-    """Monitor rules currently alerting on a device in this org (site or global rule)."""
-    rows = get_conn().execute(
-        """SELECT a.rule, a.since, d.id AS device_id, d.hostname, mr.name AS rule_name,
-                  mr.severity AS severity
-           FROM alert_state a
-           JOIN devices d ON d.id = a.device_id
-           JOIN monitor_rules mr ON 'rule:' || mr.id = a.rule
-           WHERE a.state='raised' AND d.org_id=?""",
-        (org_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]

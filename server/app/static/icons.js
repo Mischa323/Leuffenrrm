@@ -53,7 +53,6 @@ const ICON = {
   external: I('<path d="M15 3h6v6M21 3l-9 9M10 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/>', { w: 1.7 }),
   bolt: I('<path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/>'),
   shieldCheck: I('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/>'),
-  pencil: I('<path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>'),
 };
 
 function osIcon(os = "") {

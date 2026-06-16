@@ -23,8 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from . import alerts, auth, database as db, graph, totp
 from . import wol as wol_local
 from .manager import manager
-from .models import (GroupRequest, MonitorRequest, MonitorRuleRequest, MoveDeviceRequest,
-                     MoveOrgRequest, OrgRequest, OrgUserRequest, PowerRequest, ScheduleRequest,
+from .models import (GroupRequest, MonitorRequest, MoveDeviceRequest, MoveOrgRequest,
+                     OrgRequest, OrgUserRequest, PowerRequest, ScheduleRequest,
                      ScriptFileRequest, ScriptRequest, ScriptRunRequest, ShellRequest,
                      SubnetRequest, WakeRequest)
 
@@ -401,7 +401,6 @@ def _dashboard_data(user: dict) -> dict:
     online = manager.online_ids()
     totals = {"orgs": len(orgs), "devices": 0, "online": 0, "offline": 0, "noncompliant": 0}
     org_cards, attention, disk, pending, mon_alerts = [], [], [], [], []
-    seen_monitor_ids: set[str] = set()
     versions: dict[str, int] = {}
     for o in orgs:
         devs = db.list_devices(o["id"])
@@ -429,21 +428,13 @@ def _dashboard_data(user: dict) -> dict:
             ver = d.get("agent_version") or "unknown"
             versions[ver] = versions.get(ver, 0) + 1
         for m in db.list_monitors(o["id"]):
-            if m.get("last_status") == "alert" and m["id"] not in seen_monitor_ids:
-                seen_monitor_ids.add(m["id"])
-                mon_alerts.append({"id": m["id"], "name": m["name"],
-                                   "org": o["name"] if m.get("org_id") else "Global",
-                                   "severity": m.get("severity") or "warning"})
-        for ra in db.list_raised_rule_alerts(o["id"]):
-            mon_alerts.append({"id": ra["rule"], "name": f"{ra['hostname']}: {ra['rule_name']}",
-                               "org": o["name"], "severity": ra.get("severity") or "warning"})
+            if m.get("last_status") == "alert":
+                mon_alerts.append({"id": m["id"], "name": m["name"], "org": o["name"]})
         for p in db.list_pending(o["id"]):
             pending.append({"id": p["id"], "hostname": p["hostname"], "org": o["name"],
                             "org_id": o["id"], "os": p.get("os"), "created_at": p.get("created_at")})
     attention.sort(key=lambda x: (x["online"], x["hostname"].lower()))
     disk.sort(key=lambda x: -(x["percent"] or 0))
-    _sev_rank = {"critical": 0, "warning": 1, "info": 2}
-    mon_alerts.sort(key=lambda x: _sev_rank.get(x.get("severity"), 1))
     return {"totals": totals, "orgs": org_cards, "attention": attention[:10],
             "disk": disk[:10], "monitors": mon_alerts[:10], "approvals": pending[:10],
             "versions": {"counts": versions, "latest": SERVER_VERSION}}
@@ -851,14 +842,8 @@ def delete_file(file_id: str, user: dict = Depends(auth.current_user)):
 
 async def _exec_script_on_device(script: dict, device_id: str, timeout: float = 120,
                                  variables: dict | None = None, run_name: str | None = None) -> dict:
-    """Run a script on one device with its attached files + variables, recording a run.
-
-    Logged against the *device's* org (not the script's) so a global monitor's
-    runs land in each affected organisation's own run history.
-    """
-    dev = db.get_device(device_id)
-    run_org_id = dev["org_id"] if dev else script["org_id"]
-    run_id = db.create_run(run_org_id, device_id, run_name or script["name"], script["id"])
+    """Run a script on one device with its attached files + variables, recording a run."""
+    run_id = db.create_run(script["org_id"], device_id, run_name or script["name"], script["id"])
     try:
         res = await manager.request(device_id, {
             "type": "script_run", "content": script["content"], "shell": script["shell"],
@@ -922,15 +907,8 @@ def _next_run(sched: dict, from_ts: float | None = None) -> float | None:
 
 
 def _schedule_targets(sched: dict) -> list[str]:
-    """Resolve a schedule's online target device ids.
-
-    ``org_id`` is None for a global monitor — it targets every organisation's
-    devices (always with target_type 'all', enforced at creation).
-    """
-    online = manager.online_ids()
-    org_id = sched.get("org_id")
-    if org_id is None:
-        return [d["id"] for d in db.all_devices() if d["id"] in online]
+    """Resolve a schedule's online target device ids."""
+    org_id, online = sched["org_id"], manager.online_ids()
     if sched["target_type"] == "device":
         return [sched["target_id"]] if sched["target_id"] in online else []
     devs = db.list_devices(org_id, sched["target_id"] if sched["target_type"] == "group" else None)
@@ -1011,19 +989,11 @@ def delete_schedule(schedule_id: str, user: dict = Depends(auth.current_user)):
 # Monitoring policies (Phase 2): monitor script + auto-remediation + variables.
 # --------------------------------------------------------------------------- #
 def _monitor_notify(mon: dict, old_status: str | None, new_status: str) -> None:
-    """Email the org's alert recipients when a monitor flips to/from alerting.
-
-    A global monitor (``org_id`` None) spans every organisation, so it notifies
-    the recipients of every org rather than a separate global list.
-    """
+    """Email the org's alert recipients when a monitor flips to/from alerting."""
     if old_status == new_status:
         return
-    if not mon.get("notify_email", 1):
-        return
-    severity = mon.get("severity") or "warning"
-    tag = f"[{severity.upper()}] " if severity != "info" else ""
     if new_status == "alert" and old_status != "alert":
-        subject = f"{tag}Monitor alerting: {mon['name']}"
+        subject = f"Monitor alerting: {mon['name']}"
         body = (f"<p>The monitoring policy <b>{mon['name']}</b> is now <b>alerting</b>.</p>"
                 f"<p>The monitor script exited non-zero on one or more devices"
                 + (" and the remediation script was run." if mon.get('remediation_script_id')
@@ -1033,15 +1003,11 @@ def _monitor_notify(mon: dict, old_status: str | None, new_status: str) -> None:
         body = f"<p>The monitoring policy <b>{mon['name']}</b> is healthy again.</p>"
     else:
         return
-    org_ids = [mon["org_id"]] if mon.get("org_id") else [o["id"] for o in db.list_orgs()]
-    recipients: set[str] = set()
-    for oid in org_ids:
-        recipients.update(db.alert_config(oid).get("recipients") or [])
-    if not recipients:
-        recipients = ({e.strip() for e in os.environ.get("RMM_ALERT_RECIPIENTS", "").split(",") if e.strip()}
-                      or set(auth.BOOTSTRAP_ADMINS))
+    recipients = (db.alert_config(mon["org_id"]).get("recipients")
+                  or [e.strip() for e in os.environ.get("RMM_ALERT_RECIPIENTS", "").split(",") if e.strip()]
+                  or sorted(auth.BOOTSTRAP_ADMINS))
     if recipients:
-        graph.send_mail(f"[RMM] {subject}", body, sorted(recipients))
+        graph.send_mail(f"[RMM] {subject}", body, recipients)
 
 
 async def _execute_monitor(mon: dict) -> str:
@@ -1083,26 +1049,6 @@ def list_monitors(org_id: str, user: dict = Depends(auth.current_user)):
     return db.list_monitors(org_id)
 
 
-VALID_SEVERITIES = ("info", "warning", "critical")
-
-
-def _validate_severity(severity: str) -> None:
-    if severity not in VALID_SEVERITIES:
-        raise HTTPException(status_code=400, detail="Invalid severity")
-
-
-def _validate_monitor_req(req: MonitorRequest) -> None:
-    if req.target_type not in ("device", "group", "all"):
-        raise HTTPException(status_code=400, detail="Invalid target type")
-    if req.trigger not in ("interval", "daily"):
-        raise HTTPException(status_code=400, detail="Invalid trigger")
-    if req.trigger == "interval" and not req.interval_minutes:
-        raise HTTPException(status_code=400, detail="interval_minutes is required")
-    if req.trigger == "daily" and not req.at_time:
-        raise HTTPException(status_code=400, detail="at_time is required for a daily monitor")
-    _validate_severity(req.severity)
-
-
 @app.post("/api/orgs/{org_id}/monitors")
 def create_monitor(org_id: str, req: MonitorRequest, user: dict = Depends(auth.current_user)):
     import json as _json
@@ -1114,68 +1060,17 @@ def create_monitor(org_id: str, req: MonitorRequest, user: dict = Depends(auth.c
         rs = db.get_script(req.remediation_script_id)
         if not rs or rs["org_id"] != org_id:
             raise HTTPException(status_code=404, detail="Remediation script not found")
-    _validate_monitor_req(req)
+    if req.target_type not in ("device", "group", "all"):
+        raise HTTPException(status_code=400, detail="Invalid target type")
+    if req.trigger == "interval" and not req.interval_minutes:
+        raise HTTPException(status_code=400, detail="interval_minutes is required")
+    if req.trigger == "daily" and not req.at_time:
+        raise HTTPException(status_code=400, detail="at_time is required for a daily monitor")
     nxt = _next_run({"trigger": req.trigger, "interval_minutes": req.interval_minutes,
                      "at_time": req.at_time})
     return db.create_monitor(org_id, req.name, req.monitor_script_id, req.remediation_script_id,
                              req.target_type, req.target_id, req.trigger, req.interval_minutes,
-                             req.at_time, _json.dumps(req.variables or {}), nxt,
-                             req.notify_email, req.severity)
-
-
-@app.post("/api/monitors/global")
-def create_global_monitor(req: MonitorRequest, user: dict = Depends(auth.current_user)):
-    """A global monitor runs its script against every organisation's devices.
-
-    Only a global admin can create one; the script just needs to exist (a
-    global admin can already see and use scripts from any organisation).
-    """
-    import json as _json
-    auth.require_global(user)
-    ms = db.get_script(req.monitor_script_id)
-    if not ms:
-        raise HTTPException(status_code=404, detail="Monitor script not found")
-    if req.remediation_script_id and not db.get_script(req.remediation_script_id):
-        raise HTTPException(status_code=404, detail="Remediation script not found")
-    if req.target_type != "all":
-        raise HTTPException(status_code=400, detail="Global monitors must target all devices")
-    _validate_monitor_req(req)
-    nxt = _next_run({"trigger": req.trigger, "interval_minutes": req.interval_minutes,
-                     "at_time": req.at_time})
-    return db.create_monitor(None, req.name, req.monitor_script_id, req.remediation_script_id,
-                             "all", None, req.trigger, req.interval_minutes,
-                             req.at_time, _json.dumps(req.variables or {}), nxt,
-                             req.notify_email, req.severity)
-
-
-@app.put("/api/monitors/{monitor_id}")
-def update_monitor(monitor_id: str, req: MonitorRequest, user: dict = Depends(auth.current_user)):
-    """Edit an existing monitor. Scope (site vs. global) is immutable — delete
-    and recreate to change it."""
-    import json as _json
-    mon = db.get_monitor(monitor_id)
-    if not mon:
-        raise HTTPException(status_code=404, detail="Monitor not found")
-    auth.require_scope(user, mon["org_id"])
-    org_id = mon["org_id"]
-    ms = db.get_script(req.monitor_script_id)
-    if not ms or (org_id is not None and ms["org_id"] != org_id):
-        raise HTTPException(status_code=404, detail="Monitor script not found")
-    if req.remediation_script_id:
-        rs = db.get_script(req.remediation_script_id)
-        if not rs or (org_id is not None and rs["org_id"] != org_id):
-            raise HTTPException(status_code=404, detail="Remediation script not found")
-    if org_id is None and req.target_type != "all":
-        raise HTTPException(status_code=400, detail="Global monitors must target all devices")
-    _validate_monitor_req(req)
-    target_type = req.target_type if org_id is not None else "all"
-    target_id = req.target_id if org_id is not None else None
-    nxt = _next_run({"trigger": req.trigger, "interval_minutes": req.interval_minutes,
-                     "at_time": req.at_time}) if mon["enabled"] else mon.get("next_run")
-    return db.update_monitor(monitor_id, req.name, req.monitor_script_id, req.remediation_script_id,
-                             target_type, target_id, req.trigger, req.interval_minutes,
-                             req.at_time, _json.dumps(req.variables or {}), nxt,
-                             req.notify_email, req.severity)
+                             req.at_time, _json.dumps(req.variables or {}), nxt)
 
 
 @app.post("/api/monitors/{monitor_id}/toggle")
@@ -1183,7 +1078,7 @@ def toggle_monitor(monitor_id: str, user: dict = Depends(auth.current_user)):
     mon = db.get_monitor(monitor_id)
     if not mon:
         raise HTTPException(status_code=404, detail="Monitor not found")
-    auth.require_scope(user, mon["org_id"])
+    auth.require_org(user, mon["org_id"])
     enabled = not mon["enabled"]
     db.set_monitor_enabled(monitor_id, enabled, _next_run(mon) if enabled else None)
     return {"enabled": enabled}
@@ -1194,7 +1089,7 @@ async def run_monitor_now(monitor_id: str, user: dict = Depends(auth.current_use
     mon = db.get_monitor(monitor_id)
     if not mon:
         raise HTTPException(status_code=404, detail="Monitor not found")
-    auth.require_scope(user, mon["org_id"])
+    auth.require_org(user, mon["org_id"])
     old = mon.get("last_status")
     status = await _execute_monitor(mon)
     _monitor_notify(mon, old, status)
@@ -1207,149 +1102,51 @@ def delete_monitor(monitor_id: str, user: dict = Depends(auth.current_user)):
     mon = db.get_monitor(monitor_id)
     if not mon:
         raise HTTPException(status_code=404, detail="Monitor not found")
-    auth.require_scope(user, mon["org_id"])
+    auth.require_org(user, mon["org_id"])
     db.delete_monitor(monitor_id)
-    return {"status": "deleted"}
-
-
-# --------------------------------------------------------------------------- #
-# Monitor templates + rules: the metric-threshold monitor library (e.g.
-# "alert if disk usage stays above 90% for 5 minutes"). Each rule is an
-# ordinary, user-managed record — site-scoped or global, just like monitors.
-# --------------------------------------------------------------------------- #
-MONITOR_TEMPLATES = [
-    {"id": "disk", "name": "Low disk space", "category": "Storage",
-     "description": "Alert when disk usage stays above the threshold for a sustained period.",
-     "metric": "disk_percent", "unit": "%", "default_threshold": 90, "default_duration_minutes": 5,
-     "default_severity": "warning"},
-    {"id": "cpu", "name": "High CPU usage", "category": "Performance",
-     "description": "Alert when CPU usage stays above the threshold for a sustained period.",
-     "metric": "cpu_percent", "unit": "%", "default_threshold": 90, "default_duration_minutes": 10,
-     "default_severity": "warning"},
-    {"id": "mem", "name": "High memory usage", "category": "Performance",
-     "description": "Alert when memory usage stays above the threshold for a sustained period.",
-     "metric": "mem_percent", "unit": "%", "default_threshold": 90, "default_duration_minutes": 10,
-     "default_severity": "warning"},
-    {"id": "offline", "name": "Device offline", "category": "Availability",
-     "description": "Alert when a device hasn't sent a heartbeat for a while.",
-     "metric": "offline", "unit": "s", "default_threshold": 120, "default_duration_minutes": None,
-     "default_severity": "critical"},
-]
-
-
-@app.get("/api/monitor-templates")
-def get_monitor_templates(user: dict = Depends(auth.current_user)):
-    return MONITOR_TEMPLATES
-
-
-def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:
-    tmpl = next((t for t in MONITOR_TEMPLATES if t["id"] == req.template_id), None)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Unknown monitor template")
-    if req.target_type not in ("device", "group", "all"):
-        raise HTTPException(status_code=400, detail="Invalid target type")
-    if org_id is None and req.target_type != "all":
-        raise HTTPException(status_code=400, detail="Global rules must target all devices")
-    severity = req.severity if req.severity is not None else tmpl["default_severity"]
-    _validate_severity(severity)
-    threshold = req.threshold if req.threshold is not None else tmpl["default_threshold"]
-    duration = (req.duration_minutes if req.duration_minutes is not None
-                else tmpl["default_duration_minutes"])
-    name = (req.name or tmpl["name"]).strip() or tmpl["name"]
-    return db.create_monitor_rule(org_id, tmpl["id"], name, tmpl["metric"], threshold, duration,
-                                  req.target_type, req.target_id, req.notify_email, severity)
-
-
-@app.get("/api/orgs/{org_id}/monitor-rules")
-def list_monitor_rules(org_id: str, user: dict = Depends(auth.current_user)):
-    auth.require_org(user, org_id)
-    return db.list_monitor_rules(org_id)
-
-
-@app.post("/api/orgs/{org_id}/monitor-rules")
-def add_monitor_rule(org_id: str, req: MonitorRuleRequest, user: dict = Depends(auth.current_user)):
-    auth.require_org(user, org_id)
-    return _build_monitor_rule(org_id, req)
-
-
-@app.post("/api/monitor-rules/global")
-def add_global_monitor_rule(req: MonitorRuleRequest, user: dict = Depends(auth.current_user)):
-    auth.require_global(user)
-    return _build_monitor_rule(None, req)
-
-
-@app.put("/api/monitor-rules/{rule_id}")
-def update_monitor_rule(rule_id: str, req: MonitorRuleRequest, user: dict = Depends(auth.current_user)):
-    """Edit an existing monitor rule. The template/metric and scope (site vs.
-    global) are immutable — delete and recreate to change either."""
-    rule = db.get_monitor_rule(rule_id)
-    if not rule:
-        raise HTTPException(status_code=404, detail="Monitor rule not found")
-    auth.require_scope(user, rule["org_id"])
-    tmpl = next((t for t in MONITOR_TEMPLATES if t["id"] == rule["template_id"]), None)
-    if not tmpl:
-        raise HTTPException(status_code=404, detail="Unknown monitor template")
-    if req.target_type not in ("device", "group", "all"):
-        raise HTTPException(status_code=400, detail="Invalid target type")
-    if rule["org_id"] is None and req.target_type != "all":
-        raise HTTPException(status_code=400, detail="Global rules must target all devices")
-    severity = req.severity if req.severity is not None else tmpl["default_severity"]
-    _validate_severity(severity)
-    threshold = req.threshold if req.threshold is not None else tmpl["default_threshold"]
-    duration = (req.duration_minutes if req.duration_minutes is not None
-                else tmpl["default_duration_minutes"])
-    name = (req.name or tmpl["name"]).strip() or tmpl["name"]
-    return db.update_monitor_rule(rule_id, name, threshold, duration, req.target_type,
-                                  req.target_id, req.notify_email, severity)
-
-
-@app.post("/api/monitor-rules/{rule_id}/toggle")
-def toggle_monitor_rule(rule_id: str, user: dict = Depends(auth.current_user)):
-    rule = db.get_monitor_rule(rule_id)
-    if not rule:
-        raise HTTPException(status_code=404, detail="Monitor rule not found")
-    auth.require_scope(user, rule["org_id"])
-    enabled = not rule["enabled"]
-    db.set_monitor_rule_enabled(rule_id, enabled)
-    return {"enabled": enabled}
-
-
-@app.delete("/api/monitor-rules/{rule_id}")
-def delete_monitor_rule(rule_id: str, user: dict = Depends(auth.current_user)):
-    rule = db.get_monitor_rule(rule_id)
-    if not rule:
-        raise HTTPException(status_code=404, detail="Monitor rule not found")
-    auth.require_scope(user, rule["org_id"])
-    db.delete_monitor_rule(rule_id)
     return {"status": "deleted"}
 
 
 # --------------------------------------------------------------------------- #
 # Wake-on-LAN (direct or via a relay node)
 # --------------------------------------------------------------------------- #
-def _pick_node(org_id: str, target_ip: str | None) -> dict | None:
+def _resolve_wake(org_id: str, target_ip: str | None,
+                  node_id: str | None) -> tuple[dict | None, str | None]:
+    """Pick the relay node and the directed broadcast to use for a wake.
+
+    The broadcast is the target subnet's directed broadcast (e.g. 192.168.50.255)
+    so a node in a *different* VLAN can have the packet routed into the target's
+    segment — a limited 255.255.255.255 broadcast would never leave the node's
+    own subnet."""
     nodes = [n for n in db.list_nodes(org_id) if manager.is_online(n["id"])]
+    forced = None
+    if node_id:
+        forced = next((n for n in nodes if n["id"] == node_id), None) or db.get_device(node_id)
     if target_ip:
-        for n in nodes:
-            for s in n["subnets"]:
+        for n in ([forced] if forced else nodes):
+            if not n:
+                continue
+            for s in (n.get("subnets") or []):
                 try:
-                    if ipaddress.ip_address(target_ip) in ipaddress.ip_network(s["cidr"], False):
-                        return n
+                    net = ipaddress.ip_network(s["cidr"], False)
+                    if ipaddress.ip_address(target_ip) in net:
+                        return n, (s.get("broadcast") or str(net.broadcast_address))
                 except ValueError:
                     continue
-    return nodes[0] if nodes else None
+    return (forced or (nodes[0] if nodes else None)), None
 
 
 async def _wake(org_id: str, mac: str, broadcast: str | None, port: int,
                 target_ip: str | None, node_id: str | None) -> dict:
-    node = db.get_device(node_id) if node_id else _pick_node(org_id, target_ip)
+    node, sub_bcast = _resolve_wake(org_id, target_ip, node_id)
+    bcast = broadcast or sub_bcast or "255.255.255.255"
     if node and manager.is_online(node["id"]):
         await manager.request(node["id"], {"type": "wol", "mac": mac,
-                                           "broadcast": broadcast, "port": port})
-        return {"status": "sent", "via": "node", "node": node["hostname"]}
+                                           "broadcast": bcast, "port": port})
+        return {"status": "sent", "via": "node", "node": node["hostname"], "broadcast": bcast}
     # Fallback: broadcast from the server itself.
     wol_local.send_magic_packet(mac, broadcast_ip=broadcast or "255.255.255.255", port=port)
-    return {"status": "sent", "via": "server"}
+    return {"status": "sent", "via": "server", "broadcast": broadcast or "255.255.255.255"}
 
 
 @app.post("/api/devices/{device_id}/wake")
@@ -1880,7 +1677,8 @@ async def do_setup(request: Request):
 # --------------------------------------------------------------------------- #
 SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
-    "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
+    "GRAPH_FROM", "RMM_SERVER_NAME", "ALERT_CPU_PCT", "ALERT_DISK_FREE_PCT",
+    "ALERT_MEM_PCT", "ALERT_OFFLINE_AFTER", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
     "RMM_REQUIRE_APPROVAL", "RMM_ALERT_RECIPIENTS",
 ]
 
