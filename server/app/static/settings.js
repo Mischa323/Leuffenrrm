@@ -85,7 +85,6 @@ let tlsMode = "self-signed", authMethod = "dev";
 function render() {
   tlsMode = cfg.RMM_TLS_MODE || "self-signed";
   authMethod = USERS.mode || cfg.RMM_AUTH_MODE || "dev";
-  const offlineMin = String(Math.round((parseFloat(cfg.ALERT_OFFLINE_AFTER) || 120) / 60));
   const secure = (cfg.RMM_SECURE_COOKIES ?? "1") === "1";
   const main = $("settings-main");
   main.innerHTML = `
@@ -130,12 +129,7 @@ function render() {
         `<div class="frow"><label>Sender mailbox</label><input class="inp mono" id="a-sender" value="${esc(cfg.GRAPH_SENDER || "")}" /><div class="hint">A licensed mailbox with <code>Mail.Send</code> granted to the app.</div></div>
          <div class="frow"><label>From address shown to recipients</label><input class="inp mono" id="a-from" value="${esc(cfg.GRAPH_FROM || "")}" /></div>
          <div class="frow"><label>Alert recipients</label><input class="inp mono" id="a-recipients" value="${esc(cfg.RMM_ALERT_RECIPIENTS || "")}" placeholder="ops@leuffen.it, admin@leuffen.it" /><div class="hint">Who gets device + monitor alert emails (comma-separated).</div></div>`, "alerts-mail")}
-      ${block("Alert rules", "Thresholds that trigger an alert.",
-        `<div class="frow split">
-           <div class="frow"><label>Mark device offline after</label>${select("al-offline", ["2", "5", "10", "30"], offlineMin, (v) => v + " min no heartbeat")}</div>
-           <div class="frow"><label>High CPU sustained over</label>${select("al-cpu", ["80", "90", "95"], cfg.ALERT_CPU_PCT || "90", (v) => v + "%")}</div>
-         </div>
-         <div class="frow"><label>Low disk space warning under</label>${select("al-disk", ["5", "10", "15", "20"], cfg.ALERT_DISK_FREE_PCT || "10", (v) => v + "% free")}</div>`, "alerts-rules")}
+      <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Alert thresholds live in Monitors</div><div class="cd">Add CPU, memory, disk and offline alerts from the <b>Monitors</b> tab's template gallery — as site-only or global rules — instead of a fixed global policy.</div></div></div>
     </section>
 
     <section class="sec" data-sec="security">
@@ -373,7 +367,6 @@ function onSave(which) {
   if (which === "auth") return saveKeys({ RMM_AUTH_MODE: authMethod }, "Auth mode saved — restart to apply");
   if (which === "auth-mfa") return saveKeys({ RMM_ENFORCE_2FA: document.querySelector('[data-toggle="enforce2fa"]').classList.contains("on") ? "1" : "0" }, "Two-factor policy saved");
   if (which === "alerts-mail") return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value, RMM_ALERT_RECIPIENTS: $("a-recipients").value }, "Email settings saved");
-  if (which === "alerts-rules") return saveKeys({ ALERT_OFFLINE_AFTER: String(parseInt($("al-offline").value, 10) * 60), ALERT_CPU_PCT: $("al-cpu").value, ALERT_DISK_FREE_PCT: $("al-disk").value }, "Alert rules saved");
   if (which === "security-tls") return saveKeys({ RMM_TLS_MODE: tlsMode }, "TLS mode saved — restart to apply");
   if (which === "security-session") return saveKeys({ RMM_SECURE_COOKIES: document.querySelector('[data-toggle="secureCookies"]').classList.contains("on") ? "1" : "0" }, "Security saved");
   if (which === "agents-approval") return saveKeys({ RMM_REQUIRE_APPROVAL: document.querySelector('[data-toggle="requireApproval"]').classList.contains("on") ? "1" : "0" }, "Enrolment policy saved");

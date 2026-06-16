@@ -128,9 +128,18 @@
             <!-- Monitors -->
             <div id="tab-monitors" class="hidden">
               <div class="panel">
-                <div class="panel-head"><h2>Monitoring policies</h2><span class="sub" id="mon-sub"></span><div class="spacer"></div>
+                <div class="panel-head"><h2>Monitors</h2><span class="sub" id="mon-sub"></span><div class="spacer"></div>
+                  <div class="seg" id="mon-view-seg">
+                    <button data-view="policies" class="active">Script policies</button>
+                    <button data-view="templates">Template rules</button>
+                  </div>
                   <button class="btn sm" id="mon-new"><span class="hi" data-i="shieldCheck"></span> New monitor</button></div>
-                <div style="padding:18px" id="mon-body"></div>
+                <div id="mon-policies-view" style="padding:18px"><div id="mon-body"></div></div>
+                <div id="mon-templates-view" class="hidden" style="padding:18px">
+                  <div id="mon-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-bottom:22px"></div>
+                  <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><h3 style="margin:0;font-size:13px;color:var(--text-dim);font-weight:650;letter-spacing:.02em;text-transform:uppercase">Active rules</h3><span class="sub" id="mon-rules-sub"></span></div>
+                  <div id="mon-rules-body"></div>
+                </div>
               </div>
             </div>
             <!-- Downloads -->
@@ -229,7 +238,7 @@
   <div id="monitor-modal" class="hidden" style="position:fixed;inset:0;z-index:80;display:grid;place-items:center;background:rgba(3,5,9,.55);backdrop-filter:blur(3px);padding:24px">
     <div style="width:680px;max-width:96vw;max-height:92vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:var(--shadow-lg)">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)">
-        <h2 style="margin:0;font-size:16px">New monitoring policy</h2>
+        <h2 style="margin:0;font-size:16px" id="mm-title">New monitoring policy</h2>
         <button class="icon-btn" id="mm-close"><span id="mm-close-ico"></span></button>
       </div>
       <div id="script-modal-fields" style="padding:20px 22px;display:flex;flex-direction:column;gap:14px">
@@ -243,6 +252,11 @@
           <div><label class="ml2">Check every</label><select id="mm-cadence" class="mm-inp"><option value="5">5 minutes</option><option value="15" selected>15 minutes</option><option value="30">30 minutes</option><option value="60">hour</option><option value="240">4 hours</option></select></div>
         </div>
         <div><label class="ml2">Variables <span style="color:var(--text-faint)">· one per line, NAME=value — passed to both scripts as environment</span></label><textarea id="mm-vars" class="mm-inp" spellcheck="false" placeholder="THRESHOLD=10&#10;PATH=/var" style="min-height:90px;font-family:var(--font-mono);font-size:13px"></textarea></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div><label class="ml2">Severity</label><select id="mm-severity" class="mm-inp"><option value="info">Info</option><option value="warning" selected>Warning</option><option value="critical">Critical</option></select></div>
+          <div style="display:flex;align-items:center;justify-content:space-between"><label class="ml2" style="margin:0">Email notifications</label><div class="switch on" id="mm-notify-switch"></div></div>
+        </div>
+        <div id="mm-scope-wrap" class="hidden"><label class="ml2">Scope</label><div class="seg" id="mm-scope-seg"><button data-scope="site" class="active">This site only</button><button data-scope="global">Global — all sites</button></div></div>
       </div>
       <div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 22px;border-top:1px solid var(--border)">
         <button class="btn ghost" id="mm-cancel">Cancel</button>
@@ -256,6 +270,34 @@
       border:1px solid var(--border); border-radius:var(--r-md); padding:9px 11px; font-size:14px; }
     #monitor-modal select.mm-inp { appearance:none; }
   </style>
+
+  <!-- ===== Monitor rule (template) modal ===== -->
+  <div id="rule-modal" class="hidden" style="position:fixed;inset:0;z-index:80;display:grid;place-items:center;background:rgba(3,5,9,.55);backdrop-filter:blur(3px);padding:24px">
+    <div style="width:560px;max-width:96vw;max-height:92vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:var(--shadow-lg)">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)">
+        <h2 style="margin:0;font-size:16px" id="rm-title">Add monitor rule</h2>
+        <button class="icon-btn" id="rm-close"><span id="rm-close-ico"></span></button>
+      </div>
+      <div style="padding:20px 22px;display:flex;flex-direction:column;gap:14px">
+        <div id="rm-desc" class="h-sub"></div>
+        <div><label class="ml2">Rule name</label><input id="rm-name" class="mm-inp" placeholder="Low disk space" /></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div id="rm-threshold-wrap"><label class="ml2" id="rm-threshold-label">Threshold</label><input id="rm-threshold" class="mm-inp" type="number" /></div>
+          <div id="rm-duration-wrap"><label class="ml2">Sustained for (minutes)</label><input id="rm-duration" class="mm-inp" type="number" /></div>
+        </div>
+        <div><label class="ml2">Target</label><select id="rm-target" class="mm-inp"></select></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div><label class="ml2">Severity</label><select id="rm-severity" class="mm-inp"><option value="info">Info</option><option value="warning" selected>Warning</option><option value="critical">Critical</option></select></div>
+          <div style="display:flex;align-items:center;justify-content:space-between"><label class="ml2" style="margin:0">Email notifications</label><div class="switch on" id="rm-notify-switch"></div></div>
+        </div>
+        <div id="rm-scope-wrap" class="hidden"><label class="ml2">Scope</label><div class="seg" id="rm-scope-seg"><button data-scope="site" class="active">This site only</button><button data-scope="global">Global — all sites</button></div></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 22px;border-top:1px solid var(--border)">
+        <button class="btn ghost" id="rm-cancel">Cancel</button>
+        <button class="btn" id="rm-save">Add rule</button>
+      </div>
+    </div>
+  </div>
 
   <div id="toast" class="toast"><span id="toast-ico"></span><span></span></div>
 

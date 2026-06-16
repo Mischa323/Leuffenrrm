@@ -156,3 +156,18 @@ def require_org(user: dict, org_id: str) -> str:
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this organisation")
     return role
+
+
+def require_global(user: dict) -> None:
+    """Ensure the user is a global admin (required for global-scoped resources)."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+
+
+def require_scope(user: dict, org_id: str | None) -> str:
+    """Like :func:`require_org`, but ``org_id=None`` means a global resource —
+    only a global admin may act on it."""
+    if org_id is None:
+        require_global(user)
+        return "admin"
+    return require_org(user, org_id)
