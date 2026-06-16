@@ -395,6 +395,14 @@ table.grid tbody tr:hover td { background: var(--surface-hover); }
 .stat-grid .sg.clickable:hover { border-color: var(--border-strong); background: var(--surface-hover); }
 .ring { width: 44px; height: 44px; flex: none; }
 
+/* Device history charts */
+.hist-range { display: inline-flex; gap: 2px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 2px; }
+.hist-range button { font-size: 11px; font-weight: 600; color: var(--text-dim); background: none; border: 0; padding: 3px 9px; border-radius: calc(var(--r-sm) - 2px); cursor: pointer; }
+.hist-range button.active { color: var(--text); background: var(--surface-hover); }
+.hist-row { margin-bottom: 12px; }
+.hist-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+.area { width: 100%; height: 56px; display: block; }
+
 /* Configurable dashboard widgets */
 .dwidget { margin-bottom: 18px; }
 .dw-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0 2px 10px; }
