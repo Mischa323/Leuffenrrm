@@ -239,13 +239,24 @@ subnets and report discovered hosts (IP/MAC/hostname/manufacturer) under
    When `MS_CLIENT_ID` is set, real SSO is enforced; otherwise dev-auth mode is
    used. Set `RMM_DEV_AUTH=1` to force dev mode.
 
-### Alert thresholds
+### Monitors
 
-Alerts (device offline, sustained high CPU, low disk, sustained high memory) come
-from each org's **Standard**. `ALERT_CPU_PCT`, `ALERT_DISK_FREE_PCT`,
-`ALERT_MEM_PCT`, `ALERT_OFFLINE_AFTER`, etc. seed defaults for new orgs. A
-per-device/per-rule state machine with cooldown emails once on raise and once on
-clear.
+There's no built-in alerting policy — every check is a monitor you add yourself
+from the **Monitors** tab, and every monitor can be scoped either to one site or
+**globally** (applies fleet-wide, manageable only by global admins). Two kinds:
+
+- **Template rules** — pick a template (low disk space, high CPU, high memory,
+  device offline) from the gallery, tweak its threshold/sustained-duration/target,
+  and it's added as an ordinary rule. Internally this is just a row in
+  `monitor_rules`; a background loop evaluates every device against its
+  effective rules (site-scoped + global) on `RMM_ALERT_INTERVAL`, and a
+  per-device/per-rule state machine emails once on raise and once on clear.
+- **Script policies** — run any of your own scripts on a schedule, alert on a
+  non-zero exit, and optionally auto-run a remediation script. Same site/global
+  scoping applies.
+
+Delete or disable any monitor at any time — nothing is hardcoded or seeded by
+environment variables.
 
 ---
 

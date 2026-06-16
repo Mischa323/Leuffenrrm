@@ -84,3 +84,13 @@ class MonitorRequest(BaseModel):
     interval_minutes: int | None = 15
     at_time: str | None = None
     variables: dict | None = None     # name -> value, passed as env to both scripts
+
+
+class MonitorRuleRequest(BaseModel):
+    """Add a template-backed metric-threshold monitor (e.g. "disk >= 90% for 5 min")."""
+    template_id: str
+    name: str | None = None
+    threshold: float | None = None          # defaults to the template's suggestion
+    duration_minutes: float | None = None   # defaults to the template's suggestion
+    target_type: str = "all"                # device | group | all
+    target_id: str | None = None

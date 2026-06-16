@@ -6,7 +6,7 @@
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
 
-const state = { me: null, org: null, orgName: null, group: null, tab: "devices", device: null, refresh: null, cache: {} };
+const state = { me: null, org: null, orgName: null, group: null, tab: "devices", device: null, refresh: null, cache: {}, monView: "policies", templates: [] };
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -86,6 +86,9 @@ async function init() {
   $("approvals-ico").innerHTML = ICON.shieldCheck;
   setupScriptModal();
   setupMonitorModal();
+  setupRuleModal();
+  document.querySelectorAll("#mon-view-seg button").forEach((b) => b.onclick = () => selectMonView(b.dataset.view));
+  state.templates = await api("/api/monitor-templates").catch(() => []);
   refreshPendingBadge();
   setInterval(refreshPendingBadge, 30000);
   await restoreView();
@@ -290,7 +293,7 @@ function cycleOrg() {
   showOrg(next.id, next.name); toast("Switched to " + next.name);
 }
 async function refreshOrgCaches() {
-  const [devices, hosts, nodes, groups, scripts, schedules, monitors, pending] = await Promise.all([
+  const [devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending] = await Promise.all([
     api(`/api/orgs/${state.org}/devices`),
     api(`/api/orgs/${state.org}/network/hosts`).catch(() => []),
     api(`/api/orgs/${state.org}/nodes`).catch(() => []),
@@ -298,9 +301,10 @@ async function refreshOrgCaches() {
     api(`/api/orgs/${state.org}/scripts`).catch(() => []),
     api(`/api/orgs/${state.org}/schedules`).catch(() => []),
     api(`/api/orgs/${state.org}/monitors`).catch(() => []),
+    api(`/api/orgs/${state.org}/monitor-rules`).catch(() => []),
     api(`/api/orgs/${state.org}/pending`).catch(() => []),
   ]);
-  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors, pending };
+  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending };
 }
 function buildNav() {
   $("nav-devices-count").textContent = state.cache.devices.length;
@@ -334,7 +338,7 @@ function selectTab(tab) {
   else if (tab === "network") renderNetwork();
   else if (tab === "nodes") renderNodes();
   else if (tab === "scripts") renderScripts();
-  else if (tab === "monitors") renderMonitors();
+  else if (tab === "monitors") renderMonitorsTab();
   else if (tab === "downloads") renderDownloads();
   // Keep the active view live in the background (skip the static Downloads tab).
   if (tab !== "downloads") {
@@ -349,7 +353,7 @@ async function refreshTab(tab) {
     else if (tab === "approvals") { state.cache.pending = await api(`/api/orgs/${state.org}/pending`); buildNav(); renderApprovals(); }
     else if (tab === "network") { state.cache.hosts = await api(`/api/orgs/${state.org}/network/hosts`); buildNav(); renderNetwork(); }
     else if (tab === "nodes") { state.cache.nodes = await api(`/api/orgs/${state.org}/nodes`); buildNav(); renderNodes(); }
-    else if (tab === "monitors") { state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); buildNav(); renderMonitors(); }
+    else if (tab === "monitors") { state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); buildNav(); renderMonitorsTab(); }
     else if (tab === "scripts") { state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`); buildNav(); renderScripts(); }
   } catch {}
 }
@@ -716,43 +720,69 @@ function renderTokenList(tokens) {
   });
 }
 
-/* ---------- monitors (policies) ---------- */
+/* ---------- monitors (script policies + template rules) ---------- */
 function monStatusBadge(s) {
   if (s === "ok") return `<span class="badge ok">${ICON.check} healthy</span>`;
   if (s === "alert") return `<span class="badge bad">${ICON.alert} alerting</span>`;
   if (s === "error") return `<span class="badge bad">error</span>`;
   return `<span class="badge na">not run</span>`;
 }
+function globalBadge() {
+  return `<span class="badge" style="color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent)">${ICON.globe} Global</span>`;
+}
 function scriptName(id) { const s = (state.cache.scripts || []).find((x) => x.id === id); return s ? s.name : "—"; }
+function selectMonView(view) {
+  state.monView = view;
+  document.querySelectorAll("#mon-view-seg button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  $("mon-policies-view").classList.toggle("hidden", view !== "policies");
+  $("mon-templates-view").classList.toggle("hidden", view !== "templates");
+  $("mon-new").classList.toggle("hidden", view !== "policies");
+  if (view === "templates") renderMonitorRules();
+}
+function renderMonitorsTab() {
+  renderMonitors();
+  if (state.monView === "templates") renderMonitorRules();
+}
 function renderMonitors() {
   const mons = state.cache.monitors || [];
   $("mon-sub").textContent = `${mons.length} polic${mons.length === 1 ? "y" : "ies"}`;
   const body = $("mon-body");
   body.innerHTML = mons.length ? "" : `<div class="empty"><div class="big">${ICON.shieldCheck}</div>No monitoring policies yet.<br><span class="muted">Run a monitor script on a schedule and auto-remediate on failure.</span></div>`;
   for (const m of mons) {
+    const isGlobal = m.org_id == null;
+    const canManage = !isGlobal || state.me.is_global_admin;
     const row = el("div", "tile"); row.style.marginBottom = "10px";
     const rem = m.remediation_script_id ? " → fix: " + escapeHtml(scriptName(m.remediation_script_id)) : " · no remediation";
     row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
       <div class="os-ico">${ICON.shieldCheck}</div>
-      <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px">${escapeHtml(m.name)} ${monStatusBadge(m.last_status)}</div>
+      <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px">${escapeHtml(m.name)} ${monStatusBadge(m.last_status)} ${isGlobal ? globalBadge() : ""}</div>
         <div class="h-sub">monitor: ${escapeHtml(scriptName(m.monitor_script_id))}${rem} · ${cadenceText(m)} · ${escapeHtml(targetText(m))}${m.last_run ? " · last " + relTime(m.last_run) : ""}</div></div>
       <span class="badge ${m.enabled ? "ok" : "na"}">${m.enabled ? "enabled" : "paused"}</span>
-      <button class="btn ghost sm run-now">${ICON.power} Run now</button>
+      ${canManage ? `<button class="btn ghost sm run-now">${ICON.power} Run now</button>
       <button class="btn ghost sm toggle">${m.enabled ? "Pause" : "Resume"}</button>
-      <button class="btn ghost sm del">${ICON.trash}</button></div>`;
-    row.querySelector(".run-now").onclick = async () => { try { const r = await api(`/api/monitors/${m.id}/run`, { method: "POST" }); toast("Monitor ran: " + r.status); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); loadRuns(); } catch (e) { toast(e.message); } };
-    row.querySelector(".toggle").onclick = async () => { try { await api(`/api/monitors/${m.id}/toggle`, { method: "POST" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); } catch (e) { toast(e.message); } };
-    row.querySelector(".del").onclick = async () => { if (!confirm("Delete policy “" + m.name + "”?")) return; try { await api(`/api/monitors/${m.id}`, { method: "DELETE" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); buildNav(); renderMonitors(); toast("Policy deleted"); } catch (e) { toast(e.message); } };
+      <button class="btn ghost sm del">${ICON.trash}</button>` : ""}</div>`;
+    if (canManage) {
+      row.querySelector(".run-now").onclick = async () => { try { const r = await api(`/api/monitors/${m.id}/run`, { method: "POST" }); toast("Monitor ran: " + r.status); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); loadRuns(); } catch (e) { toast(e.message); } };
+      row.querySelector(".toggle").onclick = async () => { try { await api(`/api/monitors/${m.id}/toggle`, { method: "POST" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); } catch (e) { toast(e.message); } };
+      row.querySelector(".del").onclick = async () => { if (!confirm("Delete policy “" + m.name + "”?")) return; try { await api(`/api/monitors/${m.id}`, { method: "DELETE" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); buildNav(); renderMonitors(); toast("Policy deleted"); } catch (e) { toast(e.message); } };
+    }
     body.appendChild(row);
   }
   $("mon-new").onclick = openMonitorForm;
 }
+let monitorScope = "site";
 function setupMonitorModal() {
   $("mm-close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
   const close = () => $("monitor-modal").classList.add("hidden");
   $("mm-close").onclick = close; $("mm-cancel").onclick = close;
   $("monitor-modal").addEventListener("click", (e) => { if (e.target === $("monitor-modal")) close(); });
   $("mm-save").onclick = saveMonitor;
+  document.querySelectorAll("#mm-scope-seg button").forEach((b) => b.onclick = () => {
+    monitorScope = b.dataset.scope;
+    document.querySelectorAll("#mm-scope-seg button").forEach((x) => x.classList.toggle("active", x === b));
+    const tgt = $("mm-target");
+    if (monitorScope === "global") { tgt.value = "all"; tgt.disabled = true; } else { tgt.disabled = false; }
+  });
 }
 function openMonitorForm() {
   const scripts = state.cache.scripts || [];
@@ -763,17 +793,23 @@ function openMonitorForm() {
   const groups = (state.cache.groups || []).map((g) => `<option value="group:${g.id}">Group: ${escapeHtml(g.name)}</option>`).join("");
   const devs = (state.cache.devices || []).map((d) => `<option value="device:${d.id}">${escapeHtml(d.hostname)}</option>`).join("");
   $("mm-target").innerHTML = `<option value="all">All devices</option>` + groups + devs;
+  $("mm-target").disabled = false;
   $("mm-name").value = ""; $("mm-vars").value = ""; $("mm-cadence").value = "15";
+  monitorScope = "site";
+  document.querySelectorAll("#mm-scope-seg button").forEach((b) => b.classList.toggle("active", b.dataset.scope === "site"));
+  $("mm-scope-wrap").classList.toggle("hidden", !state.me.is_global_admin);
   $("monitor-modal").classList.remove("hidden");
   setTimeout(() => $("mm-name").focus(), 30);
 }
 async function saveMonitor() {
   const name = $("mm-name").value.trim();
   if (!name) { $("mm-name").focus(); return toast("Name the policy"); }
-  const tgt = $("mm-target").value;
   let target_type = "all", target_id = null;
-  if (tgt.startsWith("group:")) { target_type = "group"; target_id = tgt.slice(6); }
-  else if (tgt.startsWith("device:")) { target_type = "device"; target_id = tgt.slice(7); }
+  if (monitorScope === "site") {
+    const tgt = $("mm-target").value;
+    if (tgt.startsWith("group:")) { target_type = "group"; target_id = tgt.slice(6); }
+    else if (tgt.startsWith("device:")) { target_type = "device"; target_id = tgt.slice(7); }
+  }
   const variables = {};
   for (const line of $("mm-vars").value.split("\n")) {
     const i = line.indexOf("="); if (i <= 0) continue;
@@ -786,9 +822,119 @@ async function saveMonitor() {
     interval_minutes: parseInt($("mm-cadence").value, 10), variables,
   };
   try {
-    await api(`/api/orgs/${state.org}/monitors`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    $("monitor-modal").classList.add("hidden"); toast("Monitoring policy created");
+    const path = monitorScope === "global" ? "/api/monitors/global" : `/api/orgs/${state.org}/monitors`;
+    await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("monitor-modal").classList.add("hidden"); toast(monitorScope === "global" ? "Global monitor created" : "Monitoring policy created");
     state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); buildNav(); renderMonitors();
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------- monitors: template gallery + metric-threshold rules ---------- */
+function metricIcon(metric) {
+  if (metric === "cpu_percent") return ICON.cpu;
+  if (metric === "mem_percent") return ICON.mem;
+  if (metric === "disk_percent") return ICON.disk;
+  return ICON.wifi;
+}
+function ruleValueText(r) {
+  if (r.metric === "offline") return `unseen for ${Math.round(r.threshold)}s`;
+  return `${r.metric.replace("_percent", "")} ≥ ${r.threshold}% for ${r.duration_minutes} min`;
+}
+function renderMonitorGallery() {
+  const gallery = $("mon-gallery");
+  gallery.innerHTML = (state.templates || []).map((t) => `
+    <div class="tile" data-tmpl="${t.id}" style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:center;gap:10px"><div class="os-ico">${metricIcon(t.metric)}</div><div style="font-weight:650">${escapeHtml(t.name)}</div></div>
+      <div class="h-sub">${escapeHtml(t.description)}</div>
+      <div class="h-sub">Default: ${t.metric === "offline" ? t.default_threshold + "s unseen" : t.default_threshold + "% for " + t.default_duration_minutes + " min"}</div>
+      <button class="btn ghost sm add-tmpl" style="align-self:flex-start">${ICON.plus} Add</button>
+    </div>`).join("");
+  gallery.querySelectorAll(".add-tmpl").forEach((btn) => {
+    const id = btn.closest("[data-tmpl]").dataset.tmpl;
+    btn.onclick = () => openRuleForm((state.templates || []).find((t) => t.id === id));
+  });
+}
+function renderMonitorRules() {
+  renderMonitorGallery();
+  const rules = state.cache.monitorRules || [];
+  $("mon-rules-sub").textContent = `${rules.length} rule${rules.length === 1 ? "" : "s"}`;
+  const body = $("mon-rules-body");
+  body.innerHTML = rules.length ? "" : `<div class="empty"><div class="big">${ICON.shieldCheck}</div>No rules yet.<br><span class="muted">Add one from the gallery above.</span></div>`;
+  for (const r of rules) {
+    const isGlobal = r.org_id == null;
+    const canManage = !isGlobal || state.me.is_global_admin;
+    const row = el("div", "tile"); row.style.marginBottom = "10px";
+    row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
+      <div class="os-ico">${metricIcon(r.metric)}</div>
+      <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px">${escapeHtml(r.name)} ${isGlobal ? globalBadge() : ""}</div>
+        <div class="h-sub">${ruleValueText(r)} · ${escapeHtml(targetText(r))}</div></div>
+      <span class="badge ${r.enabled ? "ok" : "na"}">${r.enabled ? "enabled" : "paused"}</span>
+      ${canManage ? `<button class="btn ghost sm toggle">${r.enabled ? "Pause" : "Resume"}</button>
+      <button class="btn ghost sm del">${ICON.trash}</button>` : ""}</div>`;
+    if (canManage) {
+      row.querySelector(".toggle").onclick = async () => { try { await api(`/api/monitor-rules/${r.id}/toggle`, { method: "POST" }); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); renderMonitorRules(); } catch (e) { toast(e.message); } };
+      row.querySelector(".del").onclick = async () => { if (!confirm("Delete rule “" + r.name + "”?")) return; try { await api(`/api/monitor-rules/${r.id}`, { method: "DELETE" }); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); renderMonitorRules(); toast("Rule deleted"); } catch (e) { toast(e.message); } };
+    }
+    body.appendChild(row);
+  }
+}
+let ruleScope = "site";
+let currentTemplate = null;
+function setupRuleModal() {
+  $("rm-close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
+  const close = () => $("rule-modal").classList.add("hidden");
+  $("rm-close").onclick = close; $("rm-cancel").onclick = close;
+  $("rule-modal").addEventListener("click", (e) => { if (e.target === $("rule-modal")) close(); });
+  $("rm-save").onclick = saveRule;
+  document.querySelectorAll("#rm-scope-seg button").forEach((b) => b.onclick = () => {
+    ruleScope = b.dataset.scope;
+    document.querySelectorAll("#rm-scope-seg button").forEach((x) => x.classList.toggle("active", x === b));
+    const tgt = $("rm-target");
+    if (ruleScope === "global") { tgt.value = "all"; tgt.disabled = true; } else { tgt.disabled = false; }
+  });
+}
+function openRuleForm(tmpl) {
+  if (!tmpl) return;
+  currentTemplate = tmpl; ruleScope = "site";
+  $("rm-title").textContent = "Add: " + tmpl.name;
+  $("rm-desc").textContent = tmpl.description;
+  $("rm-name").value = tmpl.name;
+  $("rm-threshold-label").textContent = tmpl.metric === "offline" ? "Unseen for (seconds)" : "Threshold (%)";
+  $("rm-threshold").value = tmpl.default_threshold;
+  $("rm-duration-wrap").classList.toggle("hidden", tmpl.metric === "offline");
+  $("rm-duration").value = tmpl.default_duration_minutes || "";
+  const groups = (state.cache.groups || []).map((g) => `<option value="group:${g.id}">Group: ${escapeHtml(g.name)}</option>`).join("");
+  const devs = (state.cache.devices || []).map((d) => `<option value="device:${d.id}">${escapeHtml(d.hostname)}</option>`).join("");
+  $("rm-target").innerHTML = `<option value="all">All devices</option>` + groups + devs;
+  $("rm-target").disabled = false;
+  document.querySelectorAll("#rm-scope-seg button").forEach((b) => b.classList.toggle("active", b.dataset.scope === "site"));
+  $("rm-scope-wrap").classList.toggle("hidden", !state.me.is_global_admin);
+  $("rule-modal").classList.remove("hidden");
+  setTimeout(() => $("rm-name").focus(), 30);
+}
+async function saveRule() {
+  if (!currentTemplate) return;
+  const name = $("rm-name").value.trim();
+  if (!name) { $("rm-name").focus(); return toast("Name the rule"); }
+  let target_type = "all", target_id = null;
+  if (ruleScope === "site") {
+    const tgt = $("rm-target").value;
+    if (tgt.startsWith("group:")) { target_type = "group"; target_id = tgt.slice(6); }
+    else if (tgt.startsWith("device:")) { target_type = "device"; target_id = tgt.slice(7); }
+  }
+  const body = {
+    template_id: currentTemplate.id, name,
+    threshold: parseFloat($("rm-threshold").value),
+    duration_minutes: currentTemplate.metric === "offline" ? null : parseFloat($("rm-duration").value),
+    target_type, target_id,
+  };
+  try {
+    const path = ruleScope === "global" ? "/api/monitor-rules/global" : `/api/orgs/${state.org}/monitor-rules`;
+    await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("rule-modal").classList.add("hidden");
+    toast(ruleScope === "global" ? "Global rule added" : "Rule added");
+    state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`);
+    renderMonitorRules();
   } catch (e) { toast(e.message); }
 }
 
