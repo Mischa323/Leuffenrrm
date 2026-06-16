@@ -695,12 +695,12 @@ function showNewToken(token, base, ins) {
     win: `iwr "${base}/api/orgs/${state.org}/install.ps1?token=${token}" -UseBasicParsing | iex`,
     lin: `curl -fsSL "${base}/api/orgs/${state.org}/install.sh?token=${token}" | sudo bash`,
   };
-  const row = (label, c) => `<div style="margin-top:8px"><div class="h-sub">${label}</div><div class="code"><button class="btn ghost sm tcopy" data-c="${escapeHtml(c)}">${ICON.copy} Copy</button>${escapeHtml(c)}</div></div>`;
+  const row = (label, c) => `<div style="margin-top:8px"><div class="h-sub">${label}</div><div class="code"><button class="btn ghost sm tcopy" data-c="${escapeAttr(c)}">${ICON.copy} Copy</button>${escapeHtml(c)}</div></div>`;
   const host = $("token-result");
   host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.key}</div><div style="flex:1">
     <div class="ct">Copy this now — it won't be shown again</div>
     <div style="margin:8px 0"><code style="font-family:var(--font-mono);background:var(--surface-3);border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 11px;font-size:13px;display:inline-block;word-break:break-all">${escapeHtml(token)}</code>
-      <button class="btn ghost sm tcopy" data-c="${escapeHtml(token)}" style="margin-left:8px">${ICON.copy} Copy key</button></div>
+      <button class="btn ghost sm tcopy" data-c="${escapeAttr(token)}" style="margin-left:8px">${ICON.copy} Copy key</button></div>
     ${row("Tray Settings: paste as the enrolment key, or MSI:", cmds.msi)}
     ${row("Windows (PowerShell, admin):", cmds.win)}
     ${row("Linux (one-liner):", cmds.lin)}
@@ -1320,6 +1320,7 @@ function onTerm(e) {
   out.scrollTop = out.scrollHeight; inp.value = "";
 }
 function escapeHtml(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+function escapeAttr(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
 function clearRefresh() { if (state.refresh) { clearInterval(state.refresh); state.refresh = null; } }
 
