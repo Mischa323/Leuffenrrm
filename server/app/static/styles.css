@@ -403,6 +403,14 @@ table.grid tbody tr:hover td { background: var(--surface-hover); }
 .hist-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
 .area { width: 100%; height: 56px; display: block; }
 
+/* Applied policies (device drawer) */
+.pol-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.pol-row { display: flex; align-items: center; gap: 9px; padding: 9px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); font-size: 12.5px; }
+.pol-row .pol-ic { display: inline-flex; color: var(--text-dim); }
+.pol-row .pol-ic svg { width: 15px; height: 15px; }
+.pol-row .pol-name { font-weight: 600; }
+.pol-row .pol-val { flex: 1; }
+
 /* Configurable dashboard widgets */
 .dwidget { margin-bottom: 18px; }
 .dw-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0 2px 10px; }

@@ -876,50 +876,34 @@ function metricIcon(metric) {
   if (metric === "cpu_percent") return ICON.cpu;
   if (metric === "mem_percent") return ICON.mem;
   if (metric === "disk_percent") return ICON.disk;
+  if (metric === "wol") return ICON.power;
   return ICON.wifi;
 }
 function ruleValueText(r) {
+  if (r.metric === "wol") return "Wake-on-LAN · Windows only";
   if (r.metric === "offline") return `unseen for ${Math.round(r.threshold)}s`;
   return `${r.metric.replace("_percent", "")} ≥ ${r.threshold}% for ${r.duration_minutes} min`;
 }
 function renderMonitorGallery() {
   const gallery = $("mon-gallery");
-  gallery.innerHTML = (state.templates || []).map((t) => `
+  gallery.innerHTML = (state.templates || []).map((t) => {
+    const detail = t.kind === "policy"
+      ? (t.os_support ? "Applies to: " + t.os_support.map((o) => o === "windows_server" ? "Windows Server" : "Windows").join(", ") : "All devices")
+      : "Default: " + (t.metric === "offline" ? t.default_threshold + "s unseen" : t.default_threshold + "% for " + t.default_duration_minutes + " min");
+    return `
     <div class="tile" data-tmpl="${t.id}" style="display:flex;flex-direction:column;gap:10px">
-      <div style="display:flex;align-items:center;gap:10px"><div class="os-ico">${metricIcon(t.metric)}</div><div style="font-weight:650">${escapeHtml(t.name)}</div></div>
+      <div style="display:flex;align-items:center;gap:10px"><div class="os-ico">${metricIcon(t.metric)}</div><div style="font-weight:650">${escapeHtml(t.name)}</div>${t.kind === "policy" ? `<span class="badge" style="margin-left:auto">policy</span>` : ""}</div>
       <div class="h-sub">${escapeHtml(t.description)}</div>
-      <div class="h-sub">Default: ${t.metric === "offline" ? t.default_threshold + "s unseen" : t.default_threshold + "% for " + t.default_duration_minutes + " min"}</div>
+      <div class="h-sub">${detail}</div>
       <button class="btn ghost sm add-tmpl" style="align-self:flex-start">${ICON.plus} Add</button>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   gallery.querySelectorAll(".add-tmpl").forEach((btn) => {
     const id = btn.closest("[data-tmpl]").dataset.tmpl;
     btn.onclick = () => openRuleForm((state.templates || []).find((t) => t.id === id));
   });
 }
-async function renderDevicePolicies() {
-  const host = $("mon-device-policies");
-  if (!host) return;
-  if (!state.me.is_global_admin) { host.innerHTML = ""; return; }   // global policy
-  let on = false;
-  try { on = (await api("/api/settings")).RMM_ENABLE_WOL === "1"; }
-  catch { host.innerHTML = ""; return; }
-  host.innerHTML = `<div class="sec-label" style="margin-top:0">Device policies</div>
-    <div class="tile" style="display:flex;align-items:center;gap:12px;margin-bottom:22px">
-      <div class="os-ico">${ICON.power}</div>
-      <div style="flex:1"><div style="font-weight:650">Wake-on-LAN</div>
-        <div class="h-sub">Configures Windows agents' NICs for Wake-on-LAN and disables Fast Startup so they can be woken. Applies to every agent on next connect; off leaves Windows defaults.</div></div>
-      <span class="badge ${on ? "ok" : "na"}">${on ? "enabled" : "disabled"}</span>
-      <button class="btn ghost sm" id="wol-toggle">${on ? "Disable" : "Enable"}</button></div>`;
-  $("wol-toggle").onclick = async () => {
-    try {
-      await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ RMM_ENABLE_WOL: on ? "0" : "1" }) });
-      toast("Wake-on-LAN " + (on ? "disabled" : "enabled"));
-      renderDevicePolicies();
-    } catch (e) { toast(e.message); }
-  };
-}
 function renderMonitorRules() {
-  renderDevicePolicies();
   renderMonitorGallery();
   const rules = state.cache.monitorRules || [];
   $("mon-rules-sub").textContent = `${rules.length} rule${rules.length === 1 ? "" : "s"}`;
@@ -968,8 +952,12 @@ function openRuleForm(tmpl, existing) {
   editingRuleId = existing ? existing.id : null;
   ruleScope = existing ? (existing.org_id == null ? "global" : "site") : "site";
   $("rm-title").textContent = existing ? "Edit: " + tmpl.name : "Add: " + tmpl.name;
-  $("rm-save").textContent = existing ? "Save changes" : "Add rule";
+  $("rm-save").textContent = existing ? "Save changes" : (tmpl.kind === "policy" ? "Apply policy" : "Add rule");
   $("rm-desc").textContent = tmpl.description;
+  // A policy (e.g. Wake-on-LAN) has one standard config — only name + scope/target.
+  const isPolicy = tmpl.kind === "policy";
+  $("rm-metric-row").classList.toggle("hidden", isPolicy);
+  $("rm-alert-row").classList.toggle("hidden", isPolicy);
   $("rm-name").value = existing ? existing.name : tmpl.name;
   $("rm-threshold-label").textContent = tmpl.metric === "offline" ? "Unseen for (seconds)" : "Threshold (%)";
   $("rm-threshold").value = existing ? existing.threshold : tmpl.default_threshold;
@@ -1001,13 +989,14 @@ async function saveRule() {
     if (tgt.startsWith("group:")) { target_type = "group"; target_id = tgt.slice(6); }
     else if (tgt.startsWith("device:")) { target_type = "device"; target_id = tgt.slice(7); }
   }
+  const isPolicy = currentTemplate.kind === "policy";
   const body = {
     template_id: currentTemplate.id, name,
-    threshold: parseFloat($("rm-threshold").value),
-    duration_minutes: currentTemplate.metric === "offline" ? null : parseFloat($("rm-duration").value),
+    threshold: isPolicy ? 0 : parseFloat($("rm-threshold").value),
+    duration_minutes: (isPolicy || currentTemplate.metric === "offline") ? null : parseFloat($("rm-duration").value),
     target_type, target_id,
-    severity: $("rm-severity").value,
-    notify_email: $("rm-notify-switch").classList.contains("on"),
+    severity: isPolicy ? (currentTemplate.default_severity || "info") : $("rm-severity").value,
+    notify_email: isPolicy ? false : $("rm-notify-switch").classList.contains("on"),
   };
   try {
     if (editingRuleId) {
@@ -1084,7 +1073,14 @@ function renderOverview(d) {
   const histHtml = `<div class="sec-label" style="display:flex;align-items:center;justify-content:space-between">History
     <span class="hist-range" id="hist-range"><button data-r="24h" class="active">24h</button><button data-r="7d">7d</button><button data-r="30d">30d</button></span></div>
     <div id="hist-charts"><div class="muted" style="padding:8px 0;font-size:12.5px">Loading…</div></div>`;
-  $("dtab-overview").innerHTML = cards + histHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
+  let polHtml = "";
+  if (d.policies && d.policies.length) {
+    polHtml = `<div class="sec-label">Applied policies</div><div class="pol-list">` + d.policies.map((p) => `
+      <div class="pol-row"><span class="pol-ic">${p.kind === "policy" ? ICON.power : ICON.bell}</span>
+        <span class="pol-name">${escapeHtml(p.name)}</span><span class="pol-val muted">${escapeHtml(p.value || "")}</span>
+        ${p.supported ? `<span class="badge ok">active</span>` : `<span class="badge na" title="Not supported on this device's OS">not supported</span>`}</div>`).join("") + `</div>`;
+  }
+  $("dtab-overview").innerHTML = cards + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
   const dc = $("disk-card");
   if (dc && multi) dc.onclick = () => $("disk-detail").classList.toggle("hidden");
   $("hist-range").querySelectorAll("button").forEach((b) => b.onclick = () => {
