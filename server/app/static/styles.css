@@ -333,6 +333,8 @@ table.grid tbody tr:hover td { background: var(--surface-hover); }
 .badge.ok { background: var(--good-soft); color: var(--good); }
 .badge.bad { background: var(--bad-soft); color: var(--bad); }
 .badge.na { background: color-mix(in srgb, var(--text-faint) 14%, transparent); color: var(--text-faint); }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
+.badge.info { background: var(--accent-soft); color: var(--accent-text); }
 
 .spark { width: 64px; height: 22px; display: block; }
 [data-dataviz="off"] .spark, [data-dataviz="off"] .kpi .kspark { display: none; }

@@ -255,6 +255,8 @@ CREATE TABLE IF NOT EXISTS monitors (
     at_time          TEXT,
     variables_json   TEXT,
     enabled          INTEGER NOT NULL DEFAULT 1,
+    notify_email     INTEGER NOT NULL DEFAULT 1,
+    severity         TEXT NOT NULL DEFAULT 'warning',
     last_run         REAL,
     next_run         REAL,
     last_status      TEXT,
@@ -276,6 +278,8 @@ CREATE TABLE IF NOT EXISTS monitor_rules (
     target_type      TEXT NOT NULL DEFAULT 'all',
     target_id        TEXT,
     enabled          INTEGER NOT NULL DEFAULT 1,
+    notify_email     INTEGER NOT NULL DEFAULT 1,
+    severity         TEXT NOT NULL DEFAULT 'warning',
     created_at       REAL NOT NULL,
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
@@ -606,18 +610,38 @@ def delete_script_file(file_id: str) -> None:
 def create_monitor(org_id: str | None, name: str, monitor_script_id: str,
                    remediation_script_id: str | None, target_type: str, target_id: str | None,
                    trigger: str, interval_minutes: int | None, at_time: str | None,
-                   variables_json: str | None, next_run: float) -> dict:
+                   variables_json: str | None, next_run: float,
+                   notify_email: bool = True, severity: str = "warning") -> dict:
     mid = uuid.uuid4().hex
     with write() as conn:
         conn.execute(
             """INSERT INTO monitors (id, org_id, name, monitor_script_id, remediation_script_id,
                    target_type, target_id, trigger, interval_minutes, at_time, variables_json,
-                   enabled, next_run, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+                   enabled, notify_email, severity, next_run, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)""",
             (mid, org_id, name, monitor_script_id, remediation_script_id, target_type, target_id,
-             trigger, interval_minutes, at_time, variables_json, next_run, _now()),
+             trigger, interval_minutes, at_time, variables_json,
+             1 if notify_email else 0, severity, next_run, _now()),
         )
     return get_monitor(mid)
+
+
+def update_monitor(monitor_id: str, name: str, monitor_script_id: str,
+                   remediation_script_id: str | None, target_type: str, target_id: str | None,
+                   trigger: str, interval_minutes: int | None, at_time: str | None,
+                   variables_json: str | None, next_run: float,
+                   notify_email: bool = True, severity: str = "warning") -> dict | None:
+    with write() as conn:
+        conn.execute(
+            """UPDATE monitors SET name=?, monitor_script_id=?, remediation_script_id=?,
+                   target_type=?, target_id=?, trigger=?, interval_minutes=?, at_time=?,
+                   variables_json=?, notify_email=?, severity=?, next_run=?
+               WHERE id=?""",
+            (name, monitor_script_id, remediation_script_id, target_type, target_id,
+             trigger, interval_minutes, at_time, variables_json,
+             1 if notify_email else 0, severity, next_run, monitor_id),
+        )
+    return get_monitor(monitor_id)
 
 
 def get_monitor(monitor_id: str) -> dict | None:
@@ -665,17 +689,34 @@ def delete_monitor(monitor_id: str) -> None:
 # --------------------------------------------------------------------------- #
 def create_monitor_rule(org_id: str | None, template_id: str, name: str, metric: str,
                         threshold: float, duration_minutes: float | None,
-                        target_type: str, target_id: str | None) -> dict:
+                        target_type: str, target_id: str | None,
+                        notify_email: bool = True, severity: str = "warning") -> dict:
     rid = uuid.uuid4().hex
     with write() as conn:
         conn.execute(
             """INSERT INTO monitor_rules (id, org_id, template_id, name, metric, threshold,
-                   duration_minutes, target_type, target_id, enabled, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,1,?)""",
+                   duration_minutes, target_type, target_id, enabled, notify_email, severity,
+                   created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?)""",
             (rid, org_id, template_id, name, metric, threshold, duration_minutes,
-             target_type, target_id, _now()),
+             target_type, target_id, 1 if notify_email else 0, severity, _now()),
         )
     return get_monitor_rule(rid)
+
+
+def update_monitor_rule(rule_id: str, name: str, threshold: float,
+                        duration_minutes: float | None, target_type: str,
+                        target_id: str | None, notify_email: bool = True,
+                        severity: str = "warning") -> dict | None:
+    with write() as conn:
+        conn.execute(
+            """UPDATE monitor_rules SET name=?, threshold=?, duration_minutes=?,
+                   target_type=?, target_id=?, notify_email=?, severity=?
+               WHERE id=?""",
+            (name, threshold, duration_minutes, target_type, target_id,
+             1 if notify_email else 0, severity, rule_id),
+        )
+    return get_monitor_rule(rule_id)
 
 
 def get_monitor_rule(rule_id: str) -> dict | None:
@@ -814,6 +855,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Removed standard-policy alerting (cpu/mem/disk/offline are now ordinary
     # monitor_rules rows) — drop stale state left by the old hardcoded rules.
     conn.execute("DELETE FROM alert_state WHERE rule IN ('offline', 'cpu', 'disk', 'mem')")
+    mocols = {r[1] for r in conn.execute("PRAGMA table_info(monitors)")}
+    if "notify_email" not in mocols:
+        conn.execute("ALTER TABLE monitors ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 1")
+    if "severity" not in mocols:
+        conn.execute("ALTER TABLE monitors ADD COLUMN severity TEXT NOT NULL DEFAULT 'warning'")
+    mrcols = {r[1] for r in conn.execute("PRAGMA table_info(monitor_rules)")}
+    if "notify_email" not in mrcols:
+        conn.execute("ALTER TABLE monitor_rules ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 1")
+    if "severity" not in mrcols:
+        conn.execute("ALTER TABLE monitor_rules ADD COLUMN severity TEXT NOT NULL DEFAULT 'warning'")
 
 
 def get_conn() -> sqlite3.Connection:
@@ -1346,7 +1397,8 @@ def set_alert_state(device_id: str, rule: str, state: str,
 def list_raised_rule_alerts(org_id: str) -> list[dict]:
     """Monitor rules currently alerting on a device in this org (site or global rule)."""
     rows = get_conn().execute(
-        """SELECT a.rule, a.since, d.id AS device_id, d.hostname, mr.name AS rule_name
+        """SELECT a.rule, a.since, d.id AS device_id, d.hostname, mr.name AS rule_name,
+                  mr.severity AS severity
            FROM alert_state a
            JOIN devices d ON d.id = a.device_id
            JOIN monitor_rules mr ON 'rule:' || mr.id = a.rule

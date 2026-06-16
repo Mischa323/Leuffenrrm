@@ -255,8 +255,12 @@ from the **Monitors** tab, and every monitor can be scoped either to one site or
   non-zero exit, and optionally auto-run a remediation script. Same site/global
   scoping applies.
 
-Delete or disable any monitor at any time — nothing is hardcoded or seeded by
-environment variables.
+Every monitor/rule has a **severity** (info / warning / critical, shown as a
+badge wherever it alerts) and a per-monitor **email notifications** toggle —
+turn it off to keep tracking state without sending mail. Edit any monitor or
+rule at any time (its scope stays fixed — delete and recreate to move it
+between site and global); delete or disable it just as freely. Nothing is
+hardcoded or seeded by environment variables.
 
 ---
 

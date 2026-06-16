@@ -84,6 +84,8 @@ class MonitorRequest(BaseModel):
     interval_minutes: int | None = 15
     at_time: str | None = None
     variables: dict | None = None     # name -> value, passed as env to both scripts
+    notify_email: bool = True
+    severity: str = "warning"         # info | warning | critical
 
 
 class MonitorRuleRequest(BaseModel):
@@ -94,3 +96,5 @@ class MonitorRuleRequest(BaseModel):
     duration_minutes: float | None = None   # defaults to the template's suggestion
     target_type: str = "all"                # device | group | all
     target_id: str | None = None
+    notify_email: bool = True
+    severity: str | None = None             # defaults to the template's suggestion
