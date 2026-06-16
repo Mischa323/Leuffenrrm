@@ -353,7 +353,6 @@ permission is least-privilege (`Mail.Send` only).
 - **Phase 2:** monitors library + auto-response; scripts/components + scheduled
   jobs with history; compliance baseline evaluation; installed-software audit;
   patch management (scan/report/scheduled apply); scheduled & on-demand reports.
-- **Phase 3 (optional):** ransomware behavior monitor + auto-isolate;
-  user-configurable dashboard widgets.
+- **Phase 3 (optional):** user-configurable dashboard widgets.
 
 The full design lives in the approved implementation plan.
