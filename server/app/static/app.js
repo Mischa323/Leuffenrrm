@@ -69,6 +69,8 @@ async function init() {
   $("avatar").textContent = initials(state.me.email);
   $("home-crumb").onclick = (e) => { e.preventDefault(); showGlobal(); };
   $("drawer-close-btn").onclick = closeDrawer;
+  $("fm-close").onclick = dismissFiles;
+  $("files-scrim").onclick = dismissFiles;
   $("refresh-global").onclick = () => showGlobal();
   $("cust-ico").innerHTML = ICON.sliders;
   $("cust-close-ico").textContent = "✕";
@@ -819,7 +821,7 @@ function selectDrawerTab(tab) {
   document.querySelectorAll(".dtabs button").forEach((b) => b.classList.toggle("active", b.dataset.dtab === tab));
   ["overview", "files", "terminal", "actions"].forEach((t) => $("dtab-" + t).classList.toggle("hidden", t !== tab));
   if (tab === "overview") renderOverview(state.deviceObj);
-  if (tab === "files") openFiles();
+  if (tab === "files") openFiles(); else closeFiles();
   if (tab === "terminal") openTerminal(); else closeTerminal();
 }
 function renderOverview(d) {
@@ -960,17 +962,23 @@ function cmpVer(a, b) {
   }
   return 0;
 }
-function closeDrawer() { closeTerminal(); const d = $("drawer"); d.style.transform = "translateX(100%)"; setTimeout(() => d.classList.add("hidden"), 280); $("scrim").classList.add("hidden"); state.device = null; }
+function closeDrawer() { closeTerminal(); closeFiles(); const d = $("drawer"); d.style.transform = "translateX(100%)"; setTimeout(() => d.classList.add("hidden"), 280); $("scrim").classList.add("hidden"); state.device = null; }
 
-/* ---------- remote file management ---------- */
+/* ---------- remote file management (centered modal) ---------- */
 function openFiles() {
   if (!state.deviceObj) return;
-  if (!state.deviceObj.online) { $("dtab-files").innerHTML = `<div class="tile" style="text-align:center;color:var(--text-dim)">Device is offline — file management unavailable.</div>`; return; }
+  const d = state.deviceObj;
+  $("fm-host").textContent = `${d.hostname}${d.os ? " · " + d.os : ""}`;
+  $("files-scrim").classList.remove("hidden");
+  $("files-modal").classList.remove("hidden");
+  if (!d.online) { $("files-body").innerHTML = `<div class="tile" style="text-align:center;color:var(--text-dim)">Device is offline — file management unavailable.</div>`; return; }
   renderFiles(state.filePath || "");
 }
+function closeFiles() { $("files-scrim").classList.add("hidden"); $("files-modal").classList.add("hidden"); }
+function dismissFiles() { selectDrawerTab("overview"); }
 async function renderFiles(path) {
   state.filePath = path;
-  const host = $("dtab-files");
+  const host = $("files-body");
   host.innerHTML = `<div class="muted" style="padding:14px">Loading…</div>`;
   let res;
   try { res = await api(`/api/devices/${state.device}/files?path=${encodeURIComponent(path)}`); }

@@ -176,6 +176,16 @@
     </div>
   </aside>
 
+  <!-- ===== File manager (centered modal) ===== -->
+  <div id="files-scrim" class="modal-scrim hidden"></div>
+  <div id="files-modal" class="files-modal hidden">
+    <div class="fm-head">
+      <div><h3>File manager</h3><div class="fm-host" id="fm-host"></div></div>
+      <button class="icon-btn" id="fm-close"><span id="fm-close-ico">✕</span></button>
+    </div>
+    <div class="fm-body" id="files-body"></div>
+  </div>
+
   <!-- ===== Script editor modal ===== -->
   <style>
     #script-modal .ml { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; }
