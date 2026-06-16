@@ -46,13 +46,15 @@ def evaluate_once() -> None:
         latest = metrics[-1] if metrics else None
         for rule in rules:
             rule_key = f"rule:{rule['id']}"
+            notify = bool(rule.get("notify_email", 1))
+            severity = rule.get("severity") or "warning"
             if rule["metric"] == "offline":
                 last_seen = dev.get("last_seen") or 0
                 raised = (dev["id"] not in online) and (now - last_seen > rule["threshold"])
                 _apply(dev, rule_key, raised, recipients,
                        f"{dev['hostname']}: {rule['name']}",
                        f"No heartbeat from <b>{dev['hostname']}</b> for over "
-                       f"{int(rule['threshold'])}s.")
+                       f"{int(rule['threshold'])}s.", notify, severity)
                 continue
             if not latest:
                 continue
@@ -61,28 +63,33 @@ def evaluate_once() -> None:
             _apply(dev, rule_key, raised, recipients,
                    f"{dev['hostname']}: {rule['name']}",
                    f"{rule['metric']} averaged {avg:.0f}% over {(rule['duration_minutes'] or 0):.0f} min "
-                   f"(threshold {rule['threshold']:.0f}%)." if avg is not None else "")
+                   f"(threshold {rule['threshold']:.0f}%)." if avg is not None else "",
+                   notify, severity)
 
 
 def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
-           subject: str, body: str) -> None:
+           subject: str, body: str, notify: bool = True, severity: str = "warning") -> None:
     now = time.time()
     state = db.get_alert_state(dev["id"], rule)
     cur = state["state"] if state else "ok"
+    tag = f"[{severity.upper()}] " if severity != "info" else ""
     if raised:
         if cur != "raised":
             db.set_alert_state(dev["id"], rule, "raised", now, now)
             log.info("ALERT raised: %s %s", dev["hostname"], rule)
-            graph.send_mail(f"[RMM] {subject}", f"<p>{body}</p>", recipients)
+            if notify:
+                graph.send_mail(f"[RMM] {tag}{subject}", f"<p>{body}</p>", recipients)
         else:
             last = (state or {}).get("last_email") or 0
             if now - last > EMAIL_COOLDOWN:
                 db.set_alert_state(dev["id"], rule, "raised", state.get("since"), now)
-                graph.send_mail(f"[RMM] {subject} (still active)", f"<p>{body}</p>", recipients)
+                if notify:
+                    graph.send_mail(f"[RMM] {tag}{subject} (still active)", f"<p>{body}</p>", recipients)
     else:
         if cur == "raised":
             db.set_alert_state(dev["id"], rule, "ok", None, None)
             log.info("ALERT cleared: %s %s", dev["hostname"], rule)
-            graph.send_mail(f"[RMM] Resolved: {subject}",
-                            f"<p>{dev['hostname']} {rule} has returned to normal.</p>",
-                            recipients)
+            if notify:
+                graph.send_mail(f"[RMM] Resolved: {subject}",
+                                f"<p>{dev['hostname']} {rule} has returned to normal.</p>",
+                                recipients)
