@@ -430,12 +430,15 @@ def _allow_inbound_ping() -> None:
 
 
 def _enable_wol() -> None:
-    """Enable 'Wake on Magic Packet' on physical NICs (Windows), so the device can
-    actually be woken by the relay node.
+    """Make this device wakeable: enable 'Wake on Magic Packet' on physical NICs
+    and disable Fast Startup (Windows).
 
     The OS firewall doesn't block Wake-on-LAN (the magic packet is handled by the
     NIC in hardware while the machine is off) — what matters is that the adapter is
-    configured to wake on it. Best-effort across drivers that support it."""
+    armed AND that the machine actually powers the NIC during shutdown. Windows
+    **Fast Startup** (hybrid shutdown) powers the NIC fully down, so WoL fails from
+    a normal shutdown even with the adapter setting enabled — the single most
+    common cause of "WoL stopped working". Best-effort across drivers."""
     if os.name != "nt":
         return
     try:
@@ -450,7 +453,12 @@ def _enable_wol() -> None:
         )
         subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
                        capture_output=True, timeout=30)
-        log.info("ensured Wake-on-Magic-Packet is enabled on physical NICs")
+        # Disable Fast Startup without disabling hibernation (HiberbootEnabled=0).
+        subprocess.run(["reg", "add",
+                        r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power",
+                        "/v", "HiberbootEnabled", "/t", "REG_DWORD", "/d", "0", "/f"],
+                       capture_output=True, timeout=15)
+        log.info("ensured Wake-on-Magic-Packet enabled and Fast Startup disabled")
     except Exception:
         pass
 

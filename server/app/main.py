@@ -60,7 +60,7 @@ def _resolve_version() -> str:
             return v.stdout.strip().lstrip("v")
     except Exception:
         pass
-    return "1.1.3"
+    return "1.1.4"
 
 
 SERVER_VERSION = _resolve_version()
