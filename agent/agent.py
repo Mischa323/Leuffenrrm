@@ -135,6 +135,25 @@ def _lower_priority() -> None:
         pass
 
 
+def _collect_disks() -> list[dict]:
+    """Per-volume usage for every fixed drive (C:, D:, … / on Linux)."""
+    out = []
+    primary = "C:\\" if os.name == "nt" else "/"
+    for part in psutil.disk_partitions(all=False):
+        mp = part.mountpoint
+        # Skip removable/optical media that isn't ready.
+        if os.name == "nt" and "cdrom" in (part.opts or ""):
+            continue
+        try:
+            u = psutil.disk_usage(mp)
+        except Exception:
+            continue
+        out.append({"mount": mp, "fs": part.fstype, "total": u.total,
+                    "used": u.used, "percent": u.percent,
+                    "primary": os.path.normcase(mp) == os.path.normcase(primary)})
+    return out
+
+
 def _collect_metrics() -> dict:
     vm = psutil.virtual_memory()
     try:
@@ -148,6 +167,7 @@ def _collect_metrics() -> dict:
         "disk_percent": disk.percent if disk else None,
         "disk_total": disk.total if disk else None,
         "disk_used": disk.used if disk else None,
+        "disks": _collect_disks(),
         "uptime": (__import__("time").time() - psutil.boot_time()),
         "net_sent": net.bytes_sent, "net_recv": net.bytes_recv,
         # Lightweight, refreshed every heartbeat so the dashboard tracks the
@@ -304,6 +324,14 @@ class Agent:
             await self._ack(rid, handlers.file_get(msg.get("path", "")))
         elif t == "file_put":
             await self._ack(rid, handlers.file_put(msg.get("path", ""), msg.get("data", "")))
+        elif t == "file_list":
+            await self._ack(rid, handlers.file_list(msg.get("path", "")))
+        elif t == "dir_size":
+            await self._ack(rid, handlers.dir_size(msg.get("path", "")))
+        elif t == "file_delete":
+            await self._ack(rid, handlers.file_delete(msg.get("path", "")))
+        elif t == "file_mkdir":
+            await self._ack(rid, handlers.file_mkdir(msg.get("path", "")))
         elif t == "wol":
             try:
                 netscan.send_magic_packet(msg["mac"], msg.get("broadcast") or "255.255.255.255",

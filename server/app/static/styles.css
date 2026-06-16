@@ -389,7 +389,20 @@ table.grid tbody tr:hover td { background: var(--surface-hover); }
 .stat-grid .sg .v { font-size: 18px; font-weight: 700; margin-top: 5px; }
 .stat-grid .sg .v small { font-size: 12px; color: var(--text-dim); font-weight: 500; }
 .stat-grid .sg.wide { grid-column: 1 / -1; }
+.stat-grid .sg.clickable { cursor: pointer; transition: border-color .12s, background .12s; }
+.stat-grid .sg.clickable:hover { border-color: var(--border-strong); background: var(--surface-hover); }
 .ring { width: 44px; height: 44px; flex: none; }
+
+/* Remote file management */
+.file-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.file-bar .file-path { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-dim); font-size: 12.5px; padding: 4px 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); }
+.file-table td { cursor: default; }
+.file-table .file-ico { display: inline-flex; vertical-align: middle; margin-right: 9px; color: var(--text-dim); }
+.file-table .file-ico svg { width: 16px; height: 16px; }
+.file-table a.file-open { color: var(--text); cursor: pointer; font-weight: 550; }
+.file-table a.file-open:hover { color: var(--accent); text-decoration: underline; }
+.file-table .file-size { color: var(--text-dim); white-space: nowrap; }
 
 dl.inv { display: grid; grid-template-columns: 130px 1fr; gap: 0; font-size: 13px; margin: 0;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
