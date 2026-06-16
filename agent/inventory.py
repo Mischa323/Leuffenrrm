@@ -13,7 +13,42 @@ import uuid
 
 import psutil
 
-AGENT_VERSION = "1.1.2"
+AGENT_VERSION = "1.1.3"
+
+
+def _gpus() -> str | None:
+    """Best-effort GPU name(s). WMI on Windows; lspci / nvidia-smi on Linux."""
+    names: list[str] = []
+    try:
+        if platform.system() == "Windows":
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_VideoController | "
+                 "Where-Object { $_.Name } | ForEach-Object { $_.Name }"],
+                capture_output=True, text=True, timeout=15)
+            names = [l.strip() for l in out.stdout.splitlines() if l.strip()]
+        else:
+            try:
+                out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                                     capture_output=True, text=True, timeout=8)
+                names = [l.strip() for l in out.stdout.splitlines() if l.strip()]
+            except Exception:
+                names = []
+            if not names:
+                out = subprocess.run(["sh", "-c", "lspci | grep -Ei 'vga|3d|display'"],
+                                     capture_output=True, text=True, timeout=8)
+                for line in out.stdout.splitlines():
+                    # "... VGA compatible controller: <name>"
+                    if ":" in line:
+                        names.append(line.split(":", 2)[-1].strip())
+    except Exception:
+        pass
+    # De-dup while preserving order.
+    seen, uniq = set(), []
+    for n in names:
+        if n and n not in seen:
+            seen.add(n); uniq.append(n)
+    return ", ".join(uniq) or None
 
 
 def _logged_in_user() -> str | None:
@@ -143,6 +178,7 @@ def collect() -> dict:
         "manufacturer": hw.get("manufacturer"),
         "model": hw.get("model"),
         "serial": hw.get("serial"),
+        "gpu": _gpus(),
         "is_server": hw.get("is_server", False),
         "boot_time": psutil.boot_time(),
     }

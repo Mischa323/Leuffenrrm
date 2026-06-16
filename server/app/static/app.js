@@ -1018,6 +1018,7 @@ async function openDrawer(id) {
   d.uptimeStr = fmtUptime(d.latest.uptime);
   d.cores = inv.cores || inv.cpu_count;
   d.nics = inv.nics;
+  d.gpu = d.gpu || inv.gpu;
   state.deviceObj = d;
   $("drawer-os-ico").innerHTML = osIcon(d.os);
   $("drawer-title").textContent = d.hostname;
@@ -1052,14 +1053,45 @@ function renderOverview(d) {
   const rows = [
     ["Operating system", `${d.os || ""} ${d.os_version || ""}`.trim()], ["Architecture", d.os_arch], ["Type", d.os_kind],
     ["Manufacturer", d.manufacturer], ["Model", d.model], ["Serial", d.serial],
-    ["Processor", `${d.cpu || ""}${d.cores ? " · " + d.cores + " cores" : ""}`.trim()], ["Memory", ram ? ram + " GB" : null],
+    ["Processor", `${d.cpu || ""}${d.cores ? " · " + d.cores + " cores" : ""}`.trim()], ["Graphics", d.gpu], ["Memory", ram ? ram + " GB" : null],
     ["Primary IP", d.ip], ["MAC", d.mac], ["Logged-in user", d.logged_in_user], ["Agent version", d.agent_version],
   ].filter((r) => r[1]);
   let nicHtml = "";
   if (d.nics && d.nics.length) nicHtml = `<dt>Interfaces</dt><dd>${d.nics.map((n) => `${n.name}: ${(n.ipv4 || []).join(", ") || "—"}${n.mac ? " · " + n.mac : ""}`).join("<br>")}</dd>`;
-  $("dtab-overview").innerHTML = cards + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
+  const histHtml = `<div class="sec-label" style="display:flex;align-items:center;justify-content:space-between">History
+    <span class="hist-range" id="hist-range"><button data-r="24h" class="active">24h</button><button data-r="7d">7d</button><button data-r="30d">30d</button></span></div>
+    <div id="hist-charts"><div class="muted" style="padding:8px 0;font-size:12.5px">Loading…</div></div>`;
+  $("dtab-overview").innerHTML = cards + histHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
   const dc = $("disk-card");
   if (dc && multi) dc.onclick = () => $("disk-detail").classList.toggle("hidden");
+  $("hist-range").querySelectorAll("button").forEach((b) => b.onclick = () => {
+    $("hist-range").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
+    loadHistory(d.id, b.dataset.r);
+  });
+  loadHistory(d.id, "24h");
+}
+async function loadHistory(id, range) {
+  const host = $("hist-charts"); if (!host) return;
+  let s = [];
+  try { s = await api(`/api/devices/${id}/metrics?range=${range}`); } catch (e) { host.innerHTML = `<div class="muted" style="padding:8px 0">${escapeHtml(e.message)}</div>`; return; }
+  if (!s.length) { host.innerHTML = `<div class="muted" style="padding:8px 0;font-size:12.5px">No history collected for this range yet.</div>`; return; }
+  const pick = (k) => s.map((x) => x[k] == null ? 0 : x[k]);
+  host.innerHTML = histRow("CPU", pick("cpu_percent"), "var(--accent)") +
+                   histRow("Memory", pick("mem_percent"), "var(--good)") +
+                   histRow("Disk", pick("disk_percent"), "var(--warn)");
+}
+function histRow(label, data, color) {
+  const last = data.length ? Math.round(data[data.length - 1]) : 0;
+  const peak = data.length ? Math.round(Math.max(...data)) : 0;
+  return `<div class="hist-row"><div class="hist-head"><span>${label}</span><span class="muted">now ${last}% · peak ${peak}%</span></div>${areaChart(data, color, 100)}</div>`;
+}
+function areaChart(data, color, fixedMax) {
+  if (!data || !data.length) return "";
+  const w = 320, h = 56, max = fixedMax || Math.max(...data, 1), rng = Math.max(max, 1), n = data.length;
+  const pts = data.map((v, i) => [(i / Math.max(n - 1, 1)) * w, h - (Math.min(v, max) / rng) * (h - 6) - 3]);
+  const path = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  const id = "a" + Math.random().toString(36).slice(2, 7);
+  return `<svg class="area" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".3"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs><path d="${path} L${w} ${h} L0 ${h} Z" fill="url(#${id})"/><path d="${path}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
 }
 function diskRows(disks) {
   if (!disks.length) return `<div class="muted" style="font-size:12.5px">No drive details reported yet.</div>`;

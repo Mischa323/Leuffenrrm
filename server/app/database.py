@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS devices (
     manufacturer  TEXT,
     model         TEXT,
     serial        TEXT,
+    gpu           TEXT,
     cpu           TEXT,
     ram_total     INTEGER,
     ip            TEXT,
@@ -809,6 +810,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN logged_in_user TEXT")
     if "disks_json" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN disks_json TEXT")
+    if "gpu" not in dcols:
+        conn.execute("ALTER TABLE devices ADD COLUMN gpu TEXT")
     # Remove any duplicate (node, subnet) rows from before dedup, keeping one.
     conn.execute("DELETE FROM subnets WHERE id NOT IN "
                  "(SELECT MIN(id) FROM subnets GROUP BY node_id, cidr)")
@@ -1119,7 +1122,8 @@ def upsert_device(org_id: str, dev: dict[str, Any], require_approval: bool = Fal
             os=inv.get("os") or dev.get("os"), os_version=inv.get("os_version"),
             os_arch=inv.get("os_arch"), os_kind=os_kind,
             manufacturer=inv.get("manufacturer"), model=inv.get("model"),
-            serial=inv.get("serial"), cpu=inv.get("cpu"), ram_total=inv.get("ram_total"),
+            serial=inv.get("serial"), gpu=inv.get("gpu"),
+            cpu=inv.get("cpu"), ram_total=inv.get("ram_total"),
             ip=inv.get("ip") or dev.get("ip"), mac=inv.get("mac") or dev.get("mac"),
             agent_version=inv.get("agent_version"),
             logged_in_user=inv.get("logged_in_user"),
@@ -1280,6 +1284,20 @@ def get_metrics(device_id: str, limit: int = 200) -> list[dict]:
         (device_id, min(limit, 1000)),
     ).fetchall()
     return [dict(r) for r in reversed(rows)]
+
+
+def get_metrics_series(device_id: str, since: float, points: int = 120) -> list[dict]:
+    """Down-sampled CPU/mem/disk history since a timestamp, averaged into buckets
+    so a 30-day look-back stays light to query and chart."""
+    now = _now()
+    bucket = max((now - since) / max(points, 1), 1.0)
+    rows = get_conn().execute(
+        "SELECT MIN(ts) AS ts, AVG(cpu_percent) AS cpu, AVG(mem_percent) AS mem, "
+        "AVG(disk_percent) AS disk FROM metrics WHERE device_id=? AND ts>=? "
+        "GROUP BY CAST((ts - ?) / ? AS INT) ORDER BY ts",
+        (device_id, since, since, bucket)).fetchall()
+    return [{"ts": r["ts"], "cpu_percent": r["cpu"], "mem_percent": r["mem"],
+             "disk_percent": r["disk"]} for r in rows]
 
 
 def set_device_group(device_id: str, group_id: str | None) -> None:
