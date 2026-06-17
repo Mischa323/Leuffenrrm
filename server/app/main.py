@@ -1708,15 +1708,31 @@ export RMM_SERVER_URL="{pub}"
 export RMM_API_KEY="{key}"
 export RMM_INSECURE_TLS="{insecure}"
 TMP=$(mktemp -d)
-mkdir -p /opt/leuffen-rmm
+DEST=/opt/leuffen-rmm
+mkdir -p "$DEST"
 curl -fsSL "{pub}/api/orgs/{org_id}/agent.zip?token={key}" -o "$TMP/agent.zip"
 # Extract with Python's stdlib (avoids a hard dependency on the 'unzip' package).
 if command -v unzip >/dev/null 2>&1; then
-  unzip -o "$TMP/agent.zip" -d /opt/leuffen-rmm
+  unzip -o "$TMP/agent.zip" -d "$DEST"
 else
-  python3 -m zipfile -e "$TMP/agent.zip" /opt/leuffen-rmm
+  python3 -m zipfile -e "$TMP/agent.zip" "$DEST"
 fi
-pip3 install -r /opt/leuffen-rmm/requirements.txt
+# Install into an isolated virtualenv: avoids needing pip3 on the host and the
+# PEP 668 "externally managed environment" block on modern Debian/Ubuntu.
+if ! python3 -m venv "$DEST/venv" 2>/dev/null; then
+  echo "Installing python3 venv support…"
+  if command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y python3-venv python3-pip
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y python3-virtualenv python3-pip || dnf install -y python3
+  elif command -v yum >/dev/null 2>&1; then yum install -y python3-virtualenv python3-pip || true
+  elif command -v apk >/dev/null 2>&1; then apk add --no-cache python3 py3-virtualenv py3-pip || true
+  elif command -v zypper >/dev/null 2>&1; then zypper install -y python3-venv python3-pip || true; fi
+  python3 -m venv "$DEST/venv"
+fi
+"$DEST/venv/bin/python" -m pip install --upgrade pip >/dev/null 2>&1 || true
+# Core deps only — the screen-control extras (mss/Pillow/pynput) are optional and
+# need a desktop, so they're skipped for headless installs.
+"$DEST/venv/bin/python" -m pip install psutil websockets
+PYBIN="$DEST/venv/bin/python"
 cat >/etc/systemd/system/leuffen-rmm.service <<UNIT
 [Unit]
 Description=Leuffen RMM Agent
@@ -1725,7 +1741,7 @@ After=network-online.target
 Environment=RMM_SERVER_URL={pub}
 Environment=RMM_API_KEY={key}
 Environment=RMM_INSECURE_TLS={insecure}
-ExecStart=/usr/bin/python3 /opt/leuffen-rmm/agent.py
+ExecStart=$PYBIN $DEST/agent.py
 Nice=10
 Restart=always
 [Install]
