@@ -99,6 +99,17 @@ def _install_ring_log() -> None:
 _install_ring_log()
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+
+def _serve_html(filename: str) -> HTMLResponse:
+    """Read an HTML file and append ?v=<SERVER_VERSION> to all local asset URLs
+    so browsers automatically pick up new files after a server upgrade."""
+    with open(os.path.join(STATIC_DIR, filename)) as f:
+        html = f.read()
+    v = SERVER_VERSION
+    for ext in (".js", ".css"):
+        html = html.replace(f'{ext}"', f'{ext}?v={v}"')
+    return HTMLResponse(html)
 AGENT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "agent")
 OFFLINE_AFTER = float(os.environ.get("RMM_OFFLINE_AFTER", "120"))
 METRIC_RETENTION = float(os.environ.get("RMM_METRIC_RETENTION", str(30 * 24 * 3600)))
@@ -228,8 +239,7 @@ def auth_login(request: Request):
     # (local form, plus a Microsoft button in hybrid mode).
     if auth.SSO_ENABLED and not auth.LOCAL_ENABLED:
         return _sso_redirect()
-    with open(os.path.join(STATIC_DIR, "login.html")) as f:
-        return HTMLResponse(f.read())
+    return _serve_html("login.html")
 
 
 @app.get("/auth/sso")
@@ -1939,8 +1949,7 @@ def index(request: Request):
             u = db.get_user(data.get("email", ""))
             if u and not u.get("totp_enabled"):
                 return RedirectResponse("/account.html#enroll-2fa")
-    with open(os.path.join(STATIC_DIR, "index.html")) as f:
-        return HTMLResponse(f.read())
+    return _serve_html("index.html")
 
 
 # --------------------------------------------------------------------------- #
@@ -1952,16 +1961,37 @@ def remote_page(device_id: str, request: Request):
         raw = request.cookies.get(auth.COOKIE)
         if not (raw and auth.read_cookie(raw)):
             return RedirectResponse(f"/auth/login?next=/remote/{device_id}")
-    with open(os.path.join(STATIC_DIR, "remote.html")) as f:
-        return HTMLResponse(f.read())
+    return _serve_html("remote.html")
 
 
 @app.get("/setup", response_class=HTMLResponse)
 def setup_page():
     if db.setup_complete():
         return RedirectResponse("/")
-    with open(os.path.join(STATIC_DIR, "setup.html")) as f:
-        return HTMLResponse(f.read())
+    return _serve_html("setup.html")
+
+
+@app.get("/settings.html", response_class=HTMLResponse)
+def settings_page(request: Request):
+    if not auth.DEV_AUTH:
+        raw = request.cookies.get(auth.COOKIE)
+        if not (raw and auth.read_cookie(raw)):
+            return RedirectResponse("/auth/login")
+    return _serve_html("settings.html")
+
+
+@app.get("/account.html", response_class=HTMLResponse)
+def account_page(request: Request):
+    if not auth.DEV_AUTH:
+        raw = request.cookies.get(auth.COOKIE)
+        if not (raw and auth.read_cookie(raw)):
+            return RedirectResponse("/auth/login")
+    return _serve_html("account.html")
+
+
+@app.get("/invite.html", response_class=HTMLResponse)
+def invite_page():
+    return _serve_html("invite.html")
 
 
 @app.get("/api/setup/status")
@@ -2367,7 +2397,7 @@ async def invite_page(token: str):
     inv = db.get_invite(token)
     if not inv or inv["used_at"] or inv["expires_at"] < __import__("time").time():
         return HTMLResponse("<h2>This invite link is invalid or has expired.</h2>", status_code=410)
-    return FileResponse(os.path.join(STATIC_DIR, "invite.html"))
+    return _serve_html("invite.html")
 
 
 @app.post("/invite/{token}")
