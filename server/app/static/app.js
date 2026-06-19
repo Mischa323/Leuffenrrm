@@ -1283,7 +1283,7 @@ function renderActions(d) {
     upd._dev = d;
     api(`/api/agent-release`).then((r) => {
       const el = $("upd-latest"); if (!el) return;
-      const latest = (r && (r.tag || r.name) || "").replace(/^.*?(\d+\.\d+(\.\d+)?).*$/, "$1");
+      const latest = (r && (r.agent_version || r.tag || r.name) || "").replace(/^.*?(\d+\.\d+(\.\d+)?).*$/, "$1");
       const installed = (d.agent_version || "").replace(/^v/, "");
       if (latest) el.innerHTML = ` · Latest: <b>v${escapeHtml(latest)}</b>`;
       const upToDate = installed && latest && cmpVer(installed, latest) >= 0;
