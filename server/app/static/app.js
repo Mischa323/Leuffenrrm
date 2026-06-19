@@ -677,7 +677,7 @@ async function renderDownloads() {
   $("update-all").onclick = async () => {
     if (!confirm("Push the latest agent to all online devices in this organisation?")) return;
     const b = $("update-all"); b.disabled = true; const old = b.innerHTML; b.innerHTML = "Sending…";
-    try { const r = await api(`/api/orgs/${state.org}/update-agents`, { method: "POST" }); toast(`Update sent to ${r.started} of ${r.online} online agent(s)`); }
+    try { const r = await api(`/api/orgs/${state.org}/update-agents`, { method: "POST" }); const skip = r.skipped ? ` (${r.skipped} already up to date)` : ""; toast(r.started ? `Update sent to ${r.started} agent(s)${skip}` : `All ${r.online} online agent(s) are already up to date`); }
     catch (e) { toast(e.message); } finally { b.disabled = false; b.innerHTML = old; }
   };
   $("gen-token").onclick = async () => {
