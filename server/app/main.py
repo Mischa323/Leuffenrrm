@@ -821,10 +821,13 @@ async def update_agent_device(device_id: str, user: dict = Depends(auth.current_
 
 @app.post("/api/orgs/{org_id}/update-agents")
 async def update_agents_org(org_id: str, user: dict = Depends(auth.current_user)):
-    """Push a self-update to every online agent in the organisation (best effort)."""
+    """Push a self-update to every online agent in the organisation that is not already
+    on the current server version (best effort)."""
     auth.require_org(user, org_id)
     msg = _update_message(org_id)
-    targets = [d["id"] for d in db.list_devices(org_id) if manager.is_online(d["id"])]
+    all_online = [d for d in db.list_devices(org_id) if manager.is_online(d["id"])]
+    targets = [d["id"] for d in all_online if (d.get("agent_version") or "") != SERVER_VERSION]
+    skipped = len(all_online) - len(targets)
     started = 0
     for did in targets:
         try:
@@ -832,7 +835,7 @@ async def update_agents_org(org_id: str, user: dict = Depends(auth.current_user)
             started += 1
         except Exception:
             pass
-    return {"started": started, "online": len(targets)}
+    return {"started": started, "online": len(all_online), "skipped": skipped}
 
 
 # --------------------------------------------------------------------------- #
