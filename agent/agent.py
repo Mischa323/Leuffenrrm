@@ -518,13 +518,28 @@ def _setup_file_logging() -> None:
 
 
 def _single_instance() -> bool:
-    """Ensure only one agent runs (a named mutex on Windows)."""
+    """Ensure only one agent runs at a time (Windows named mutex, global across sessions).
+
+    A non-admin user session cannot *create* a Global\\ mutex that SYSTEM already holds
+    (ERROR_ACCESS_DENIED = 5), so we fall back to *opening* it — if that succeeds, a
+    prior instance is running and we should exit.
+    """
     if os.name != "nt":
         return True
     try:
         import ctypes
-        ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\LeuffenRMMAgentSingleton")
-        return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+        k = ctypes.windll.kernel32
+        _NAME = "Global\\LeuffenRMMAgentSingleton"
+        handle = k.CreateMutexW(None, False, _NAME)
+        err = k.GetLastError()
+        if err == 183:          # ERROR_ALREADY_EXISTS
+            return False
+        if not handle and err == 5:  # ERROR_ACCESS_DENIED — another session holds it
+            h2 = k.OpenMutexW(0x100000, False, _NAME)  # SYNCHRONIZE
+            if h2:
+                k.CloseHandle(h2)
+                return False
+        return True
     except Exception:
         return True
 

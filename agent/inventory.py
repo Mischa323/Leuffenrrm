@@ -26,19 +26,44 @@ def installed_software() -> list[dict]:
 
 def _software_windows() -> list[dict]:
     import json as _json
-    ps = (
-        "$p=@('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',"
-        "'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',"
-        "'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*');"
-        "Get-ItemProperty $p -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.DisplayName -and -not $_.SystemComponent } | "
-        "Select-Object @{n='name';e={$_.DisplayName}}, @{n='version';e={$_.DisplayVersion}}, "
-        "@{n='publisher';e={$_.Publisher}} | Sort-Object name -Unique | ConvertTo-Json -Compress"
-    )
+    # Include HKLM (machine-wide), WOW6432Node (32-bit on 64-bit OS), and every
+    # loaded user hive under HKU (catches user-installed apps even when the agent
+    # runs as SYSTEM, where HKCU is the system account with no installs).
+    ps = r"""
+$uninstall = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+$paths = @(
+    "HKLM:\$uninstall\*",
+    "HKLM:\SOFTWARE\WOW6432Node\$uninstall\*"
+)
+# Add each loaded user hive (HKU\<SID>) that isn't a system/service account.
+Get-ChildItem HKU:\ -ErrorAction SilentlyContinue | ForEach-Object {
+    $sid = $_.PSChildName
+    if ($sid -notmatch '^S-1-5-18|^S-1-5-19|^S-1-5-20|_Classes$') {
+        $paths += "HKU:\$sid\$uninstall\*"
+        $paths += "HKU:\$sid\SOFTWARE\WOW6432Node\$uninstall\*"
+    }
+}
+# Mount HKU: drive if not already present.
+if (-not (Get-PSDrive HKU -ErrorAction SilentlyContinue)) {
+    New-PSDrive -PSProvider Registry -Name HKU -Root HKEY_USERS | Out-Null
+}
+Get-ItemProperty $paths -ErrorAction SilentlyContinue |
+    Where-Object { $_.DisplayName -and -not $_.SystemComponent } |
+    Select-Object @{n='name';e={$_.DisplayName}},
+                  @{n='version';e={$_.DisplayVersion}},
+                  @{n='publisher';e={$_.Publisher}} |
+    Sort-Object name -Unique |
+    ConvertTo-Json -Compress -AsArray
+"""
     try:
-        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                             capture_output=True, text=True, timeout=60)
-        data = _json.loads(out.stdout or "[]")
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, timeout=90,
+        )
+        raw = (out.stdout or "").strip()
+        if not raw:
+            return []
+        data = _json.loads(raw)
         if isinstance(data, dict):
             data = [data]
         return [{"name": d.get("name"), "version": d.get("version"), "publisher": d.get("publisher")}
