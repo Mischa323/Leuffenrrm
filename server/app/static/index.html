@@ -22,7 +22,10 @@
       <div class="searchbox" id="searchbox"><span id="search-ico"></span><input placeholder="Search devices, IPs, orgs…" /><kbd>⌘K</kbd></div>
       <button class="org-switch hidden" id="org-switch"><span class="dotmark" id="org-switch-dot" style="width:7px;height:7px;border-radius:99px"></span><span id="org-switch-name"></span><span id="org-switch-chev"></span></button>
       <button class="icon-btn" id="theme-btn" title="Toggle theme"><span id="theme-ico"></span></button>
-      <button class="icon-btn" id="bell-btn" title="Alerts"><span id="bell-ico"></span><span class="ping"></span></button>
+      <div style="position:relative">
+        <button class="icon-btn" id="bell-btn" title="Alerts"><span id="bell-ico"></span><span class="ping hidden" id="bell-ping"></span></button>
+        <div class="hmenu" id="bell-menu" style="width:300px;right:0;left:auto"></div>
+      </div>
       <button class="org-switch hidden" id="approvals-btn" title="Pending device approvals"><span id="approvals-ico" style="display:inline-flex;width:15px;height:15px"></span><span id="approvals-badge" style="font-weight:700"></span></button>
       <a class="icon-btn" id="settings-btn" href="settings.html" title="Admin settings"><span id="gear-ico"></span></a>
       <div style="position:relative">
@@ -319,7 +322,7 @@
     document.querySelectorAll(".ni").forEach((s) => s.innerHTML = ICON[s.dataset.i] || "");
     document.querySelectorAll(".hi").forEach((s) => s.innerHTML = ICON[s.dataset.i] || "");
     document.getElementById("gear-ico").innerHTML = ICON.gear;
-    document.getElementById("bell-btn").onclick = () => toast("No open alerts");
+    document.getElementById("bell-btn").onclick = (e) => { e.stopPropagation(); document.getElementById("bell-menu").classList.toggle("open"); };
     // user dropdown
     (function () {
       const menu = document.getElementById("usermenu");
@@ -327,7 +330,7 @@
       const chip = document.getElementById("userchip");
       chip.style.cursor = "pointer";
       chip.onclick = (e) => { e.stopPropagation(); menu.classList.toggle("open"); };
-      document.addEventListener("click", () => menu.classList.remove("open"));
+      document.addEventListener("click", () => { menu.classList.remove("open"); document.getElementById("bell-menu").classList.remove("open"); });
       const css = document.createElement("style");
       css.textContent = `.hmenu{position:absolute;right:0;top:calc(100% + 8px);min-width:210px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);box-shadow:var(--shadow-lg);padding:6px;opacity:0;transform:translateY(-6px);pointer-events:none;transition:.15s;z-index:50}.hmenu.open{opacity:1;transform:none;pointer-events:auto}.hmenu a{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--r-sm);color:var(--text);text-decoration:none;font-size:13px}.hmenu a:hover{background:var(--surface-hover)}.hmenu a svg{width:16px;height:16px;color:var(--text-dim)}.hmenu-sep{height:1px;background:var(--border);margin:5px 4px}`;
       document.head.appendChild(css);
