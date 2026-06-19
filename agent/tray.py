@@ -22,7 +22,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 import webbrowser
 
 import pystray
@@ -137,6 +139,30 @@ def _is_configured() -> bool:
 
 def _self_exe() -> str:
     return sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+
+
+def _test_connection(url: str, insecure: bool) -> str | None:
+    """Return None on success, or an error string on failure."""
+    import ssl
+    try:
+        ctx = ssl.create_default_context()
+        if insecure:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.urlopen(url.rstrip("/") + "/health", context=ctx, timeout=8)
+        req.read()
+        return None
+    except urllib.error.URLError as e:
+        reason = str(e.reason)
+        if "timed out" in reason.lower():
+            return "Connection timed out. Check the URL and firewall."
+        if "refused" in reason.lower():
+            return "Connection refused. Is the server running?"
+        if "certificate" in reason.lower() or "ssl" in reason.lower():
+            return "TLS error. Enable 'Accept self-signed certificate' if using a self-signed cert."
+        return f"Cannot reach server: {reason}"
+    except Exception as e:
+        return f"Cannot reach server: {e}"
 
 
 def _elevate(args: str) -> None:
@@ -283,15 +309,9 @@ def settings_dialog() -> None:
     btns = ttk.Frame(outer)
     btns.grid(row=10, column=0, columnspan=3, sticky="e")
 
-    def save():
-        u, k = url_e.get().strip(), key_e.get().strip()
-        if not u:
-            err_var.set("Server URL is required.")
-            return
-        if not k:
-            err_var.set("Enrollment key is required.")
-            return
-        err_var.set("")
+    save_btn: list = []  # mutable container so inner functions can rebind
+
+    def _do_save(u, k):
         if _is_admin():
             _apply_settings(u, k, bool(insecure.get()))
             _msgbox(root, "Settings saved. The agent is reconnecting.")
@@ -306,10 +326,40 @@ def settings_dialog() -> None:
         _msgbox(root, "Approve the administrator prompt to finish saving.")
         root.destroy()
 
+    def save():
+        u, k = url_e.get().strip(), key_e.get().strip()
+        if not u:
+            err_var.set("Server URL is required.")
+            return
+        if not k:
+            err_var.set("Enrollment key is required.")
+            return
+        if not u.startswith(("http://", "https://")):
+            u = "https://" + u
+            url_e.delete(0, "end")
+            url_e.insert(0, u)
+        err_var.set("")
+        if save_btn:
+            save_btn[0].configure(text="Testing connection…", state="disabled")
+
+        def _run():
+            err = _test_connection(u, bool(insecure.get()))
+            def _update():
+                if save_btn:
+                    save_btn[0].configure(text="Save settings", state="normal")
+                if err:
+                    err_var.set(err)
+                else:
+                    _do_save(u, k)
+            root.after(0, _update)
+
+        threading.Thread(target=_run, daemon=True).start()
+
     ttk.Button(btns, text="Cancel", style="Ghost.TButton",
                command=root.destroy).pack(side="right", padx=(6, 0))
-    ttk.Button(btns, text="Save settings", style="Accent.TButton",
-               command=save).pack(side="right")
+    btn = ttk.Button(btns, text="Save settings", style="Accent.TButton", command=save)
+    btn.pack(side="right")
+    save_btn.append(btn)
 
     outer.columnconfigure(1, weight=1)
     root.mainloop()
