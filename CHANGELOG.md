@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.5.1] - 2026-06-19
+
+### Added
+- **Shareable MSI download links** — Admins can generate time-limited download links (1/3/7/14/30 days) for the Windows MSI installer that work without a login session. Links track their download count and can be revoked. Settings → Downloads.
+
+### Fixed
+- **Server startup crash** — The shareable-links feature referenced `BaseModel` without importing it, crashing the server on boot with `NameError`. Added the missing `pydantic` import.
+- **Agent update button showed the wrong "Latest" version** — It displayed the server release tag (e.g. v1.5.0) instead of the agent version. The release endpoint now returns the canonical agent version, which the UI prefers.
+- **Remote control stuck on "Connecting…"** — The Windows MSI build did not bundle `mss`/`pynput`, so the agent could never start screen capture; the failure was reported on the wrong channel so the viewer hung. The build now bundles the deps and the agent surfaces screen errors to the viewer.
+- **Installed software not showing** — The agent collected installed software synchronously inside the event loop; the Windows registry scan could exceed the server's 60s request timeout. The scan now runs off-loop and the server timeout was raised to 100s.
+
+### Changed
+- Agent bumped to **v1.1.8**.
+
+---
+
 ## [1.5.0] - 2026-06-19
 
 ### Added
