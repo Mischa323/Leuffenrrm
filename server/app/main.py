@@ -65,6 +65,7 @@ def _resolve_version() -> str:
 
 
 SERVER_VERSION = _resolve_version()
+AGENT_VERSION = "1.1.8"  # keep in sync with agent/inventory.py
 
 
 class _RingLogHandler(logging.Handler):
@@ -1875,7 +1876,7 @@ async def agent_release(user: dict = Depends(auth.current_user)):
     """Latest published Windows agent build (name/version, size, date) for the UI."""
     if not (_release_cache["data"] and time.time() - _release_cache["t"] < 60):
         import httpx
-        out = {"available": False}
+        out = {"available": False, "agent_version": AGENT_VERSION}
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 r = await client.get(f"https://api.github.com/repos/{GH_REPO}/releases/latest",
@@ -1883,7 +1884,8 @@ async def agent_release(user: dict = Depends(auth.current_user)):
             if r.status_code == 200:
                 d = r.json()
                 asset = next((a for a in d.get("assets", []) if a["name"].endswith(".msi")), None)
-                out = {"available": bool(asset), "name": d.get("name") or d.get("tag_name"),
+                out = {"available": bool(asset), "agent_version": AGENT_VERSION,
+                       "name": d.get("name") or d.get("tag_name"),
                        "tag": d.get("tag_name"), "published_at": d.get("published_at"),
                        "size": asset["size"] if asset else None}
         except Exception:
