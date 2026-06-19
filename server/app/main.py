@@ -19,6 +19,7 @@ from fastapi import (Depends, FastAPI, File, HTTPException, Query, Request, Uplo
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from . import alerts, auth, database as db, graph, mailer, totp
 from . import wol as wol_local
