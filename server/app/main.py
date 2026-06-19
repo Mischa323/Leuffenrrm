@@ -65,6 +65,7 @@ def _resolve_version() -> str:
 
 
 SERVER_VERSION = _resolve_version()
+AGENT_VERSION = "1.1.8"  # keep in sync with agent/inventory.py
 
 
 class _RingLogHandler(logging.Handler):
@@ -609,6 +610,38 @@ def delete_token(token_id: str, user: dict = Depends(auth.current_user)):
         raise HTTPException(status_code=404, detail="Token not found")
     auth.require_org(user, t["org_id"])
     db.delete_enroll_token(token_id)
+    return {"status": "deleted"}
+
+
+# --------------------------------------------------------------------------- #
+# Shareable download-link tokens
+# --------------------------------------------------------------------------- #
+@app.get("/api/orgs/{org_id}/download-links")
+def list_download_links(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return {"links": db.list_download_tokens(org_id)}
+
+
+class DownloadLinkRequest(BaseModel):
+    label: str | None = None
+    ttl_days: float = 7
+
+
+@app.post("/api/orgs/{org_id}/download-links")
+def create_download_link(org_id: str, body: DownloadLinkRequest,
+                         user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    ttl = max(0.5, min(body.ttl_days, 90))
+    result = db.create_download_token(org_id, label=body.label, ttl_days=ttl)
+    pub = public_url()
+    result["msi_url"] = f"{pub}/api/orgs/{org_id}/install.msi?token={result['token']}"
+    return result
+
+
+@app.delete("/api/orgs/{org_id}/download-links/{link_id}")
+def delete_download_link(org_id: str, link_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    db.delete_enroll_token(link_id)
     return {"status": "deleted"}
 
 
@@ -1856,7 +1889,7 @@ async def agent_release(user: dict = Depends(auth.current_user)):
     """Latest published Windows agent build (name/version, size, date) for the UI."""
     if not (_release_cache["data"] and time.time() - _release_cache["t"] < 60):
         import httpx
-        out = {"available": False}
+        out = {"available": False, "agent_version": AGENT_VERSION}
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 r = await client.get(f"https://api.github.com/repos/{GH_REPO}/releases/latest",
@@ -1864,7 +1897,8 @@ async def agent_release(user: dict = Depends(auth.current_user)):
             if r.status_code == 200:
                 d = r.json()
                 asset = next((a for a in d.get("assets", []) if a["name"].endswith(".msi")), None)
-                out = {"available": bool(asset), "name": d.get("name") or d.get("tag_name"),
+                out = {"available": bool(asset), "agent_version": AGENT_VERSION,
+                       "name": d.get("name") or d.get("tag_name"),
                        "tag": d.get("tag_name"), "published_at": d.get("published_at"),
                        "size": asset["size"] if asset else None}
         except Exception:
@@ -1878,14 +1912,14 @@ async def install_msi(org_id: str, token: str | None = Query(None),
                       user: dict | None = Depends(auth.optional_user)):
     """Stream the latest Windows MSI from the release, fresh each time.
 
-    Fetching server-side (rather than redirecting the browser to a fixed URL)
-    avoids stale browser/CDN copies, so you always get the newest build.
-    Configure it at install via msiexec properties — see the Downloads tab.
-
-    A valid one-time ``token`` query authorises the download (used by the agent
-    self-update, which has no browser session); otherwise an org admin session.
+    Accepts: a one-time enrolment/internal token, a multi-use download-link
+    token, or an authenticated admin session.
     """
-    if not (token and db.token_valid_for(org_id, token)):
+    authed = False
+    if token:
+        authed = (db.token_valid_for(org_id, token)       # one-time / internal
+                  or db.download_token_valid(org_id, token))  # shareable download link
+    if not authed:
         if user is None:
             raise HTTPException(status_code=401,
                                 detail="A valid token (?token=) or an admin session is required")
