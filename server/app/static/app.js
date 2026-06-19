@@ -1041,10 +1041,35 @@ async function openDrawer(id) {
 }
 function selectDrawerTab(tab) {
   document.querySelectorAll(".dtabs button").forEach((b) => b.classList.toggle("active", b.dataset.dtab === tab));
-  ["overview", "files", "terminal", "actions"].forEach((t) => $("dtab-" + t).classList.toggle("hidden", t !== tab));
+  ["overview", "software", "files", "terminal", "actions"].forEach((t) => $("dtab-" + t).classList.toggle("hidden", t !== tab));
   if (tab === "overview") renderOverview(state.deviceObj);
+  if (tab === "software") loadSoftware(state.device);
   if (tab === "files") openFiles(); else closeFiles();
   if (tab === "terminal") openTerminal(); else closeTerminal();
+}
+async function loadSoftware(id) {
+  const host = $("dtab-software");
+  host.innerHTML = `<div class="muted" style="padding:14px">Loading installed software…</div>`;
+  let r;
+  try { r = await api(`/api/devices/${id}/software`); }
+  catch (e) { host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Couldn't load software</div><div class="cd">${escapeHtml(e.message)}</div></div></div>`; return; }
+  state.software = r.software || [];
+  const when = r.collected_at ? `collected ${relTime(r.collected_at)}` : "never collected";
+  host.innerHTML = `<div class="file-bar">
+      <input id="sw-filter" class="inp" placeholder="Filter ${state.software.length} programs…" style="flex:1" />
+      <button class="btn ghost sm" id="sw-refresh">${ICON.refresh}</button></div>
+    <div class="h-sub" style="margin:-4px 0 10px">${state.software.length} programs · ${escapeHtml(when)}${r.online ? "" : " · device offline (cached)"}</div>
+    <div id="sw-list"></div>`;
+  $("sw-refresh").onclick = () => loadSoftware(id);
+  $("sw-filter").oninput = () => renderSoftwareList($("sw-filter").value);
+  renderSoftwareList("");
+}
+function renderSoftwareList(q) {
+  const host = $("sw-list"); if (!host) return;
+  q = (q || "").toLowerCase();
+  const rows = (state.software || []).filter((s) => !q || (s.name || "").toLowerCase().includes(q) || (s.publisher || "").toLowerCase().includes(q));
+  if (!rows.length) { host.innerHTML = `<div class="muted" style="padding:14px">${state.software && state.software.length ? "No matches." : "No software reported."}</div>`; return; }
+  host.innerHTML = `<table class="grid"><thead><tr><th>Name</th><th>Version</th><th>Publisher</th></tr></thead><tbody>${rows.map((s) => `<tr><td>${escapeHtml(s.name || "")}</td><td class="mono muted">${escapeHtml(s.version || "—")}</td><td class="muted">${escapeHtml(s.publisher || "—")}</td></tr>`).join("")}</tbody></table>`;
 }
 function renderOverview(d) {
   const m = d.latest || {};

@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS devices (
     model         TEXT,
     serial        TEXT,
     gpu           TEXT,
+    software_json TEXT,
+    software_at   REAL,
     cpu           TEXT,
     ram_total     INTEGER,
     ip            TEXT,
@@ -812,6 +814,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN disks_json TEXT")
     if "gpu" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN gpu TEXT")
+    if "software_json" not in dcols:
+        conn.execute("ALTER TABLE devices ADD COLUMN software_json TEXT")
+        conn.execute("ALTER TABLE devices ADD COLUMN software_at REAL")
     # Remove any duplicate (node, subnet) rows from before dedup, keeping one.
     conn.execute("DELETE FROM subnets WHERE id NOT IN "
                  "(SELECT MIN(id) FROM subnets GROUP BY node_id, cidr)")
@@ -1199,6 +1204,24 @@ def set_logged_in_user(device_id: str, user: str | None) -> None:
             "UPDATE devices SET logged_in_user=? "
             "WHERE id=? AND IFNULL(logged_in_user,'') != IFNULL(?,'')",
             (user, device_id, user))
+
+
+def set_device_software(device_id: str, software: list) -> None:
+    with write() as conn:
+        conn.execute("UPDATE devices SET software_json=?, software_at=? WHERE id=?",
+                     (json.dumps(software), _now(), device_id))
+
+
+def get_device_software(device_id: str) -> dict:
+    """Cached installed-software list + when it was last collected."""
+    row = get_conn().execute(
+        "SELECT software_json, software_at FROM devices WHERE id=?", (device_id,)).fetchone()
+    if not row or not row["software_json"]:
+        return {"software": [], "collected_at": None}
+    try:
+        return {"software": json.loads(row["software_json"]), "collected_at": row["software_at"]}
+    except (ValueError, TypeError):
+        return {"software": [], "collected_at": None}
 
 
 def set_device_disks(device_id: str, disks: list | None) -> None:

@@ -340,6 +340,8 @@ class Agent:
             await self._ack(rid, handlers.file_delete(msg.get("path", "")))
         elif t == "file_mkdir":
             await self._ack(rid, handlers.file_mkdir(msg.get("path", "")))
+        elif t == "software_list":
+            await self._ack(rid, {"ok": True, "software": inventory.installed_software()})
         elif t == "wol":
             try:
                 netscan.send_magic_packet(msg["mac"], msg.get("broadcast") or "255.255.255.255",
