@@ -103,3 +103,21 @@ class MonitorRuleRequest(BaseModel):
 class InviteRequest(BaseModel):
     email: str
     is_admin: bool = False
+
+
+class AccessGroupRequest(BaseModel):
+    name: str
+
+
+class AccessGroupMemberRequest(BaseModel):
+    user_email: str
+
+
+class AccessGroupOrgRequest(BaseModel):
+    org_id: str
+    role: str = "member"
+
+
+class AccessGroupPermRequest(BaseModel):
+    permission: str
+    effect: str  # 'allow' | 'deny'

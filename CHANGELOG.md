@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0] - 2026-06-19
+
+### Added
+- **SSO access control** — Microsoft 365 users can no longer sign in unless an admin has provisioned them a local account (via invite). Unauthorised SSO logins now show a clear "Access denied — contact your administrator" page instead of silently creating a session.
+- **Access groups** — Admins create named groups, assign users to them, and assign each group to organisations with a base role (admin / member / viewer). Settings → Users & roles → Access groups.
+- **Per-action permission overrides** — On top of a group's base role, each action (remote terminal, run scripts, power, Wake-on-LAN, delete device, remove agent) can be explicitly set to Allow or Deny per org.
+- **Deny overrides allow** — When a user belongs to multiple groups, any Deny for an action wins over all other groups' Allow. The permission toggle cycles: inherit → Deny → Allow (deny is offered first). The UI shows conflicts — "Denied by Group A · Group B would allow".
+
+### Changed
+- Users & roles info callout updated to explain SSO now requires a pre-provisioned account.
+
+---
+
 ## [1.3.0] - 2026-06-19
 
 ### Added

@@ -124,7 +124,14 @@ function render() {
         <div class="cb-head"><h3>Pending invitations</h3><p>Links expire after 2 days if not accepted.</p></div>
         <div id="invites-list"><div class="muted" style="padding:12px 0">Loading…</div></div>
       </div>
-      <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">${authMethod === "local" ? "Local accounts" : "Single sign-on"}</div><div class="cd">${authMethod === "local" ? "Username/password accounts created during setup. Passwords are PBKDF2-hashed." : "With Microsoft 365 SSO, users appear automatically on first sign-in; global admins are listed above."}</div></div></div>
+      <div class="card-block">
+        <div class="cb-head" style="display:flex;align-items:center;justify-content:space-between">
+          <div><h3>Access groups</h3><p>Bundle users together and assign them roles and permissions in organisations. Deny overrides allow across groups.</p></div>
+          <button class="btn" id="ag-create-btn">${ICON.plus} New group</button>
+        </div>
+        <div id="ag-list"><div class="muted" style="padding:12px 0">Loading…</div></div>
+      </div>
+      <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">${authMethod === "local" ? "Local accounts" : "Single sign-on"}</div><div class="cd">${authMethod === "local" ? "Username/password accounts created during setup. Passwords are PBKDF2-hashed." : "SSO users must have a local account (via invite) before they can sign in — any M365 user without one is blocked."}</div></div></div>
     </section>
 
     <section class="sec" data-sec="auth">
@@ -269,6 +276,145 @@ async function loadInvites() {
       toast("Invite revoked"); loadInvites();
     });
   } catch (e) { list.innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+
+// --------------------------------------------------------------------------- //
+// Access groups
+// --------------------------------------------------------------------------- //
+const PERM_LABELS = {
+  terminal: "Remote terminal",
+  scripts: "Run scripts",
+  power: "Power actions",
+  wol: "Wake-on-LAN",
+  device_delete: "Delete device",
+  agent_delete: "Remove agent",
+};
+const ALL_PERMS = Object.keys(PERM_LABELS);
+
+let GROUPS = [];
+
+function effectBadge(p) {
+  if (p.effect === "deny") {
+    const parts = [`<span class="perm-badge deny">✗ Denied`];
+    if (p.denied_by && p.denied_by.length) parts.push(` by ${esc(p.denied_by.join(", "))}`);
+    parts.push("</span>");
+    if (p.allowed_by && p.allowed_by.length)
+      parts.push(` <span class="perm-note">(${esc(p.allowed_by.join(", "))} would allow)</span>`);
+    return parts.join("");
+  }
+  const parts = [`<span class="perm-badge allow">✓ Allowed`];
+  if (p.allowed_by && p.allowed_by.length) parts.push(` by ${esc(p.allowed_by.join(", "))}`);
+  parts.push("</span>");
+  return parts.join("");
+}
+
+async function loadGroups() {
+  const host = $("ag-list"); if (!host) return;
+  try {
+    const { groups } = await api("/api/access-groups");
+    GROUPS = groups;
+    if (!groups.length) {
+      host.innerHTML = `<div class="muted" style="padding:12px 0">No groups yet. Create one to bundle users and assign permissions per organisation.</div>`;
+      return;
+    }
+    host.innerHTML = groups.map((g) => `
+      <div class="ag-card" data-gid="${esc(g.id)}">
+        <div class="ag-header">
+          <div class="ag-name">${esc(g.name)}</div>
+          <div class="u-actions">
+            <button class="btn ghost sm ag-rename" data-gid="${esc(g.id)}" data-name="${esc(g.name)}">${ICON.edit || ICON.sliders} Rename</button>
+            <button class="btn ghost sm ag-del" data-gid="${esc(g.id)}" data-name="${esc(g.name)}">${ICON.trash}</button>
+          </div>
+        </div>
+        <div class="ag-body">
+          <div class="ag-col">
+            <div class="ag-col-title">Members</div>
+            <div class="ag-members" data-gid="${esc(g.id)}">
+              ${g.members.length ? g.members.map((e) => `<div class="ag-member-row">
+                <span class="mono" style="font-size:12px">${esc(e)}</span>
+                <button class="btn ghost sm ag-rm-member" data-gid="${esc(g.id)}" data-email="${esc(e)}" title="Remove">${ICON.trash}</button>
+              </div>`).join("") : `<span class="muted" style="font-size:12px">No members</span>`}
+            </div>
+            <button class="btn ghost sm ag-add-member" data-gid="${esc(g.id)}" style="margin-top:8px">${ICON.plus} Add user</button>
+          </div>
+          <div class="ag-col">
+            <div class="ag-col-title">Organisation access</div>
+            ${g.orgs.length ? g.orgs.map((o) => `
+              <div class="ag-org-row" data-gid="${esc(g.id)}" data-oid="${esc(o.org_id)}">
+                <div class="ag-org-top">
+                  <span class="ag-org-name">${esc(o.org_name)}</span>
+                  <span class="role-pill ${o.role}">${o.role}</span>
+                  <button class="btn ghost sm ag-rm-org" data-gid="${esc(g.id)}" data-oid="${esc(o.org_id)}" title="Remove org">${ICON.trash}</button>
+                </div>
+                <div class="ag-perms">
+                  ${ALL_PERMS.map((p) => {
+                    const ov = o.perms && o.perms[p];
+                    const overrideClass = ov === "deny" ? " perm-deny-ov" : ov === "allow" ? " perm-allow-ov" : "";
+                    return `<button class="btn ghost sm perm-toggle${overrideClass}" data-gid="${esc(g.id)}" data-oid="${esc(o.org_id)}" data-perm="${p}" title="${PERM_LABELS[p]}">
+                      ${ov === "deny" ? "✗" : ov === "allow" ? "✓" : "·"} ${esc(PERM_LABELS[p])}
+                    </button>`;
+                  }).join("")}
+                </div>
+              </div>`).join("") : `<span class="muted" style="font-size:12px">No organisations assigned</span>`}
+            <button class="btn ghost sm ag-add-org" data-gid="${esc(g.id)}" style="margin-top:8px">${ICON.plus} Add organisation</button>
+          </div>
+        </div>
+      </div>`).join("");
+
+    // wire events
+    host.querySelectorAll(".ag-del").forEach((b) => b.onclick = async () => {
+      if (!confirm(`Delete group "${b.dataset.name}"? This removes all its org access.`)) return;
+      try { await api(`/api/access-groups/${b.dataset.gid}`, { method: "DELETE" }); toast("Group deleted"); loadGroups(); }
+      catch (e) { toast(e.message); }
+    });
+    host.querySelectorAll(".ag-rename").forEach((b) => b.onclick = async () => {
+      const name = (prompt("New group name:", b.dataset.name) || "").trim();
+      if (!name || name === b.dataset.name) return;
+      try { await api(`/api/access-groups/${b.dataset.gid}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }); toast("Renamed"); loadGroups(); }
+      catch (e) { toast(e.message); }
+    });
+    host.querySelectorAll(".ag-add-member").forEach((b) => b.onclick = async () => {
+      const email = (prompt("User email to add:") || "").trim().toLowerCase();
+      if (!email) return;
+      try { await api(`/api/access-groups/${b.dataset.gid}/members`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_email: email }) }); toast("Member added"); loadGroups(); }
+      catch (e) { toast(e.message); }
+    });
+    host.querySelectorAll(".ag-rm-member").forEach((b) => b.onclick = async () => {
+      try { await api(`/api/access-groups/${b.dataset.gid}/members/${encodeURIComponent(b.dataset.email)}`, { method: "DELETE" }); toast("Member removed"); loadGroups(); }
+      catch (e) { toast(e.message); }
+    });
+    host.querySelectorAll(".ag-add-org").forEach((b) => b.onclick = async () => {
+      if (!ORGS.length) { toast("No organisations yet"); return; }
+      const choices = ORGS.map((o, i) => `${i + 1}. ${o.name}`).join("\n");
+      const pick = prompt(`Pick organisation:\n${choices}\n\nEnter number:`);
+      if (!pick) return;
+      const org = ORGS[parseInt(pick, 10) - 1];
+      if (!org) { toast("Invalid choice"); return; }
+      const rolePick = prompt("Role (admin / member / viewer):", "member");
+      if (!rolePick) return;
+      try { await api(`/api/access-groups/${b.dataset.gid}/orgs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ org_id: org.id, role: rolePick.trim() }) }); toast("Org access added"); loadGroups(); }
+      catch (e) { toast(e.message); }
+    });
+    host.querySelectorAll(".ag-rm-org").forEach((b) => b.onclick = async () => {
+      if (!confirm("Remove this organisation from the group?")) return;
+      try { await api(`/api/access-groups/${b.dataset.gid}/orgs/${b.dataset.oid}`, { method: "DELETE" }); toast("Org access removed"); loadGroups(); }
+      catch (e) { toast(e.message); }
+    });
+    host.querySelectorAll(".perm-toggle").forEach((b) => b.onclick = async () => {
+      const { gid, oid, perm } = b.dataset;
+      // Cycle: inherit → deny → allow → deny (deny first, then allow)
+      const cur = b.classList.contains("perm-deny-ov") ? "deny" : b.classList.contains("perm-allow-ov") ? "allow" : "inherit";
+      let next = cur === "inherit" ? "deny" : cur === "deny" ? "allow" : "inherit";
+      try {
+        if (next === "inherit") {
+          await api(`/api/access-groups/${gid}/orgs/${oid}/perms/${perm}`, { method: "DELETE" });
+        } else {
+          await api(`/api/access-groups/${gid}/orgs/${oid}/perms`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ permission: perm, effect: next }) });
+        }
+        loadGroups();
+      } catch (e) { toast(e.message); }
+    });
+  } catch (e) { host.innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
 }
 
 const AUTH_METHODS = [
@@ -524,6 +670,14 @@ function wire() {
     } catch (e) { toast(e.message); }
   };
   loadInvites();
+  loadGroups();
+  const agCreate = $("ag-create-btn");
+  if (agCreate) agCreate.onclick = async () => {
+    const name = (prompt("Group name:") || "").trim();
+    if (!name) return;
+    try { await api("/api/access-groups", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) }); toast("Group created"); loadGroups(); }
+    catch (e) { toast(e.message); }
+  };
   const lr = $("log-refresh"); if (lr) lr.onclick = loadLogs;
   const ll = $("log-level"); if (ll) ll.onchange = loadLogs;
   loadServerUpdate();
