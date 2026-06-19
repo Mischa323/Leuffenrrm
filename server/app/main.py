@@ -1928,7 +1928,11 @@ async def agent_release(user: dict = Depends(auth.current_user)):
         except Exception:
             pass
         _release_cache.update(t=time.time(), data=out)
-    return JSONResponse(_release_cache["data"], headers={"Cache-Control": "no-store"})
+       # Always report the current agent version (re-resolved each request) so the
+    # UI's "Latest" never goes stale between releases, even without a restart.
+    data = dict(_release_cache["data"] or {})
+    data["agent_version"] = _resolve_agent_version()
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/orgs/{org_id}/install.msi")
