@@ -341,7 +341,11 @@ class Agent:
         elif t == "file_mkdir":
             await self._ack(rid, handlers.file_mkdir(msg.get("path", "")))
         elif t == "software_list":
-            await self._ack(rid, {"ok": True, "software": inventory.installed_software()})
+            # Off-loop: the Windows registry scan can take tens of seconds and
+            # would otherwise block the agent's event loop (and its heartbeat).
+            loop = asyncio.get_event_loop()
+            software = await loop.run_in_executor(None, inventory.installed_software)
+            await self._ack(rid, {"ok": True, "software": software})
         elif t == "wol":
             try:
                 netscan.send_magic_packet(msg["mac"], msg.get("broadcast") or "255.255.255.255",
