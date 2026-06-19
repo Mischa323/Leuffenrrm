@@ -28,7 +28,10 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          $v = (Get-Content VERSION -Raw).Trim().TrimStart('v')   # e.g. 1.1.0
+          # The agent versions itself, independently of the server. Source of
+          # truth is AGENT_VERSION in agent/inventory.py.
+          $v = ((Get-Content agent/inventory.py -Raw) -match 'AGENT_VERSION\s*=\s*"([^"]+)"') `
+               ? $Matches[1] : '0.0.0'
           $mm = ($v -split '\.')[0..1] -join '.'                   # e.g. 1.1
           "ver=$v"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "msi=$mm.${{ github.run_number }}.0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append

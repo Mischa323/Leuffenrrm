@@ -66,7 +66,27 @@ def _resolve_version() -> str:
 
 
 SERVER_VERSION = _resolve_version()
-AGENT_VERSION = "1.1.9"  # keep in sync with agent/inventory.py
+
+
+def _resolve_agent_version() -> str:
+    """The agent's version, read from the agent source so the server never holds
+    a duplicated constant (the cause of past drift). The agent payload is baked
+    into the image at /agent; fall back to the repo tree for source runs."""
+    import re
+    here = os.path.dirname(__file__)
+    for path in ("/agent/inventory.py",
+                 os.path.join(here, "..", "..", "agent", "inventory.py")):
+        try:
+            with open(path) as f:
+                m = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', f.read())
+            if m:
+                return m.group(1)
+        except OSError:
+            pass
+    return "1.1.9"
+
+
+AGENT_VERSION = _resolve_agent_version()
 
 
 class _RingLogHandler(logging.Handler):
