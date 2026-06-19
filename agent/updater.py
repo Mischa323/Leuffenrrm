@@ -70,17 +70,22 @@ def _update_windows(msi_url: str | None, insecure: bool, cfg: dict) -> dict:
         ins = "1" if cfg.get("insecure_tls") else "0"
         props = (f' RMM_SERVER_URL="{server_url}" RMM_API_KEY="{api_key}"'
                  f' RMM_INSECURE_TLS={ins}')
-    # A detached helper waits for this PID to release the binaries, upgrades, then
-    # relaunches the freshly-installed agent.
-    relaunch = sys.executable if getattr(sys, "frozen", False) else ""
     bat = os.path.join(tmp, "apply_update.bat")
     log_path = os.path.join(tmp, "update.log")
     with open(bat, "w") as f:
+        # Wait for the running agent to exit (releases file locks), run the MSI
+        # upgrade, then start the agent via the scheduled task (SYSTEM, same as
+        # normal operation). Do NOT use "start <exe>" — that runs in the wrong
+        # session and leaves the scheduled task out of sync.
         f.write(
             "@echo off\r\n"
-            "timeout /t 3 /nobreak >nul\r\n"
+            "timeout /t 4 /nobreak >nul\r\n"
             f'msiexec /i "{msi}" /qn /norestart{props} /l*v "{log_path}"\r\n'
-            + (f'start "" "{relaunch}"\r\n' if relaunch else "")
+            "if %errorlevel% neq 0 (\r\n"
+            f'  echo MSI failed with code %errorlevel% >> "{log_path}"\r\n'
+            "  exit /b %errorlevel%\r\n"
+            ")\r\n"
+            "schtasks /run /tn LeuffenRMMAgent\r\n"
         )
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     subprocess.Popen(["cmd", "/c", bat], close_fds=True, creationflags=flags)
