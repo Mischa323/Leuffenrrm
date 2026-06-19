@@ -180,6 +180,13 @@ function render() {
          </div>`, "alerts-delivery")}
       ${block("Recipients", "Who gets alert emails.",
         `<div class="frow"><label>Alert recipients</label><input class="inp mono" id="a-recipients" value="${esc(cfg.RMM_ALERT_RECIPIENTS || "")}" placeholder="ops@leuffen.it, admin@leuffen.it" /><div class="hint">Comma-separated. Per-organisation recipients can be set in each organisation's settings.</div></div>`, "alerts-recipients")}
+      <div class="card-block">
+        <div class="cb-head"><h3>Test delivery</h3><p>Send a test email to verify your current mail configuration is working.</p></div>
+        <div class="cb-body">
+          <div class="frow"><label>Send to</label><input class="inp mono" id="a-test-email" placeholder="you@example.com" /></div>
+        </div>
+        <div class="cb-foot"><span class="saved">${ICON.info} Uses your active SMTP or Graph config</span><button class="btn" id="a-test-send">${ICON.mail || ICON.bell} Send test email</button></div>
+      </div>
       <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Alert thresholds live in Monitors</div><div class="cd">Add CPU, memory, disk and offline alerts from the <b>Monitors</b> tab's template gallery — as site-only or global rules — instead of a fixed global policy.</div></div></div>
     </section>
 
@@ -668,6 +675,15 @@ function wire() {
       if (r.invite_url) prompt("Invite link (also emailed):", r.invite_url);
       loadInvites();
     } catch (e) { toast(e.message); }
+  };
+  const testSend = $("a-test-send");
+  if (testSend) testSend.onclick = async () => {
+    const email = ($("a-test-email").value || "").trim();
+    if (!email) { toast("Enter a recipient email address"); return; }
+    const orig = testSend.innerHTML; testSend.disabled = true; testSend.textContent = "Sending…";
+    try { await api("/api/mail/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }); toast(`Test email sent to ${email}`); }
+    catch (e) { toast(e.message); }
+    finally { testSend.disabled = false; testSend.innerHTML = orig; }
   };
   loadInvites();
   loadGroups();

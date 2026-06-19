@@ -2332,6 +2332,23 @@ def revoke_invite(token: str, user: dict = Depends(auth.current_user)):
     return {"ok": True}
 
 
+@app.post("/api/mail/test")
+async def test_mail(request: Request, user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    data = await request.json()
+    recipient = (data.get("email") or "").strip()
+    if not recipient:
+        raise HTTPException(status_code=400, detail="Email address required")
+    ok = mailer.send_mail(
+        "Leuffen RMM — test email",
+        "<p>This is a test email from <b>Leuffen RMM</b>. If you received this, your email delivery is working correctly.</p>",
+        [recipient],
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Mail delivery failed — check your SMTP / Graph configuration")
+    return {"ok": True}
+
+
 @app.get("/invite/{token}")
 async def invite_page(token: str):
     inv = db.get_invite(token)
