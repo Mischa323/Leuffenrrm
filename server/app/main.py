@@ -1946,6 +1946,16 @@ def index(request: Request):
 # --------------------------------------------------------------------------- #
 # First-run setup wizard
 # --------------------------------------------------------------------------- #
+@app.get("/remote/{device_id}", response_class=HTMLResponse)
+def remote_page(device_id: str, request: Request):
+    if not auth.DEV_AUTH:
+        raw = request.cookies.get(auth.COOKIE)
+        if not (raw and auth.read_cookie(raw)):
+            return RedirectResponse(f"/auth/login?next=/remote/{device_id}")
+    with open(os.path.join(STATIC_DIR, "remote.html")) as f:
+        return HTMLResponse(f.read())
+
+
 @app.get("/setup", response_class=HTMLResponse)
 def setup_page():
     if db.setup_complete():

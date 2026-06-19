@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import platform
+import subprocess
 
 
 class ScreenSession:
@@ -74,5 +76,37 @@ class ScreenSession:
                     from pynput.keyboard import Controller
                     self._keyboard = Controller()
                 self._keyboard.type(ev.get("text", ""))
+            elif kind == "hotkey":
+                keys_raw = ev.get("keys", [])
+                # Ctrl+Alt+Del cannot be injected by user-mode code on Windows;
+                # use sas.dll (Secure Attention Sequence) instead.
+                if platform.system() == "Windows" and keys_raw == ["ctrl", "alt", "delete"]:
+                    _send_sas()
+                else:
+                    from pynput.keyboard import Controller as KC, Key
+                    kb = self._keyboard or KC()
+                    keys = [getattr(Key, k, k) for k in keys_raw]
+                    for k in keys:
+                        kb.press(k)
+                    for k in reversed(keys):
+                        kb.release(k)
         except Exception:
             pass
+
+
+def _send_sas() -> None:
+    """Trigger Ctrl+Alt+Del via the Windows Secure Attention Sequence API."""
+    ps = (
+        "Add-Type -TypeDefinition '"
+        "using System; using System.Runtime.InteropServices; "
+        "public class SAS { "
+        "[DllImport(\"sas.dll\")] public static extern void SendSAS(bool asUser); "
+        "}'; [SAS]::SendSAS($false)"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, timeout=8,
+        )
+    except Exception:
+        pass

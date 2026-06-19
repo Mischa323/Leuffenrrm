@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Remote — Leuffen RMM</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8b949e; --accent: #3b82f6;
+      --bad: #ef4444; --good: #22c55e;
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; }
+    body { display: flex; flex-direction: column; }
+
+    /* ---- top bar ---- */
+    #topbar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 16px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    #topbar svg { width: 22px; height: 22px; flex-shrink: 0; }
+    #dev-title { font-weight: 600; font-size: 14px; }
+    #conn-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 12px; padding: 2px 8px; border-radius: 20px;
+      background: var(--bg); border: 1px solid var(--border);
+    }
+    #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+    #conn-dot.ok  { background: var(--good); }
+    #conn-dot.bad { background: var(--bad); }
+    .spacer { flex: 1; }
+    .tbtn {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; padding: 5px 11px; font-size: 12px; cursor: pointer;
+      font-family: inherit; transition: background .15s;
+    }
+    .tbtn:hover { background: #1c2128; }
+    .tbtn:disabled { opacity: .45; cursor: default; }
+
+    /* ---- viewport ---- */
+    #viewport {
+      flex: 1; overflow: auto; background: #000;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    #remote-canvas {
+      display: block; max-width: 100%; max-height: 100%;
+      cursor: crosshair; outline: none; image-rendering: auto;
+    }
+    #overlay {
+      position: absolute; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px;
+      color: var(--muted); font-size: 14px; pointer-events: none;
+    }
+    #overlay.hidden { display: none; }
+    #overlay svg { width: 48px; height: 48px; opacity: .3; }
+    #status-text { font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <!-- Shield logo -->
+    <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <polygon points="13,13 51,13 51,33 32,55 13,33" fill="#3b82f6"/>
+      <polyline points="24,28 30,35 42,21" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    </svg>
+    <span id="dev-title">Remote control</span>
+    <span id="conn-badge"><span id="conn-dot"></span><span id="conn-label">Connecting…</span></span>
+    <span class="spacer"></span>
+    <button class="tbtn" id="btn-cad">Ctrl+Alt+Del</button>
+    <button class="tbtn" id="btn-clip">Paste clipboard</button>
+    <button class="tbtn" id="btn-reconnect">Reconnect</button>
+    <button class="tbtn" id="btn-fs">⛶ Fullscreen</button>
+  </div>
+
+  <div id="viewport">
+    <div id="overlay">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="2" y="3" width="20" height="14" rx="2"/>
+        <path d="M8 21h8M12 17v4"/>
+      </svg>
+      <span id="status-text">Connecting…</span>
+    </div>
+    <canvas id="remote-canvas" tabindex="0"></canvas>
+  </div>
+
+  <script src="/static/remote.js"></script>
+</body>
+</html>
