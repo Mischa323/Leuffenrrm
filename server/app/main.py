@@ -2042,6 +2042,22 @@ def get_version(user: dict = Depends(auth.current_user)):
     return {"version": SERVER_VERSION}
 
 
+@app.get("/api/changelog")
+def get_changelog(user: dict = Depends(auth.current_user)):
+    """Return the CHANGELOG.md content."""
+    for path in (
+        os.path.join(os.path.dirname(__file__), "..", "CHANGELOG.md"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "CHANGELOG.md"),
+        "/app/CHANGELOG.md",
+    ):
+        try:
+            with open(os.path.normpath(path), encoding="utf-8") as f:
+                return {"md": f.read()}
+        except OSError:
+            continue
+    return {"md": ""}
+
+
 @app.get("/api/server/update")
 def server_update_status(user: dict = Depends(auth.current_user)):
     """Whether the server container can self-update via the Docker socket."""

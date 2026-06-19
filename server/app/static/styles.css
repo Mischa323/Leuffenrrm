@@ -524,3 +524,12 @@ dl.inv dt:last-of-type, dl.inv dd:last-of-type { border-bottom: 0; }
   .side-label, .groups { display: none; }
   .searchbox { display: none; }
 }
+
+/* changelog */
+.cl-wrap { padding: 4px 0; }
+.cl-ver { font-size: 14px; font-weight: 600; color: var(--text); margin: 18px 0 6px; }
+.cl-ver:first-child { margin-top: 0; }
+.cl-cat { font-size: 12px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; margin: 10px 0 4px; }
+.cl-item { font-size: 13px; color: var(--text-dim); padding: 2px 0 2px 14px; position: relative; }
+.cl-item::before { content: "–"; position: absolute; left: 0; color: var(--border-strong); }
+.cl-hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }

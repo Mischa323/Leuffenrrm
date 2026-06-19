@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server/app ./app
 COPY server/run.py ./run.py
 COPY VERSION ./VERSION
+COPY CHANGELOG.md ./CHANGELOG.md
 COPY agent /agent
 
 # Version: the repo VERSION file is the default; a build arg (e.g. a git tag)

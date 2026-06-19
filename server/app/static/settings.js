@@ -97,6 +97,8 @@ function render() {
       ${block("About this server", "Software version and container updates for the Leuffen RMM server.",
         `<div class="frow"><label>Server version</label><div class="ver-pill mono">${ICON.server} v${esc(cfg.RMM_VERSION || "—")}</div></div>
          <div class="frow"><label>Container update</label><div id="srv-update"><div class="muted">Checking…</div></div></div>`)}
+      ${block("What's new", "Release notes for each version of Leuffen RMM.",
+        `<div id="changelog-body"><div class="muted">Loading…</div></div>`)}
     </section>
 
     <section class="sec" data-sec="orgs">
@@ -324,6 +326,31 @@ async function deleteOrg(id, name) {
   catch (e) { toast(e.message); }
 }
 
+async function loadChangelog() {
+  const host = $("changelog-body");
+  if (!host) return;
+  try {
+    const { md } = await api("/api/changelog");
+    if (!md) { host.innerHTML = `<div class="muted">No changelog available.</div>`; return; }
+    // Minimal markdown renderer for changelog format (## headings, ### sub, - lists, --- hr)
+    let html = "";
+    for (const line of md.split("\n")) {
+      if (line.startsWith("## ")) {
+        html += `<h3 class="cl-ver">${esc(line.slice(3))}</h3>`;
+      } else if (line.startsWith("### ")) {
+        html += `<div class="cl-cat">${esc(line.slice(4))}</div>`;
+      } else if (line.startsWith("- ")) {
+        const inner = line.slice(2).replace(/\*\*(.+?)\*\*/g, (_, t) => `<strong>${esc(t)}</strong>`);
+        html += `<div class="cl-item">${inner}</div>`;
+      } else if (line.startsWith("---")) {
+        html += `<hr class="cl-hr">`;
+      }
+    }
+    host.innerHTML = `<div class="cl-wrap">${html}</div>`;
+  } catch (e) {
+    host.innerHTML = `<div class="muted">${esc(e.message)}</div>`;
+  }
+}
 async function loadServerUpdate() {
   const host = $("srv-update");
   if (!host) return;
@@ -380,6 +407,7 @@ function wire() {
   const lr = $("log-refresh"); if (lr) lr.onclick = loadLogs;
   const ll = $("log-level"); if (ll) ll.onchange = loadLogs;
   loadServerUpdate();
+  loadChangelog();
   const rc = $("reset-config");
   if (rc) rc.onclick = async () => {
     if (!confirm("Reset ALL server configuration and re-run setup?\n\nDevices, organisations and accounts are kept. You'll be sent to the setup wizard.")) return;
