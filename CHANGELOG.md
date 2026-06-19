@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.0] - 2026-06-19
+
+### Added
+- **Web remote desktop** — Click "Remote control" on any online Windows device to open a full-screen remote session in a new browser tab. Renders the live screen at 8 fps, forwards mouse (move, click, scroll) and keyboard input, and includes a clipboard paste button and a Ctrl+Alt+Del button (via Windows `sas.dll`).
+- **Agent connection test** — The agent settings dialog now tests the server connection before saving. Shows a specific error message for timeout, refused connection, or TLS errors. The save button shows "Testing connection…" during the check.
+
+### Fixed
+- **Bell notification button** — The red ping dot is now hidden when there are no active alerts. Clicking the bell opens a dropdown listing open monitor alerts; clicking an entry navigates to that org's Monitors tab. Previously the button did nothing and always showed the ping.
+
+### Changed
+- Agent bumped to **v1.1.7**.
+
+---
+
 ## [1.4.0] - 2026-06-19
 
 ### Added
