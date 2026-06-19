@@ -80,11 +80,12 @@ function secTitle(icon, t, p) { return `<div class="sec-title"><div class="st-ic
 function toggle(id, t, d, on) { return `<div class="toggle-row"><div class="tr-txt"><div class="t">${t}</div><div class="d">${d}</div></div><div class="switch ${on ? "on" : ""}" data-toggle="${id}"></div></div>`; }
 function select(id, opts, val, fmt) { return `<select class="inp" id="${id}">${opts.map((o) => `<option value="${o}" ${String(o) === String(val) ? "selected" : ""}>${fmt ? fmt(o) : o}</option>`).join("")}</select>`; }
 
-let tlsMode = "self-signed", authMethod = "dev", smtpTls = "starttls";
+let tlsMode = "self-signed", authMethod = "dev", smtpTls = "starttls", mailMethod = "smtp";
 
 function render() {
   tlsMode = cfg.RMM_TLS_MODE || "self-signed";
   smtpTls = cfg.SMTP_TLS || "starttls";
+  mailMethod = cfg.SMTP_HOST ? "smtp" : (cfg.GRAPH_SENDER ? "graph" : "smtp");
   authMethod = USERS.mode || cfg.RMM_AUTH_MODE || "dev";
   const secure = (cfg.RMM_SECURE_COOKIES ?? "1") === "1";
   const main = $("settings-main");
@@ -142,16 +143,22 @@ function render() {
 
     <section class="sec" data-sec="alerts">
       ${secTitle("bell", "Alerts & email", "When and how the server notifies you.")}
-      ${block("SMTP", "Send alerts via any SMTP server. Takes priority over Microsoft Graph when configured.",
-        `<div class="frow"><label>SMTP host</label><input class="inp mono" id="a-smtp-host" value="${esc(cfg.SMTP_HOST || "")}" placeholder="smtp.example.com" /></div>
-         <div class="frow"><label>Port</label><input class="inp mono" id="a-smtp-port" value="${esc(cfg.SMTP_PORT || "")}" placeholder="587" style="width:100px" /></div>
-         <div class="frow"><label>Encryption</label><div class="segmented" id="smtp-tls-seg"></div></div>
-         <div class="frow"><label>Username</label><input class="inp mono" id="a-smtp-user" value="${esc(cfg.SMTP_USER || "")}" placeholder="alerts@example.com" /></div>
-         <div class="frow"><label>Password</label><input class="inp mono" type="password" id="a-smtp-pass" value="${esc(cfg.SMTP_PASSWORD || "")}" /></div>
-         <div class="frow"><label>From address</label><input class="inp mono" id="a-smtp-from" value="${esc(cfg.SMTP_FROM || "")}" placeholder="Leuffen RMM &lt;alerts@example.com&gt;" /></div>`, "alerts-smtp")}
-      ${block("Microsoft Graph", "Fallback when SMTP is not configured. Requires an Entra app registration with <code>Mail.Send</code>.",
-        `<div class="frow"><label>Sender mailbox</label><input class="inp mono" id="a-sender" value="${esc(cfg.GRAPH_SENDER || "")}" /><div class="hint">A licensed mailbox with <code>Mail.Send</code> granted to the app.</div></div>
-         <div class="frow"><label>From address</label><input class="inp mono" id="a-from" value="${esc(cfg.GRAPH_FROM || "")}" /></div>`, "alerts-mail")}
+      ${block("Email delivery", "Choose how alert emails are sent.",
+        `<div class="segmented" id="mail-method-seg"></div>
+         <div id="mail-method-fields" style="margin-top:14px">
+           <div id="mm-smtp">
+             <div class="frow"><label>SMTP host</label><input class="inp mono" id="a-smtp-host" value="${esc(cfg.SMTP_HOST || "")}" placeholder="smtp.example.com" /></div>
+             <div class="frow"><label>Port</label><input class="inp mono" id="a-smtp-port" value="${esc(cfg.SMTP_PORT || "")}" placeholder="587" style="width:100px" /></div>
+             <div class="frow"><label>Encryption</label><div class="segmented" id="smtp-tls-seg"></div></div>
+             <div class="frow"><label>Username</label><input class="inp mono" id="a-smtp-user" value="${esc(cfg.SMTP_USER || "")}" placeholder="alerts@example.com" /></div>
+             <div class="frow"><label>Password</label><input class="inp mono" type="password" id="a-smtp-pass" value="${esc(cfg.SMTP_PASSWORD || "")}" /></div>
+             <div class="frow"><label>From address</label><input class="inp mono" id="a-smtp-from" value="${esc(cfg.SMTP_FROM || "")}" placeholder="Leuffen RMM &lt;alerts@example.com&gt;" /></div>
+           </div>
+           <div id="mm-graph" style="display:none">
+             <div class="frow"><label>Sender mailbox</label><input class="inp mono" id="a-sender" value="${esc(cfg.GRAPH_SENDER || "")}" /><div class="hint">A licensed mailbox with <code>Mail.Send</code> granted to the app.</div></div>
+             <div class="frow"><label>From address</label><input class="inp mono" id="a-from" value="${esc(cfg.GRAPH_FROM || "")}" /></div>
+           </div>
+         </div>`, "alerts-delivery")}
       ${block("Recipients", "Who gets alert emails.",
         `<div class="frow"><label>Alert recipients</label><input class="inp mono" id="a-recipients" value="${esc(cfg.RMM_ALERT_RECIPIENTS || "")}" placeholder="ops@leuffen.it, admin@leuffen.it" /><div class="hint">Comma-separated. Per-organisation recipients can be set in each organisation's settings.</div></div>`, "alerts-recipients")}
       <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Alert thresholds live in Monitors</div><div class="cd">Add CPU, memory, disk and offline alerts from the <b>Monitors</b> tab's template gallery — as site-only or global rules — instead of a fixed global policy.</div></div></div>
@@ -207,6 +214,7 @@ function render() {
     </section>`;
 
   buildAuthSeg();
+  buildMailMethodSeg();
   buildSmtpTlsSeg();
   buildTlsSeg();
   buildAppearance();
@@ -280,6 +288,24 @@ const TLS_MODES = [
   { id: "file", t: "Certificate file", d: "Your own cert/key.", icon: "lock" },
   { id: "proxy", t: "Behind a proxy", d: "TLS upstream.", icon: "network" },
 ];
+const MAIL_METHODS = [
+  { id: "smtp", t: "SMTP", d: "Any mail server" },
+  { id: "graph", t: "Microsoft Graph", d: "Microsoft 365 tenant" },
+];
+function buildMailMethodSeg() {
+  const seg = $("mail-method-seg"); if (!seg) return;
+  seg.innerHTML = "";
+  MAIL_METHODS.forEach((m) => {
+    const o = document.createElement("button");
+    o.className = "seg-opt" + (mailMethod === m.id ? " sel" : "");
+    o.innerHTML = `<div class="so-top"><span class="so-t">${m.t}</span></div><div class="so-d">${m.d}</div>`;
+    o.onclick = () => { mailMethod = m.id; buildMailMethodSeg(); };
+    seg.appendChild(o);
+  });
+  const smtp = $("mm-smtp"), graph = $("mm-graph");
+  if (smtp) smtp.style.display = mailMethod === "smtp" ? "" : "none";
+  if (graph) graph.style.display = mailMethod === "graph" ? "" : "none";
+}
 const SMTP_TLS_MODES = [
   { id: "starttls", t: "STARTTLS", d: "Port 587 (recommended)" },
   { id: "ssl",      t: "SSL/TLS",  d: "Port 465" },
@@ -503,8 +529,11 @@ function onSave(which) {
   if (which === "auth") return saveKeys({ RMM_AUTH_MODE: authMethod }, "Auth mode saved — restart to apply");
   if (which === "auth-sso") return saveKeys({ MS_TENANT_ID: $("ms-tenant").value, MS_CLIENT_ID: $("ms-client").value, MS_CLIENT_SECRET: $("ms-secret").value, MS_REDIRECT_URI: $("ms-redirect").value }, "SSO credentials saved — restart to apply");
   if (which === "auth-mfa") return saveKeys({ RMM_ENFORCE_2FA: document.querySelector('[data-toggle="enforce2fa"]').classList.contains("on") ? "1" : "0" }, "Two-factor policy saved");
-  if (which === "alerts-smtp") return saveKeys({ SMTP_HOST: $("a-smtp-host").value, SMTP_PORT: $("a-smtp-port").value, SMTP_TLS: smtpTls, SMTP_USER: $("a-smtp-user").value, SMTP_PASSWORD: $("a-smtp-pass").value, SMTP_FROM: $("a-smtp-from").value }, "SMTP settings saved");
-  if (which === "alerts-mail") return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value }, "Graph settings saved");
+  if (which === "alerts-delivery") {
+    if (mailMethod === "smtp")
+      return saveKeys({ SMTP_HOST: $("a-smtp-host").value, SMTP_PORT: $("a-smtp-port").value, SMTP_TLS: smtpTls, SMTP_USER: $("a-smtp-user").value, SMTP_PASSWORD: $("a-smtp-pass").value, SMTP_FROM: $("a-smtp-from").value, GRAPH_SENDER: "", GRAPH_FROM: "" }, "SMTP settings saved");
+    return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value, SMTP_HOST: "" }, "Graph settings saved");
+  }
   if (which === "alerts-recipients") return saveKeys({ RMM_ALERT_RECIPIENTS: $("a-recipients").value }, "Recipients saved");
   if (which === "security-tls") return saveKeys({ RMM_TLS_MODE: tlsMode }, "TLS mode saved — restart to apply");
   if (which === "security-session") return saveKeys({ RMM_SECURE_COOKIES: document.querySelector('[data-toggle="secureCookies"]').classList.contains("on") ? "1" : "0" }, "Security saved");
