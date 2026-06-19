@@ -112,8 +112,17 @@ function render() {
 
     <section class="sec" data-sec="users">
       ${secTitle("user", "Users & roles", "Who can sign in and what they can do.")}
-      <div class="card-block"><div class="cb-head"><h3>${(USERS.users.length || USERS.bootstrap_admins.length)} ${authMethod === "local" ? "local accounts" : "administrators"}</h3><p>Global admins see everything; members are scoped to their organisations.</p></div>
-        <table class="utable"><thead><tr><th>User</th><th>Role</th><th>Last active</th></tr></thead><tbody>${usersRows()}</tbody></table></div>
+      <div class="card-block">
+        <div class="cb-head" style="display:flex;align-items:center;justify-content:space-between">
+          <div><h3>${(USERS.users.length || USERS.bootstrap_admins.length)} ${authMethod === "local" ? "local accounts" : "administrators"}</h3><p>Global admins see everything; members are scoped to their organisations.</p></div>
+          <button class="btn" id="invite-btn">${ICON.plus} Invite user</button>
+        </div>
+        <table class="utable"><thead><tr><th>User</th><th>Role</th><th>Last active</th><th></th></tr></thead><tbody>${usersRows()}</tbody></table>
+      </div>
+      <div class="card-block" id="invites-block" style="display:none">
+        <div class="cb-head"><h3>Pending invitations</h3><p>Links expire after 2 days if not accepted.</p></div>
+        <div id="invites-list"><div class="muted" style="padding:12px 0">Loading…</div></div>
+      </div>
       <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">${authMethod === "local" ? "Local accounts" : "Single sign-on"}</div><div class="cd">${authMethod === "local" ? "Username/password accounts created during setup. Passwords are PBKDF2-hashed." : "With Microsoft 365 SSO, users appear automatically on first sign-in; global admins are listed above."}</div></div></div>
     </section>
 
@@ -121,6 +130,11 @@ function render() {
       ${secTitle("lock", "Authentication", "How users prove who they are.")}
       ${block("Sign-in method", "The active method. Switching applies after a server restart.",
         `<div class="segmented" id="auth-seg"></div><div id="auth-extra" style="margin-top:4px"></div>`, "auth")}
+      ${block("Microsoft 365 credentials", "Tenant and app registration for SSO sign-in and Graph mail. Changes apply after a server restart.",
+        `<div class="frow"><label>Tenant ID</label><input class="inp mono" id="ms-tenant" value="${esc(cfg.MS_TENANT_ID || "")}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></div>
+         <div class="frow"><label>Client ID</label><input class="inp mono" id="ms-client" value="${esc(cfg.MS_CLIENT_ID || "")}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></div>
+         <div class="frow"><label>Client secret</label><input class="inp mono" type="password" id="ms-secret" value="${esc(cfg.MS_CLIENT_SECRET || "")}" /></div>
+         <div class="frow"><label>Redirect URI</label><input class="inp mono" id="ms-redirect" value="${esc(cfg.MS_REDIRECT_URI || (location.origin + "/auth/callback"))}" /><div class="hint">Must match the redirect URI registered in your Entra app.</div></div>`, "auth-sso")}
       ${block("Two-factor authentication", "Time-based one-time codes (TOTP) for local accounts.",
         `${toggle("enforce2fa", "Require 2FA for local accounts", "Local users are prompted to set up an authenticator before they can use the dashboard.", (cfg.RMM_ENFORCE_2FA ?? "0") === "1")}
          <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Per-user enrolment</div><div class="cd">Each user enables 2FA under <b>Account → Password</b>. ${authMethod === "local" ? "" : "Switch to local accounts to use this — SSO 2FA is managed in your identity provider."}</div></div></div>`, "auth-mfa")}
@@ -204,14 +218,37 @@ function usersRows() {
     return USERS.users.map((u) => `<tr>
       <td><div class="u-cell"><div class="av" style="background:linear-gradient(140deg,${colorFor(u.username)},color-mix(in srgb,${colorFor(u.username)} 50%,#000))">${initials2(u.username)}</div><div><div class="un">${esc(u.display_name || u.username)}</div><div class="ue">${esc(u.email || "@" + u.username)}</div></div></div></td>
       <td><span class="role-pill ${u.is_admin ? "admin" : "member"}">${u.is_admin ? ICON.shieldCheck : ICON.user} ${u.is_admin ? "Global admin" : "Member"}</span></td>
-      <td class="muted">${u.last_active ? new Date(u.last_active * 1000).toLocaleString() : "never"}</td></tr>`).join("");
+      <td class="muted">${u.last_active ? new Date(u.last_active * 1000).toLocaleString() : "never"}</td>
+      <td><button class="btn ghost sm user-del" data-username="${esc(u.username)}" title="Delete user">${ICON.trash}</button></td></tr>`).join("");
   }
   const admins = USERS.bootstrap_admins.length ? USERS.bootstrap_admins : (USERS.users.map((u) => u.email || u.username));
-  if (!admins.length) return `<tr><td colspan="3" class="muted" style="padding:20px">No administrators configured.</td></tr>`;
+  if (!admins.length) return `<tr><td colspan="4" class="muted" style="padding:20px">No administrators configured.</td></tr>`;
   return admins.map((e) => `<tr>
     <td><div class="u-cell"><div class="av" style="background:linear-gradient(140deg,${colorFor(e)},color-mix(in srgb,${colorFor(e)} 50%,#000))">${initials2(e)}</div><div><div class="un">${esc(e)}</div></div></div></td>
     <td><span class="role-pill admin">${ICON.shieldCheck} Global admin</span></td>
-    <td class="muted">—</td></tr>`).join("");
+    <td class="muted">—</td><td></td></tr>`).join("");
+}
+
+async function loadInvites() {
+  const block = $("invites-block"), list = $("invites-list");
+  if (!list) return;
+  try {
+    const { invites } = await api("/api/invites");
+    if (!invites.length) { block.style.display = "none"; return; }
+    block.style.display = "";
+    list.innerHTML = `<table class="utable"><thead><tr><th>Email</th><th>Role</th><th>Expires</th><th></th></tr></thead><tbody>
+      ${invites.map((i) => `<tr>
+        <td>${esc(i.email)}</td>
+        <td><span class="role-pill ${i.is_admin ? "admin" : "member"}">${i.is_admin ? "Global admin" : "Member"}</span></td>
+        <td class="muted">${new Date(i.expires_at * 1000).toLocaleString()}</td>
+        <td><button class="btn ghost sm inv-revoke" data-token="${esc(i.token)}" title="Revoke">${ICON.trash}</button></td>
+      </tr>`).join("")}
+    </tbody></table>`;
+    list.querySelectorAll(".inv-revoke").forEach((b) => b.onclick = async () => {
+      await api(`/api/invites/${b.dataset.token}`, { method: "DELETE" });
+      toast("Invite revoked"); loadInvites();
+    });
+  } catch (e) { list.innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
 }
 
 const AUTH_METHODS = [
@@ -430,6 +467,25 @@ function wire() {
   document.querySelectorAll(".save-btn").forEach((b) => b.onclick = () => onSave(b.dataset.save));
   const oc = $("add-org"); if (oc) oc.onclick = createOrg;
   document.querySelectorAll(".org-del").forEach((b) => b.onclick = () => deleteOrg(b.dataset.id, b.dataset.name));
+  document.querySelectorAll(".user-del").forEach((b) => b.onclick = async () => {
+    const un = b.dataset.username;
+    if (!confirm(`Delete user "${un}"? This cannot be undone.`)) return;
+    try { await api(`/api/users/${encodeURIComponent(un)}`, { method: "DELETE" }); toast("User deleted"); USERS = await api("/api/users"); render(); selectSec("users"); }
+    catch (e) { toast(e.message); }
+  });
+  const ib = $("invite-btn");
+  if (ib) ib.onclick = async () => {
+    const email = (prompt("Email address to invite:") || "").trim();
+    if (!email) return;
+    const adminAns = confirm("Grant global admin role? (Cancel for member)");
+    try {
+      const r = await api("/api/invites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, is_admin: adminAns }) });
+      toast(`Invite sent to ${email}`);
+      if (r.invite_url) prompt("Invite link (also emailed):", r.invite_url);
+      loadInvites();
+    } catch (e) { toast(e.message); }
+  };
+  loadInvites();
   const lr = $("log-refresh"); if (lr) lr.onclick = loadLogs;
   const ll = $("log-level"); if (ll) ll.onchange = loadLogs;
   loadServerUpdate();
@@ -445,6 +501,7 @@ function wire() {
 function onSave(which) {
   if (which === "general") return saveKeys({ RMM_SERVER_NAME: $("g-name").value, RMM_PUBLIC_URL: $("g-url").value }, "General settings saved");
   if (which === "auth") return saveKeys({ RMM_AUTH_MODE: authMethod }, "Auth mode saved — restart to apply");
+  if (which === "auth-sso") return saveKeys({ MS_TENANT_ID: $("ms-tenant").value, MS_CLIENT_ID: $("ms-client").value, MS_CLIENT_SECRET: $("ms-secret").value, MS_REDIRECT_URI: $("ms-redirect").value }, "SSO credentials saved — restart to apply");
   if (which === "auth-mfa") return saveKeys({ RMM_ENFORCE_2FA: document.querySelector('[data-toggle="enforce2fa"]').classList.contains("on") ? "1" : "0" }, "Two-factor policy saved");
   if (which === "alerts-smtp") return saveKeys({ SMTP_HOST: $("a-smtp-host").value, SMTP_PORT: $("a-smtp-port").value, SMTP_TLS: smtpTls, SMTP_USER: $("a-smtp-user").value, SMTP_PASSWORD: $("a-smtp-pass").value, SMTP_FROM: $("a-smtp-from").value }, "SMTP settings saved");
   if (which === "alerts-mail") return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value }, "Graph settings saved");

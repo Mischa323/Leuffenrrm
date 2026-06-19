@@ -98,3 +98,8 @@ class MonitorRuleRequest(BaseModel):
     target_id: str | None = None
     notify_email: bool = True
     severity: str | None = None             # defaults to the template's suggestion
+
+
+class InviteRequest(BaseModel):
+    email: str
+    is_admin: bool = False
