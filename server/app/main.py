@@ -16,17 +16,17 @@ import time
 
 from fastapi import (Depends, FastAPI, File, HTTPException, Query, Request, UploadFile,
                      WebSocket, WebSocketDisconnect)
-from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
 
 from . import alerts, auth, database as db, graph, mailer, totp
 from . import wol as wol_local
 from .manager import manager
-from .models import (GroupRequest, MonitorRequest, MonitorRuleRequest, MoveDeviceRequest,
-                     MoveOrgRequest, OrgRequest, OrgUserRequest, PowerRequest, ScheduleRequest,
-                     ScriptFileRequest, ScriptRequest, ScriptRunRequest, ShellRequest,
-                     SubnetRequest, WakeRequest)
+from .models import (GroupRequest, InviteRequest, MonitorRequest, MonitorRuleRequest,
+                     MoveDeviceRequest, MoveOrgRequest, OrgRequest, OrgUserRequest,
+                     PowerRequest, ScheduleRequest, ScriptFileRequest, ScriptRequest,
+                     ScriptRunRequest, ShellRequest, SubnetRequest, WakeRequest)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
@@ -2022,6 +2022,7 @@ SETTINGS_KEYS = [
     "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
     "RMM_REQUIRE_APPROVAL", "RMM_ALERT_RECIPIENTS",
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS",
+    "MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_REDIRECT_URI",
 ]
 
 
@@ -2244,6 +2245,88 @@ async def change_password(request: Request, user: dict = Depends(auth.current_us
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
     db.set_user_password(u["username"], new)
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# User management
+# --------------------------------------------------------------------------- #
+@app.delete("/api/users/{username}")
+def delete_user(username: str, user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    if username.lower() == user["email"].lower():
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    db.delete_user(username)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Invite system
+# --------------------------------------------------------------------------- #
+@app.post("/api/invites")
+async def create_invite(req: InviteRequest, request: Request,
+                        user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    token = db.create_invite(req.email, req.is_admin)
+    public_url = (db.get_setting("RMM_PUBLIC_URL") or "").rstrip("/") or str(request.base_url).rstrip("/")
+    invite_url = f"{public_url}/invite/{token}"
+    subject = "You've been invited to Leuffen RMM"
+    html = (
+        f"<p>You have been invited to sign in to <b>Leuffen RMM</b>.</p>"
+        f"<p><a href='{invite_url}'>Accept invitation</a></p>"
+        f"<p>This link expires in 2 days. If you did not expect this email, you can ignore it.</p>"
+    )
+    mailer.send_mail(subject, html, [req.email])
+    return {"ok": True, "invite_url": invite_url}
+
+
+@app.get("/api/invites")
+def list_invites(user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    return {"invites": db.list_invites()}
+
+
+@app.delete("/api/invites/{token}")
+def revoke_invite(token: str, user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    db.delete_invite(token)
+    return {"ok": True}
+
+
+@app.get("/invite/{token}")
+async def invite_page(token: str):
+    inv = db.get_invite(token)
+    if not inv or inv["used_at"] or inv["expires_at"] < __import__("time").time():
+        return HTMLResponse("<h2>This invite link is invalid or has expired.</h2>", status_code=410)
+    return FileResponse(os.path.join(STATIC_DIR, "invite.html"))
+
+
+@app.post("/invite/{token}")
+async def accept_invite(token: str, request: Request):
+    import time as _time
+    inv = db.get_invite(token)
+    if not inv or inv["used_at"] or inv["expires_at"] < _time.time():
+        raise HTTPException(status_code=410, detail="Invite link is invalid or has expired")
+    data = await request.json()
+    username = (data.get("username") or "").strip().lower()
+    password = data.get("password") or ""
+    if not username or len(username) < 2:
+        raise HTTPException(status_code=400, detail="Username must be at least 2 characters")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if db.get_user(username):
+        raise HTTPException(status_code=409, detail="Username already taken")
+    db.create_user(username, password, is_admin=bool(inv["is_admin"]), email=inv["email"])
+    db.use_invite(token)
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        auth.COOKIE, auth.make_cookie(username),
+        httponly=True, samesite="lax", secure=auth.SECURE_COOKIES,
+    )
+    return response
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

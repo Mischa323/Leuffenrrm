@@ -166,6 +166,15 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
     created_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS invites (
+    token      TEXT PRIMARY KEY,
+    email      TEXT NOT NULL,
+    is_admin   INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    used_at    REAL
+);
+
 -- Phase 2: scripts library + run history.
 CREATE TABLE IF NOT EXISTS scripts (
     id          TEXT PRIMARY KEY,
@@ -397,6 +406,42 @@ def touch_user(username: str) -> None:
 def delete_user(username: str) -> None:
     with write() as conn:
         conn.execute("DELETE FROM users WHERE username=?", (username.lower(),))
+
+
+INVITE_TTL = 2 * 24 * 3600  # 2 days
+
+
+def create_invite(email: str, is_admin: bool) -> str:
+    token = secrets.token_urlsafe(32)
+    now = _now()
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO invites (token, email, is_admin, created_at, expires_at) VALUES (?,?,?,?,?)",
+            (token, email.lower(), int(is_admin), now, now + INVITE_TTL),
+        )
+    return token
+
+
+def get_invite(token: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM invites WHERE token=?", (token,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_invites() -> list[dict]:
+    now = _now()
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM invites WHERE used_at IS NULL AND expires_at > ? ORDER BY created_at DESC", (now,)
+    ).fetchall()]
+
+
+def use_invite(token: str) -> None:
+    with write() as conn:
+        conn.execute("UPDATE invites SET used_at=? WHERE token=?", (_now(), token))
+
+
+def delete_invite(token: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM invites WHERE token=?", (token,))
 
 
 def set_totp_secret(username: str, secret: str | None) -> None:
