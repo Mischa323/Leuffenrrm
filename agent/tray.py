@@ -29,9 +29,20 @@ import pystray
 from PIL import Image, ImageDraw
 
 POLL_SECONDS = 3
-ACCENT = (59, 130, 246, 255)   # Leuffen brand blue
-GOOD = (34, 197, 94, 255)
-BAD = (239, 68, 68, 255)
+ACCENT  = (59, 130, 246, 255)   # brand blue
+GOOD    = (34, 197, 94, 255)
+BAD     = (239, 68, 68, 255)
+
+# ---------- dark-theme palette (matches web CSS variables) ----------
+BG      = "#0d1117"
+SURFACE = "#161b22"
+SURF2   = "#1c2128"
+BORDER  = "#30363d"
+TEXT    = "#e6edf3"
+TEXTDIM = "#8b949e"
+ACCENT_HEX = "#3b82f6"
+BAD_HEX    = "#ef4444"
+FONT    = "Segoe UI"            # Onest isn't bundled on Windows; Segoe is next best
 
 
 def _data_dir() -> str:
@@ -44,12 +55,22 @@ def _data_dir() -> str:
 
 
 STATUS_PATH = os.path.join(_data_dir(), "status.json")
-SYNC_FLAG = os.path.join(_data_dir(), "sync_request")
+CONFIG_PATH = os.path.join(_data_dir(), "rmm_config.json")
+SYNC_FLAG   = os.path.join(_data_dir(), "sync_request")
 
 
 def _read_status() -> dict:
     try:
         with open(STATUS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _read_config() -> dict:
+    """Read persisted server config (written by the agent on first connect)."""
+    try:
+        with open(CONFIG_PATH) as f:
             return json.load(f)
     except Exception:
         return {}
@@ -66,12 +87,9 @@ def _logo(connected: bool) -> Image.Image:
     """Leuffen shield with a connection-status dot."""
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    # Shield silhouette (brand blue).
     shield = [(13, 13), (51, 13), (51, 33), (32, 55), (13, 33)]
     d.polygon(shield, fill=ACCENT)
-    # A subtle check/▲ glyph inside the shield.
     d.line([(24, 28), (30, 35), (42, 21)], fill=(255, 255, 255, 235), width=4, joint="curve")
-    # Status dot, bottom-right.
     col = GOOD if connected else BAD
     d.ellipse((41, 41, 61, 61), fill=col, outline=(13, 17, 24, 255), width=3)
     return img
@@ -91,10 +109,9 @@ def _rel(ts) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Settings dialog (admin only)
+# Settings dialog — dark themed, styled like the web UI
 # --------------------------------------------------------------------------- #
 def _restart_agent() -> None:
-    # Kill any stray agent processes, then start a single fresh one via the task.
     for args in (["schtasks", "/end", "/tn", "LeuffenRMMAgent"],
                  ["taskkill", "/F", "/IM", "leuffen-rmm-agent.exe"],
                  ["schtasks", "/run", "/tn", "LeuffenRMMAgent"]):
@@ -114,7 +131,8 @@ def _apply_settings(url: str, key: str, insecure: bool) -> None:
 
 def _is_configured() -> bool:
     return bool(os.environ.get("RMM_SERVER_URL") and os.environ.get("RMM_API_KEY")) \
-        or bool(_read_status().get("server_url"))
+        or bool(_read_status().get("server_url")) \
+        or bool(_read_config().get("server_url"))
 
 
 def _self_exe() -> str:
@@ -122,7 +140,6 @@ def _self_exe() -> str:
 
 
 def _elevate(args: str) -> None:
-    """Relaunch this program elevated (UAC) with the given argument string."""
     if getattr(sys, "frozen", False):
         target, params = _self_exe(), args
     else:
@@ -132,68 +149,190 @@ def _elevate(args: str) -> None:
 
 def settings_dialog() -> None:
     import tkinter as tk
-    from tkinter import messagebox
+    from tkinter import ttk
 
     status = _read_status()
+    saved  = _read_config()   # written by agent; survives elevation / SYSTEM session
+
+    # ---- resolve current values (env > saved file > status) ----
+    cur_url      = os.environ.get("RMM_SERVER_URL") or saved.get("server_url") or status.get("server_url") or ""
+    cur_key      = os.environ.get("RMM_API_KEY")    or saved.get("api_key")    or ""
+    cur_insecure = saved.get("insecure_tls", os.environ.get("RMM_INSECURE_TLS", "1") == "1")
+
     root = tk.Tk()
-    root.title("Leuffen RMM — Settings")
+    root.title("Leuffen RMM")
     root.resizable(False, False)
+    root.configure(bg=BG)
     try:
         root.attributes("-topmost", True)
     except Exception:
         pass
 
-    pad = {"padx": 12, "pady": (6, 0)}
-    hint = {"fg": "#6b7280", "font": ("Segoe UI", 8)}
+    # ---- ttk style ----
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure(".", background=BG, foreground=TEXT, font=(FONT, 9),
+                    bordercolor=BORDER, troughcolor=SURF2, insertcolor=TEXT)
+    style.configure("TFrame",  background=BG)
+    style.configure("Card.TFrame", background=SURFACE, relief="flat")
+    style.configure("TLabel",  background=BG, foreground=TEXT, font=(FONT, 9))
+    style.configure("Dim.TLabel", background=BG, foreground=TEXTDIM, font=(FONT, 8))
+    style.configure("Head.TLabel", background=BG, foreground=TEXT, font=(FONT, 13, "bold"))
+    style.configure("Sub.TLabel",  background=BG, foreground=TEXTDIM, font=(FONT, 9))
+    style.configure("TEntry", fieldbackground=SURF2, foreground=TEXT, bordercolor=BORDER,
+                    insertcolor=TEXT, font=(FONT, 9), padding=6)
+    style.configure("TCheckbutton", background=BG, foreground=TEXTDIM, font=(FONT, 9))
+    style.map("TCheckbutton", background=[("active", BG)])
+    # Primary button
+    style.configure("Accent.TButton", background=ACCENT_HEX, foreground="#ffffff",
+                    bordercolor=ACCENT_HEX, font=(FONT, 9, "bold"), padding=(14, 7), relief="flat")
+    style.map("Accent.TButton",
+              background=[("active", "#2563eb"), ("pressed", "#1d4ed8")],
+              bordercolor=[("active", "#2563eb")])
+    # Ghost button
+    style.configure("Ghost.TButton", background=BG, foreground=TEXTDIM,
+                    bordercolor=BORDER, font=(FONT, 9), padding=(12, 6), relief="flat")
+    style.map("Ghost.TButton",
+              background=[("active", SURF2)],
+              foreground=[("active", TEXT)])
+    # Status badge
+    style.configure("OK.TLabel",  background=BG, foreground="#22c55e", font=(FONT, 9, "bold"))
+    style.configure("Bad.TLabel", background=BG, foreground=BAD_HEX,  font=(FONT, 9, "bold"))
 
-    tk.Label(root, text="Leuffen RMM — agent settings",
-             font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2,
-                                                  sticky="w", padx=12, pady=(12, 8))
+    # ---- outer padding ----
+    outer = ttk.Frame(root, padding=24)
+    outer.grid(row=0, column=0, sticky="nsew")
 
-    tk.Label(root, text="Server URL").grid(row=1, column=0, sticky="w", **pad)
-    url = tk.Entry(root, width=46)
-    url.insert(0, os.environ.get("RMM_SERVER_URL") or status.get("server_url") or "")
-    url.grid(row=1, column=1, **pad)
-    tk.Label(root, text="e.g.  https://rmm.leuffen.it:8000   (include https:// and the port)",
-             **hint).grid(row=2, column=1, sticky="w", padx=12)
+    # ---- header ----
+    hdr = ttk.Frame(outer)
+    hdr.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 20))
 
-    tk.Label(root, text="Enrollment key").grid(row=3, column=0, sticky="w", **pad)
-    key = tk.Entry(root, width=46)
-    key.insert(0, os.environ.get("RMM_API_KEY") or "")
-    key.grid(row=3, column=1, **pad)
-    tk.Label(root, text="from the dashboard → open an org → Downloads → Enrollment key",
-             **hint).grid(row=4, column=1, sticky="w", padx=12)
+    # Shield icon (small canvas)
+    shield_cv = tk.Canvas(hdr, width=36, height=36, bg=BG, highlightthickness=0)
+    shield_cv.grid(row=0, column=0, rowspan=2, padx=(0, 10))
+    shield_cv.create_polygon([7,7, 29,7, 29,20, 18,32, 7,20],
+                              fill=ACCENT_HEX, outline="")
+    shield_cv.create_line(12,18, 17,23, 25,13, fill="white", width=2)
 
-    insecure = tk.BooleanVar(value=(os.environ.get("RMM_INSECURE_TLS", "1") == "1"))
-    tk.Checkbutton(root, text="Accept self-signed certificate (leave on for the default setup)",
-                   variable=insecure).grid(row=5, column=1, sticky="w", padx=12, pady=(8, 0))
+    ttk.Label(hdr, text="Leuffen RMM", style="Head.TLabel").grid(row=0, column=1, sticky="w")
+    ttk.Label(hdr, text="Agent settings", style="Sub.TLabel").grid(row=1, column=1, sticky="w")
+
+    # ---- connection status banner ----
+    conn = bool(status.get("connected")) and (time.time() - status.get("updated", 0) < 120)
+    banner = ttk.Frame(outer, padding=(14, 10), style="Card.TFrame")
+    banner.configure(style="Card.TFrame")
+    banner.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 18))
+    banner.configure()
+    _dot_col = "#22c55e" if conn else BAD_HEX
+    dot_cv = tk.Canvas(banner, width=10, height=10, bg=SURFACE, highlightthickness=0)
+    dot_cv.grid(row=0, column=0, padx=(0, 8))
+    dot_cv.create_oval(1, 1, 9, 9, fill=_dot_col, outline="")
+    sty = "OK.TLabel" if conn else "Bad.TLabel"
+    ttk.Label(banner, text="Connected" if conn else "Disconnected",
+              style=sty, background=SURFACE).grid(row=0, column=1, sticky="w")
+    if status.get("last_sync"):
+        ttk.Label(banner, text=f"Last sync: {_rel(status.get('last_sync'))}",
+                  style="Dim.TLabel", background=SURFACE).grid(row=0, column=2, sticky="e", padx=(20, 0))
+
+    # ---- form fields ----
+    def _label(row, text, hint=None):
+        ttk.Label(outer, text=text).grid(row=row, column=0, sticky="nw",
+                                          padx=(0, 16), pady=(0, 2))
+        if hint:
+            ttk.Label(outer, text=hint, style="Dim.TLabel").grid(
+                row=row + 1, column=1, sticky="w", pady=(0, 10))
+
+    def _entry(row, show=None):
+        e = ttk.Entry(outer, width=42, show=show or "")
+        e.grid(row=row, column=1, sticky="ew", pady=(0, 2))
+        return e
+
+    _label(2, "Server URL", "e.g. https://rmm.example.com:8000")
+    url_e = _entry(2)
+    url_e.insert(0, cur_url)
+
+    _label(4, "Enrollment key", "Settings → your org → Downloads → Enrollment key")
+    key_e = _entry(4, show="•")
+    key_e.insert(0, cur_key)
+
+    # Show/hide toggle for key
+    def _toggle_key():
+        key_e.configure(show="" if key_e.cget("show") else "•")
+        eye_btn.configure(text="Hide" if not key_e.cget("show") else "Show")
+    eye_btn = ttk.Button(outer, text="Show", style="Ghost.TButton", command=_toggle_key, width=6)
+    eye_btn.grid(row=4, column=2, padx=(6, 0))
+
+    insecure = tk.BooleanVar(value=bool(cur_insecure))
+    cb = ttk.Checkbutton(outer, text="Accept self-signed certificate",
+                          variable=insecure)
+    cb.grid(row=6, column=1, sticky="w", pady=(4, 18))
+    ttk.Label(outer, text="Leave on for the default server setup",
+              style="Dim.TLabel").grid(row=7, column=1, sticky="w", pady=(0, 18))
+
+    # ---- separator ----
+    sep = tk.Frame(outer, height=1, bg=BORDER)
+    sep.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(0, 16))
+
+    # ---- error label ----
+    err_var = tk.StringVar()
+    err_lbl = ttk.Label(outer, textvariable=err_var, foreground=BAD_HEX,
+                         background=BG, font=(FONT, 9), wraplength=380)
+    err_lbl.grid(row=9, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+    # ---- buttons ----
+    btns = ttk.Frame(outer)
+    btns.grid(row=10, column=0, columnspan=3, sticky="e")
 
     def save():
-        u, k = url.get().strip(), key.get().strip()
-        if not u or not k:
-            messagebox.showerror("Leuffen RMM", "Server URL and enrollment key are required.")
+        u, k = url_e.get().strip(), key_e.get().strip()
+        if not u:
+            err_var.set("Server URL is required.")
             return
+        if not k:
+            err_var.set("Enrollment key is required.")
+            return
+        err_var.set("")
         if _is_admin():
             _apply_settings(u, k, bool(insecure.get()))
-            messagebox.showinfo("Leuffen RMM", "Settings saved. The agent is reconnecting.")
+            _msgbox(root, "Settings saved. The agent is reconnecting.")
             root.destroy()
             return
-        # Not elevated: write the values to a temp file and re-apply them elevated
-        # (preserves what was typed; one UAC prompt).
         import tempfile
         fd, path = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         with open(path, "w") as f:
             json.dump({"url": u, "key": k, "insecure": bool(insecure.get())}, f)
         _elevate(f'--apply "{path}"')
-        messagebox.showinfo("Leuffen RMM", "Approve the administrator prompt to finish saving.")
+        _msgbox(root, "Approve the administrator prompt to finish saving.")
         root.destroy()
 
-    btns = tk.Frame(root)
-    btns.grid(row=6, column=1, sticky="e", padx=12, pady=12)
-    tk.Button(btns, text="Cancel", command=root.destroy).pack(side="right", padx=4)
-    tk.Button(btns, text="Save", command=save, width=10).pack(side="right", padx=4)
+    ttk.Button(btns, text="Cancel", style="Ghost.TButton",
+               command=root.destroy).pack(side="right", padx=(6, 0))
+    ttk.Button(btns, text="Save settings", style="Accent.TButton",
+               command=save).pack(side="right")
+
+    outer.columnconfigure(1, weight=1)
     root.mainloop()
+
+
+def _msgbox(parent, msg: str) -> None:
+    """Simple dark-themed info box (avoids the Windows-default white popup)."""
+    import tkinter as tk
+    from tkinter import ttk
+    win = tk.Toplevel(parent)
+    win.title("Leuffen RMM")
+    win.configure(bg=BG)
+    win.resizable(False, False)
+    try:
+        win.attributes("-topmost", True)
+    except Exception:
+        pass
+    ttk.Label(win, text=msg, background=BG, foreground=TEXT,
+              font=(FONT, 9), wraplength=300, padding=(24, 20)).pack()
+    ttk.Button(win, text="OK", style="Accent.TButton",
+               command=win.destroy).pack(pady=(0, 16))
+    win.grab_set()
+    win.wait_window()
 
 
 # --------------------------------------------------------------------------- #
@@ -210,10 +349,10 @@ class Tray:
         return bool(st.get("connected")) and (time.time() - st.get("updated", 0) < 120)
 
     def _menu(self) -> pystray.Menu:
-        conn = self._connected()
+        conn  = self._connected()
         admin = _is_admin()
         return pystray.Menu(
-            pystray.MenuItem(f"Status: {'Connected' if conn else 'Disconnected'}", None, enabled=False),
+            pystray.MenuItem(f"{'● Connected' if conn else '● Disconnected'}", None, enabled=False),
             pystray.MenuItem(f"Last sync: {_rel(self.status.get('last_sync'))}", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Force sync now", self._force_sync),
@@ -245,7 +384,7 @@ class Tray:
             pass
 
     def _open_dashboard(self, icon=None, item=None):
-        url = self.status.get("server_url")
+        url = self.status.get("server_url") or _read_config().get("server_url")
         if url:
             webbrowser.open(url)
 
@@ -266,7 +405,8 @@ class Tray:
 
 
 def _do_apply(path: str) -> None:
-    """Elevated re-entry: apply settings from a temp file, then confirm."""
+    """Elevated re-entry: apply settings from a temp file."""
+    import tkinter as tk
     try:
         with open(path) as f:
             d = json.load(f)
@@ -279,11 +419,8 @@ def _do_apply(path: str) -> None:
         except OSError:
             pass
     try:
-        import tkinter as tk
-        from tkinter import messagebox
-        r = tk.Tk()
-        r.withdraw()
-        messagebox.showinfo("Leuffen RMM", "Settings saved. The agent is reconnecting.")
+        r = tk.Tk(); r.withdraw()
+        _msgbox(r, "Settings saved. The agent is reconnecting.")
         r.destroy()
     except Exception:
         pass
@@ -296,7 +433,6 @@ if __name__ == "__main__":
         elif "--settings" in sys.argv:
             settings_dialog()
         else:
-            # First run with no configuration → open the settings dialog, then tray.
             if os.name == "nt" and not _is_configured():
                 settings_dialog()
             Tray().run()
