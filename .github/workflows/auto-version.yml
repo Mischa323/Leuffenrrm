@@ -1,0 +1,57 @@
+name: Auto-bump server version
+
+# Bumps the patch of the root VERSION file on every push to main that touches
+# server/ or VERSION. The bump is committed back with a guard token so it does
+# not retrigger this workflow. Agent versioning lives in mischa323/leuffen-rmm-agent.
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-version
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Skip the bot's own bump commits.
+    if: "!contains(github.event.head_commit.message, '[version bump]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine changed paths
+        id: changes
+        run: |
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)"
+          fi
+          FILES="$(git diff --name-only "$BEFORE" "${{ github.sha }}" || true)"
+          echo "server=$(echo "$FILES" | grep -qE '^(server/|VERSION$)' && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+
+      - name: Bump server version
+        if: steps.changes.outputs.server == 'yes'
+        run: |
+          cur="$(tr -d '[:space:]' < VERSION)"
+          IFS=. read -r MA MI PA <<< "$cur"
+          new="$MA.$MI.$((PA + 1))"
+          printf '%s\n' "$new" > VERSION
+          echo "Server: $cur -> $new"
+
+      - name: Commit bump
+        run: |
+          if git diff --quiet; then
+            echo "No version change needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "chore: auto version bump [version bump]"
+          git push origin HEAD:main

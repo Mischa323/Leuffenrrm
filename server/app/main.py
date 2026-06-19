@@ -1866,8 +1866,8 @@ Write-Host "Leuffen RMM agent installed."
 
 MSI_URL = os.environ.get(
     "RMM_MSI_URL",
-    "https://github.com/Mischa323/Leuffenrrm/releases/latest/download/leuffen-rmm-agent.msi")
-GH_REPO = os.environ.get("RMM_GH_REPO", "Mischa323/Leuffenrrm")
+    "https://github.com/Mischa323/leuffen-rmm-agent/releases/latest/download/leuffen-rmm-agent.msi")
+GH_REPO = os.environ.get("RMM_GH_REPO", "Mischa323/leuffen-rmm-agent")
 _release_cache: dict = {"t": 0.0, "data": None}
 
 
