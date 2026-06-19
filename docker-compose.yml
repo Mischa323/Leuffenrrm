@@ -33,7 +33,7 @@ services:
     # Give the container access to the Docker socket group so the in-UI updater
     # can read/write it. Replace 999 with the GID from: stat -c '%g' /var/run/docker.sock
     group_add:
-      - "999"
+      - "983"
     restart: unless-stopped
 
 volumes:
