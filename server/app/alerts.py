@@ -16,7 +16,7 @@ import logging
 import os
 import time
 
-from . import database as db, graph
+from . import database as db, mailer
 from .manager import manager
 
 
@@ -80,18 +80,18 @@ def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
             db.set_alert_state(dev["id"], rule, "raised", now, now)
             log.info("ALERT raised: %s %s", dev["hostname"], rule)
             if notify:
-                graph.send_mail(f"[RMM] {tag}{subject}", f"<p>{body}</p>", recipients)
+                mailer.send_mail(f"[RMM] {tag}{subject}", f"<p>{body}</p>", recipients)
         else:
             last = (state or {}).get("last_email") or 0
             if now - last > EMAIL_COOLDOWN:
                 db.set_alert_state(dev["id"], rule, "raised", state.get("since"), now)
                 if notify:
-                    graph.send_mail(f"[RMM] {tag}{subject} (still active)", f"<p>{body}</p>", recipients)
+                    mailer.send_mail(f"[RMM] {tag}{subject} (still active)", f"<p>{body}</p>", recipients)
     else:
         if cur == "raised":
             db.set_alert_state(dev["id"], rule, "ok", None, None)
             log.info("ALERT cleared: %s %s", dev["hostname"], rule)
             if notify:
-                graph.send_mail(f"[RMM] Resolved: {subject}",
+                mailer.send_mail(f"[RMM] Resolved: {subject}",
                                 f"<p>{dev['hostname']} {rule} has returned to normal.</p>",
                                 recipients)
