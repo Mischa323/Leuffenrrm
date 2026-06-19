@@ -1163,6 +1163,7 @@ function renderActions(d) {
     { t: "Remove", d: "Delete from RMM", i: ICON.trash, c: "danger", f: async () => { if (confirm("Remove " + d.hostname + "?")) { try { await api(`/api/devices/${d.id}`, { method: "DELETE" }); toast("Device removed"); closeDrawer(); refreshOrgCaches().then(() => { buildNav(); renderDevices(); }); } catch (e) { toast(e.message); } } } },
   ];
   let html = `<div class="actions-grid">${acts.map((a, i) => `<button class="action ${a.c}" data-i="${i}"><span class="ai">${a.i}</span><span><span class="at">${a.t}</span><br><span class="ad">${a.d}</span></span></button>`).join("")}</div>`;
+  if (d.online) html = `<div style="margin-bottom:12px"><button class="btn" style="width:100%;justify-content:center;gap:8px" id="remote-btn">${ICON.monitor} Remote control</button></div>` + html;
   html += `<div class="sec-label">Agent</div><div class="tile"><div class="field" style="align-items:center">
       <div style="flex:1;font-size:12.5px" class="muted">Installed: <b>v${d.agent_version || "—"}</b><span id="upd-latest"></span></div>
       <button class="btn" id="update-agent"${d.online ? "" : " disabled"}>${ICON.download} Update agent</button></div>
@@ -1184,6 +1185,8 @@ function renderActions(d) {
     html += `<div class="tile"><div class="muted" style="font-size:12.5px;margin-bottom:12px">Promote this device to a network node so it can relay Wake-on-LAN and scan its local subnets.</div><button class="btn" id="promote">${ICON.nodes} Promote to network node</button></div>`;
   }
   $("dtab-actions").innerHTML = html;
+  const remBtn = $("remote-btn");
+  if (remBtn) remBtn.onclick = () => window.open(`/remote/${d.id}`, "_blank");
   $("dtab-actions").querySelectorAll(".action").forEach((b) => b.onclick = () => acts[+b.dataset.i].f());
   const upd = $("update-agent");
   if (upd) {
