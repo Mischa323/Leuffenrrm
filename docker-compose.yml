@@ -30,6 +30,11 @@ services:
       # Required for one-click in-UI server updates (pull image + recreate
       # container). Comment out to disable self-update (button shows "unavailable").
       - /var/run/docker.sock:/var/run/docker.sock
+    # Optional: add the Docker socket group so the in-UI updater can read/write it.
+    # Set DOCKER_GID in a .env file next to docker-compose.yml:
+    #   echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
+    group_add:
+      - "${DOCKER_GID:-0}"
     restart: unless-stopped
 
 volumes:

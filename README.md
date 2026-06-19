@@ -38,6 +38,41 @@ dashboard, then **install the agent** on each machine you want to monitor.
 
 ### Step 1 — Start the server
 
+**Option A — prebuilt image (recommended, enables one-click in-UI updates)**
+
+```yaml
+# docker-compose.yml
+services:
+  leuffen-rmm:
+    container_name: leuffen-rmm
+    image: ghcr.io/mischa323/leuffenrrm-server:latest
+    network_mode: host
+    environment:
+      RMM_TLS_MODE: self-signed
+      RMM_SERVER_IMAGE: ghcr.io/mischa323/leuffenrrm-server:latest
+    volumes:
+      - rmm-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock   # required for in-UI updates
+    group_add:
+      - "${DOCKER_GID}"   # see .env below
+    restart: unless-stopped
+volumes:
+  rmm-data:
+```
+
+Create a `.env` file next to `docker-compose.yml` with your host's Docker socket group ID:
+
+```bash
+echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" > .env
+docker compose up -d
+```
+
+The `DOCKER_GID` is host-specific (check with `stat -c '%g' /var/run/docker.sock`) and should not be committed — keep it in `.env` only.
+
+Once running, one-click updates are available under **Settings → General → About this server**.
+
+**Option B — build from source**
+
 ```bash
 git clone https://github.com/Mischa323/Leuffenrrm.git
 cd Leuffenrrm
@@ -45,6 +80,8 @@ docker compose up --build -d
 ```
 
 No env editing needed — configuration happens in the browser (next step).
+
+> Note: building from source uses a local image digest, which disables the in-UI "Update & restart" button. Use Option A (prebuilt image) if you want one-click updates.
 
 ### Step 2 — Run the setup wizard
 

@@ -20,7 +20,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
                                RedirectResponse, Response)
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, auth, database as db, graph, totp
+from . import alerts, auth, database as db, graph, mailer, totp
 from . import wol as wol_local
 from .manager import manager
 from .models import (GroupRequest, MonitorRequest, MonitorRuleRequest, MoveDeviceRequest,
@@ -1072,7 +1072,7 @@ def _monitor_notify(mon: dict, old_status: str | None, new_status: str) -> None:
         recipients = ({e.strip() for e in os.environ.get("RMM_ALERT_RECIPIENTS", "").split(",") if e.strip()}
                       or set(auth.BOOTSTRAP_ADMINS))
     if recipients:
-        graph.send_mail(f"[RMM] {subject}", body, sorted(recipients))
+        mailer.send_mail(f"[RMM] {subject}", body, sorted(recipients))
 
 
 async def _execute_monitor(mon: dict) -> str:
@@ -2021,6 +2021,7 @@ SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
     "RMM_REQUIRE_APPROVAL", "RMM_ALERT_RECIPIENTS",
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS",
 ]
 
 
@@ -2039,6 +2040,22 @@ def get_settings(user: dict = Depends(auth.current_user)):
 @app.get("/api/version")
 def get_version(user: dict = Depends(auth.current_user)):
     return {"version": SERVER_VERSION}
+
+
+@app.get("/api/changelog")
+def get_changelog(user: dict = Depends(auth.current_user)):
+    """Return the CHANGELOG.md content."""
+    for path in (
+        os.path.join(os.path.dirname(__file__), "..", "CHANGELOG.md"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "CHANGELOG.md"),
+        "/app/CHANGELOG.md",
+    ):
+        try:
+            with open(os.path.normpath(path), encoding="utf-8") as f:
+                return {"md": f.read()}
+        except OSError:
+            continue
+    return {"md": ""}
 
 
 @app.get("/api/server/update")
