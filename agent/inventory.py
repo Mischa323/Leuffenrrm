@@ -13,7 +13,68 @@ import uuid
 
 import psutil
 
-AGENT_VERSION = "1.1.5"
+AGENT_VERSION = "1.1.6"
+
+
+def installed_software() -> list[dict]:
+    """Installed programs: the Windows uninstall registry, or the Linux package
+    manager. Best-effort; returns [{name, version, publisher}]."""
+    if platform.system() == "Windows":
+        return _software_windows()
+    return _software_linux()
+
+
+def _software_windows() -> list[dict]:
+    import json as _json
+    ps = (
+        "$p=@('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',"
+        "'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',"
+        "'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*');"
+        "Get-ItemProperty $p -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.DisplayName -and -not $_.SystemComponent } | "
+        "Select-Object @{n='name';e={$_.DisplayName}}, @{n='version';e={$_.DisplayVersion}}, "
+        "@{n='publisher';e={$_.Publisher}} | Sort-Object name -Unique | ConvertTo-Json -Compress"
+    )
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                             capture_output=True, text=True, timeout=60)
+        data = _json.loads(out.stdout or "[]")
+        if isinstance(data, dict):
+            data = [data]
+        return [{"name": d.get("name"), "version": d.get("version"), "publisher": d.get("publisher")}
+                for d in data if d.get("name")]
+    except Exception:
+        return []
+
+
+def _software_linux() -> list[dict]:
+    import shutil
+    out: list[dict] = []
+    try:
+        if shutil.which("dpkg-query"):
+            r = subprocess.run(["dpkg-query", "-W", "-f=${Package}\\t${Version}\\n"],
+                               capture_output=True, text=True, timeout=30)
+            for line in r.stdout.splitlines():
+                p = line.split("\t")
+                if p and p[0]:
+                    out.append({"name": p[0], "version": p[1] if len(p) > 1 else None, "publisher": "dpkg"})
+        elif shutil.which("rpm"):
+            r = subprocess.run(["rpm", "-qa", "--qf", "%{NAME}\\t%{VERSION}-%{RELEASE}\\n"],
+                               capture_output=True, text=True, timeout=30)
+            for line in r.stdout.splitlines():
+                p = line.split("\t")
+                if p and p[0]:
+                    out.append({"name": p[0], "version": p[1] if len(p) > 1 else None, "publisher": "rpm"})
+        elif shutil.which("apk"):
+            r = subprocess.run(["apk", "list", "--installed"], capture_output=True, text=True, timeout=30)
+            for line in r.stdout.splitlines():
+                # "name-1.2.3-r0 x86_64 {origin} (license) [installed]"
+                tok = line.split(" ", 1)[0]
+                out.append({"name": tok, "version": None, "publisher": "apk"})
+    except Exception:
+        return out
+    out.sort(key=lambda x: (x["name"] or "").lower())
+    return out
 
 
 def _gpus() -> str | None:
