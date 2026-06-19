@@ -91,7 +91,35 @@ async function init() {
   state.templates = await api("/api/monitor-templates").catch(() => []);
   refreshPendingBadge();
   setInterval(refreshPendingBadge, 30000);
+  refreshBellBadge();
+  setInterval(refreshBellBadge, 30000);
   await restoreView();
+}
+
+async function refreshBellBadge() {
+  let d;
+  try { d = await api("/api/global"); } catch { return; }
+  const alerts = (d.monitors || []);
+  const ping = $("bell-ping"), menu = $("bell-menu");
+  ping.classList.toggle("hidden", alerts.length === 0);
+  if (alerts.length === 0) {
+    menu.innerHTML = `<div style="padding:14px 16px;color:var(--muted);font-size:13px">No open alerts</div>`;
+  } else {
+    menu.innerHTML = `<div style="padding:10px 16px 6px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Open alerts</div>` +
+      alerts.map((a) => {
+        const sev = a.severity || "warning";
+        const col = sev === "critical" ? "var(--bad)" : "var(--warn,#f59e0b)";
+        return `<div class="hmenu-sep" style="margin:0"></div>
+          <div style="padding:9px 16px;display:flex;align-items:flex-start;gap:10px;cursor:pointer" data-alert-org="${escapeAttr(a.org_id||"")}">
+            <span style="color:${col};flex-shrink:0;margin-top:1px">${ICON.bell}</span>
+            <div style="min-width:0"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(a.name)}</div>
+            <div style="font-size:11px;color:var(--muted)">${escapeHtml(a.org||"")}</div></div>
+          </div>`;
+      }).join("");
+    menu.querySelectorAll("[data-alert-org]").forEach((row) => {
+      row.onclick = () => { menu.classList.remove("open"); const oid = row.dataset.alertOrg; if (oid) showOrg(oid).then(() => selectTab("monitors")); else showGlobal(); };
+    });
+  }
 }
 
 async function refreshPendingBadge() {
