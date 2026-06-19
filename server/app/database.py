@@ -216,6 +216,45 @@ CREATE TABLE IF NOT EXISTS enroll_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_hash ON enroll_tokens(token_hash);
 
+-- User access groups (separate from device groups).
+-- An access group bundles users together and grants them roles in organisations.
+-- Deny effects take precedence over allow across all groups a user belongs to.
+CREATE TABLE IF NOT EXISTS access_groups (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS access_group_members (
+    group_id   TEXT NOT NULL,
+    user_email TEXT NOT NULL,
+    PRIMARY KEY (group_id, user_email),
+    FOREIGN KEY (group_id) REFERENCES access_groups(id) ON DELETE CASCADE
+);
+
+-- Base role a group gives users in an org (admin/member/viewer).
+CREATE TABLE IF NOT EXISTS access_group_orgs (
+    group_id TEXT NOT NULL,
+    org_id   TEXT NOT NULL,
+    role     TEXT NOT NULL DEFAULT 'member',
+    PRIMARY KEY (group_id, org_id),
+    FOREIGN KEY (group_id) REFERENCES access_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (org_id)   REFERENCES organizations(id) ON DELETE CASCADE
+);
+
+-- Per-action permission overrides layered on top of the base role.
+-- effect = 'allow' | 'deny'  (deny wins across all groups)
+-- permission = 'terminal' | 'scripts' | 'power' | 'wol' | 'device_delete' | 'agent_delete'
+CREATE TABLE IF NOT EXISTS access_group_perms (
+    group_id   TEXT NOT NULL,
+    org_id     TEXT NOT NULL,
+    permission TEXT NOT NULL,
+    effect     TEXT NOT NULL DEFAULT 'allow',
+    PRIMARY KEY (group_id, org_id, permission),
+    FOREIGN KEY (group_id) REFERENCES access_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (org_id)   REFERENCES organizations(id) ON DELETE CASCADE
+);
+
 -- Per-user configurable dashboard layout.
 CREATE TABLE IF NOT EXISTS dashboard_prefs (
     user_email  TEXT PRIMARY KEY,
@@ -442,6 +481,195 @@ def use_invite(token: str) -> None:
 def delete_invite(token: str) -> None:
     with write() as conn:
         conn.execute("DELETE FROM invites WHERE token=?", (token,))
+
+
+# --------------------------------------------------------------------------- #
+# Access groups — user permission groups with deny-overrides-allow resolution
+# --------------------------------------------------------------------------- #
+ALL_PERMISSIONS = ("terminal", "scripts", "power", "wol", "device_delete", "agent_delete")
+
+
+def create_access_group(name: str) -> dict:
+    gid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute("INSERT INTO access_groups (id, name, created_at) VALUES (?,?,?)",
+                     (gid, name.strip(), _now()))
+    return get_access_group(gid)
+
+
+def get_access_group(group_id: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM access_groups WHERE id=?", (group_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_access_groups() -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM access_groups ORDER BY name").fetchall()]
+
+
+def rename_access_group(group_id: str, name: str) -> None:
+    with write() as conn:
+        conn.execute("UPDATE access_groups SET name=? WHERE id=?", (name.strip(), group_id))
+
+
+def delete_access_group(group_id: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM access_groups WHERE id=?", (group_id,))
+
+
+def list_access_group_members(group_id: str) -> list[str]:
+    return [r[0] for r in get_conn().execute(
+        "SELECT user_email FROM access_group_members WHERE group_id=? ORDER BY user_email",
+        (group_id,)).fetchall()]
+
+
+def add_access_group_member(group_id: str, user_email: str) -> None:
+    with write() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO access_group_members (group_id, user_email) VALUES (?,?)",
+            (group_id, user_email.lower()))
+
+
+def remove_access_group_member(group_id: str, user_email: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM access_group_members WHERE group_id=? AND user_email=?",
+                     (group_id, user_email.lower()))
+
+
+def list_access_group_orgs(group_id: str) -> list[dict]:
+    rows = get_conn().execute(
+        "SELECT ago.*, o.name AS org_name FROM access_group_orgs ago "
+        "JOIN organizations o ON o.id = ago.org_id WHERE ago.group_id=? ORDER BY o.name",
+        (group_id,)).fetchall()
+    result = []
+    for r in rows:
+        entry = dict(r)
+        perms = get_conn().execute(
+            "SELECT permission, effect FROM access_group_perms WHERE group_id=? AND org_id=?",
+            (group_id, r["org_id"])).fetchall()
+        entry["perms"] = {p["permission"]: p["effect"] for p in perms}
+        result.append(entry)
+    return result
+
+
+def set_access_group_org(group_id: str, org_id: str, role: str) -> None:
+    with write() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO access_group_orgs (group_id, org_id, role) VALUES (?,?,?)",
+            (group_id, org_id, role))
+
+
+def remove_access_group_org(group_id: str, org_id: str) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM access_group_orgs WHERE group_id=? AND org_id=?",
+                     (group_id, org_id))
+        conn.execute("DELETE FROM access_group_perms WHERE group_id=? AND org_id=?",
+                     (group_id, org_id))
+
+
+def set_access_group_perm(group_id: str, org_id: str, permission: str, effect: str) -> None:
+    if permission not in ALL_PERMISSIONS or effect not in ("allow", "deny"):
+        raise ValueError(f"Invalid permission '{permission}' or effect '{effect}'")
+    with write() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO access_group_perms (group_id, org_id, permission, effect) "
+            "VALUES (?,?,?,?)", (group_id, org_id, permission, effect))
+
+
+def remove_access_group_perm(group_id: str, org_id: str, permission: str) -> None:
+    with write() as conn:
+        conn.execute(
+            "DELETE FROM access_group_perms WHERE group_id=? AND org_id=? AND permission=?",
+            (group_id, org_id, permission))
+
+
+def user_access_group_ids(user_email: str) -> list[str]:
+    return [r[0] for r in get_conn().execute(
+        "SELECT group_id FROM access_group_members WHERE user_email=?",
+        (user_email.lower(),)).fetchall()]
+
+
+def orgs_for_user_via_groups(email: str) -> list[dict]:
+    """Orgs accessible through access-group membership (not via direct org_users)."""
+    rows = get_conn().execute(
+        """SELECT DISTINCT o.* FROM organizations o
+           JOIN access_group_orgs ago ON ago.org_id = o.id
+           JOIN access_group_members agm ON agm.group_id = ago.group_id
+           WHERE agm.user_email=? ORDER BY o.name""",
+        (email.lower(),)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def user_effective_role(email: str, org_id: str) -> str | None:
+    """Best role the user has in org_id across direct assignment and group membership.
+    Returns 'admin' > 'member' > 'viewer' > None."""
+    _rank = {"admin": 3, "member": 2, "viewer": 1}
+    best: str | None = None
+    # Direct assignment
+    direct = user_role(email, org_id)
+    if direct:
+        best = direct
+    # Group-based assignments
+    for row in get_conn().execute(
+        """SELECT ago.role FROM access_group_orgs ago
+           JOIN access_group_members agm ON agm.group_id = ago.group_id
+           WHERE agm.user_email=? AND ago.org_id=?""",
+        (email.lower(), org_id)).fetchall():
+        r = row["role"]
+        if best is None or _rank.get(r, 0) > _rank.get(best, 0):
+            best = r
+    return best
+
+
+def user_effective_perms(email: str, org_id: str) -> dict:
+    """Compute effective allow/deny for each action in org_id.
+
+    Returns a dict like:
+      { 'terminal': {'effect': 'allow', 'denied_by': [], 'allowed_by': ['Devs']} }
+    Deny wins across all groups; per-action entries without an explicit override
+    inherit from the base role (admin → allow all; member → allow most; viewer → deny scripts/power/etc.).
+    """
+    role = user_effective_role(email, org_id)
+    if role is None:
+        return {p: {"effect": "deny", "denied_by": ["no access"], "allowed_by": []} for p in ALL_PERMISSIONS}
+
+    # Role-based defaults
+    _role_allows = {
+        "admin":  set(ALL_PERMISSIONS),
+        "member": {"terminal", "scripts", "power", "wol"},
+        "viewer": set(),
+    }
+    role_allowed = _role_allows.get(role, set())
+
+    # Collect per-group explicit perms
+    rows = get_conn().execute(
+        """SELECT ag.name AS gname, agp.permission, agp.effect
+           FROM access_group_perms agp
+           JOIN access_groups ag ON ag.id = agp.group_id
+           JOIN access_group_members agm ON agm.group_id = agp.group_id
+           WHERE agm.user_email=? AND agp.org_id=?""",
+        (email.lower(), org_id)).fetchall()
+
+    denied_by: dict[str, list[str]] = {p: [] for p in ALL_PERMISSIONS}
+    allowed_by: dict[str, list[str]] = {p: [] for p in ALL_PERMISSIONS}
+    for row in rows:
+        p, eff, gname = row["permission"], row["effect"], row["gname"]
+        if eff == "deny":
+            denied_by[p].append(gname)
+        else:
+            allowed_by[p].append(gname)
+
+    result = {}
+    for p in ALL_PERMISSIONS:
+        if denied_by[p]:
+            result[p] = {"effect": "deny", "denied_by": denied_by[p], "allowed_by": allowed_by[p]}
+        elif allowed_by[p]:
+            result[p] = {"effect": "allow", "denied_by": [], "allowed_by": allowed_by[p]}
+        else:
+            # Fall back to role default
+            eff = "allow" if p in role_allowed else "deny"
+            result[p] = {"effect": eff, "denied_by": [], "allowed_by": []}
+    return result
 
 
 def set_totp_secret(username: str, secret: str | None) -> None:
@@ -1104,9 +1332,15 @@ def orgs_for_user(email: str, is_global_admin: bool = False) -> list[dict]:
     if is_global_admin:
         return list_orgs()
     rows = get_conn().execute(
-        """SELECT o.* FROM organizations o JOIN org_users u ON u.org_id = o.id
-           WHERE u.user_email = ? ORDER BY o.name""",
-        (email.lower(),),
+        """SELECT DISTINCT o.* FROM organizations o
+           WHERE o.id IN (
+               SELECT org_id FROM org_users WHERE user_email=?
+               UNION
+               SELECT ago.org_id FROM access_group_orgs ago
+               JOIN access_group_members agm ON agm.group_id = ago.group_id
+               WHERE agm.user_email=?
+           ) ORDER BY o.name""",
+        (email.lower(), email.lower()),
     ).fetchall()
     return [dict(r) for r in rows]
 

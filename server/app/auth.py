@@ -63,6 +63,18 @@ def resolve_sso_identity(email: str) -> str:
     u = db.get_user_by_email(email)
     return u["username"] if u else email.lower()
 
+
+def sso_permitted(email: str) -> bool:
+    """Return True if this SSO email is allowed to sign in.
+
+    An SSO user is permitted only when they are a bootstrap admin OR have a
+    local account (created by invite or manually). Any valid M365 user who
+    is not pre-approved is blocked.
+    """
+    if email.lower() in BOOTSTRAP_ADMINS:
+        return True
+    return db.get_user_by_email(email) is not None
+
 # Mark session cookies Secure unless explicitly disabled (TLS is on by default).
 # Auto-off for plain-HTTP proxy mode without TLS termination.
 SECURE_COOKIES = os.environ.get("RMM_SECURE_COOKIES",
@@ -149,13 +161,31 @@ def optional_user(request: Request) -> dict | None:
 
 
 def require_org(user: dict, org_id: str) -> str:
-    """Ensure the user may act in ``org_id``; return their role."""
+    """Ensure the user may act in ``org_id``; return their effective role."""
     if user["is_global_admin"]:
         return "admin"
-    role = db.user_role(user["email"], org_id)
+    role = db.user_effective_role(user["email"], org_id)
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this organisation")
     return role
+
+
+def check_permission(user: dict, org_id: str, permission: str) -> bool:
+    """Return True if the user is allowed to perform ``permission`` in ``org_id``.
+
+    Global admins are always allowed. For other users the deny-overrides-allow
+    logic in ``db.user_effective_perms`` is applied.
+    """
+    if user["is_global_admin"]:
+        return True
+    perms = db.user_effective_perms(user["email"], org_id)
+    return perms.get(permission, {}).get("effect") == "allow"
+
+
+def require_permission(user: dict, org_id: str, permission: str) -> None:
+    """Like check_permission but raises 403 on denial."""
+    if not check_permission(user, org_id, permission):
+        raise HTTPException(status_code=403, detail=f"Permission denied: {permission}")
 
 
 def require_global(user: dict) -> None:

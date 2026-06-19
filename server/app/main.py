@@ -23,10 +23,11 @@ from fastapi.staticfiles import StaticFiles
 from . import alerts, auth, database as db, graph, mailer, totp
 from . import wol as wol_local
 from .manager import manager
-from .models import (GroupRequest, InviteRequest, MonitorRequest, MonitorRuleRequest,
-                     MoveDeviceRequest, MoveOrgRequest, OrgRequest, OrgUserRequest,
-                     PowerRequest, ScheduleRequest, ScriptFileRequest, ScriptRequest,
-                     ScriptRunRequest, ShellRequest, SubnetRequest, WakeRequest)
+from .models import (AccessGroupMemberRequest, AccessGroupOrgRequest, AccessGroupPermRequest,
+                     AccessGroupRequest, GroupRequest, InviteRequest, MonitorRequest,
+                     MonitorRuleRequest, MoveDeviceRequest, MoveOrgRequest, OrgRequest,
+                     OrgUserRequest, PowerRequest, ScheduleRequest, ScriptFileRequest,
+                     ScriptRequest, ScriptRunRequest, ShellRequest, SubnetRequest, WakeRequest)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
@@ -304,6 +305,8 @@ def auth_callback(request: Request, code: str = "", state: str = ""):
     if request.cookies.get("oauth_state") != state:
         raise HTTPException(status_code=400, detail="state mismatch")
     email = auth.exchange_code(code)
+    if not auth.sso_permitted(email):
+        return HTMLResponse(_sso_denied_page(email), status_code=403)
     # In hybrid mode, fold the SSO user onto a matching local account (by email).
     identity = auth.resolve_sso_identity(email)
     resp = RedirectResponse("/")
@@ -311,6 +314,39 @@ def auth_callback(request: Request, code: str = "", state: str = ""):
                     samesite="lax", secure=auth.SECURE_COOKIES)
     resp.delete_cookie("oauth_state")
     return resp
+
+
+def _sso_denied_page(email: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en" data-theme="dark"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Access denied — Leuffen RMM</title>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="/styles.css"/>
+</head><body>
+<div style="min-height:100vh;display:grid;place-items:center;padding:24px">
+  <div style="width:100%;max-width:420px;background:var(--surface);border:1px solid var(--border);
+              border-radius:var(--r-xl);box-shadow:var(--shadow-lg);padding:32px;text-align:center">
+    <div style="width:56px;height:56px;border-radius:50%;background:color-mix(in srgb,var(--bad) 15%,transparent);
+                display:inline-grid;place-items:center;margin-bottom:20px">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--bad)" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/>
+        <line x1="9" y1="9" x2="15" y2="15"/>
+      </svg>
+    </div>
+    <h2 style="margin:0 0 8px;font-size:20px">Access denied</h2>
+    <p style="color:var(--text-dim);font-size:14px;margin:0 0 24px">
+      <strong style="color:var(--text)">{email}</strong> is not authorised to sign in.<br>
+      Contact your administrator to be invited.
+    </p>
+    <a href="/auth/login" style="display:inline-block;padding:10px 24px;background:var(--accent);
+       color:#fff;border-radius:var(--r-md);text-decoration:none;font-size:14px;font-weight:600">
+      Back to sign in
+    </a>
+  </div>
+</div>
+</body></html>"""
 
 
 @app.get("/auth/logout")
@@ -2327,6 +2363,115 @@ async def accept_invite(token: str, request: Request):
         httponly=True, samesite="lax", secure=auth.SECURE_COOKIES,
     )
     return response
+
+
+# --------------------------------------------------------------------------- #
+# Access groups
+# --------------------------------------------------------------------------- #
+@app.get("/api/access-groups")
+def list_access_groups(user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    groups = db.list_access_groups()
+    for g in groups:
+        g["members"] = db.list_access_group_members(g["id"])
+        g["orgs"] = db.list_access_group_orgs(g["id"])
+    return {"groups": groups}
+
+
+@app.post("/api/access-groups")
+def create_access_group(body: AccessGroupRequest, user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    return db.create_access_group(body.name)
+
+
+@app.patch("/api/access-groups/{group_id}")
+def rename_access_group(group_id: str, body: AccessGroupRequest,
+                        user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    if not db.get_access_group(group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
+    db.rename_access_group(group_id, body.name)
+    return {"ok": True}
+
+
+@app.delete("/api/access-groups/{group_id}")
+def delete_access_group(group_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    if not db.get_access_group(group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
+    db.delete_access_group(group_id)
+    return {"ok": True}
+
+
+@app.post("/api/access-groups/{group_id}/members")
+def add_access_group_member(group_id: str, body: AccessGroupMemberRequest,
+                            user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    if not db.get_access_group(group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
+    db.add_access_group_member(group_id, body.user_email)
+    return {"ok": True}
+
+
+@app.delete("/api/access-groups/{group_id}/members/{email}")
+def remove_access_group_member(group_id: str, email: str,
+                               user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    db.remove_access_group_member(group_id, email)
+    return {"ok": True}
+
+
+@app.post("/api/access-groups/{group_id}/orgs")
+def add_access_group_org(group_id: str, body: AccessGroupOrgRequest,
+                         user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    if not db.get_access_group(group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
+    if not db.get_org(body.org_id):
+        raise HTTPException(status_code=404, detail="Organisation not found")
+    db.set_access_group_org(group_id, body.org_id, body.role)
+    return {"ok": True}
+
+
+@app.delete("/api/access-groups/{group_id}/orgs/{org_id}")
+def remove_access_group_org(group_id: str, org_id: str,
+                            user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    db.remove_access_group_org(group_id, org_id)
+    return {"ok": True}
+
+
+@app.put("/api/access-groups/{group_id}/orgs/{org_id}/perms")
+def set_access_group_perm(group_id: str, org_id: str, body: AccessGroupPermRequest,
+                          user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    try:
+        db.set_access_group_perm(group_id, org_id, body.permission, body.effect)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/access-groups/{group_id}/orgs/{org_id}/perms/{permission}")
+def remove_access_group_perm(group_id: str, org_id: str, permission: str,
+                             user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    db.remove_access_group_perm(group_id, org_id, permission)
+    return {"ok": True}
+
+
+@app.get("/api/access-groups/{group_id}/orgs/{org_id}/effective-perms")
+def effective_perms(group_id: str, org_id: str, user: dict = Depends(auth.current_user)):
+    """Effective permissions for a user email; also usable to preview group impact."""
+    auth.require_global(user)
+    return db.user_effective_perms(user["email"], org_id)
+
+
+@app.get("/api/users/{email}/effective-perms/{org_id}")
+def user_effective_perms_route(email: str, org_id: str,
+                               user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    return {"perms": db.user_effective_perms(email, org_id)}
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
