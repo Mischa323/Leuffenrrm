@@ -340,7 +340,7 @@ function buildNav() {
   $("nav-network-count").textContent = state.cache.hosts.length;
   $("nav-nodes-count").textContent = state.cache.nodes.length;
   $("nav-scripts-count").textContent = state.cache.scripts.length;
-  $("nav-monitors-count").textContent = state.cache.monitors.length;
+  $("nav-monitors-count").textContent = state.cache.monitors.length + state.cache.monitorRules.length;
 }
 function buildGroups() {
   const groups = state.cache.groups, devs = state.cache.devices;
@@ -778,7 +778,8 @@ function renderMonitorsTab() {
 }
 function renderMonitors() {
   const mons = state.cache.monitors || [];
-  $("mon-sub").textContent = `${mons.length} polic${mons.length === 1 ? "y" : "ies"}`;
+  const totalMon = mons.length + (state.cache.monitorRules || []).length;
+  $("mon-sub").textContent = `${totalMon} polic${totalMon === 1 ? "y" : "ies"}`;
   const body = $("mon-body");
   body.innerHTML = mons.length ? "" : `<div class="empty"><div class="big">${ICON.shieldCheck}</div>No monitoring policies yet.<br><span class="muted">Run a monitor script on a schedule and auto-remediate on failure.</span></div>`;
   for (const m of mons) {
