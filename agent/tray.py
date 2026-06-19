@@ -111,7 +111,30 @@ def _rel(ts) -> str:
 # --------------------------------------------------------------------------- #
 # Settings dialog — dark themed, styled like the web UI
 # --------------------------------------------------------------------------- #
-def _restart_agent() -> None:
+def _test_connection(url: str, insecure: bool) -> str | None:
+    """Try GET {url}/api/health; return None on success or an error string."""
+    import ssl
+    import urllib.request
+    try:
+        target = url.rstrip("/") + "/api/health"
+        ctx = ssl.create_default_context()
+        if insecure:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.urlopen(target, timeout=8, context=ctx)
+        req.read()
+        return None
+    except OSError as e:
+        msg = str(e)
+        if "timed out" in msg.lower():
+            return "Connection timed out — is the server running and reachable?"
+        if "refused" in msg.lower():
+            return "Connection refused — check the server URL and port."
+        if "certificate" in msg.lower() or "ssl" in msg.lower():
+            return "TLS error — enable 'Accept self-signed certificate' if using the default setup."
+        return f"Cannot reach server: {msg}"
+    except Exception as e:
+        return f"Cannot reach server: {e}"
     for args in (["schtasks", "/end", "/tn", "LeuffenRMMAgent"],
                  ["taskkill", "/F", "/IM", "leuffen-rmm-agent.exe"],
                  ["schtasks", "/run", "/tn", "LeuffenRMMAgent"]):
@@ -283,17 +306,10 @@ def settings_dialog() -> None:
     btns = ttk.Frame(outer)
     btns.grid(row=10, column=0, columnspan=3, sticky="e")
 
-    def save():
-        u, k = url_e.get().strip(), key_e.get().strip()
-        if not u:
-            err_var.set("Server URL is required.")
-            return
-        if not k:
-            err_var.set("Enrollment key is required.")
-            return
-        err_var.set("")
+    def _do_save(u: str, k: str, ins: bool) -> None:
+        """Called after connection check passes."""
         if _is_admin():
-            _apply_settings(u, k, bool(insecure.get()))
+            _apply_settings(u, k, ins)
             _msgbox(root, "Settings saved. The agent is reconnecting.")
             root.destroy()
             return
@@ -301,15 +317,49 @@ def settings_dialog() -> None:
         fd, path = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         with open(path, "w") as f:
-            json.dump({"url": u, "key": k, "insecure": bool(insecure.get())}, f)
+            json.dump({"url": u, "key": k, "insecure": ins}, f)
         _elevate(f'--apply "{path}"')
         _msgbox(root, "Approve the administrator prompt to finish saving.")
         root.destroy()
 
+    def save():
+        import threading
+        u, k = url_e.get().strip(), key_e.get().strip()
+        if not u:
+            err_var.set("Server URL is required.")
+            return
+        if not k:
+            err_var.set("Enrollment key is required.")
+            return
+        ins = bool(insecure.get())
+        err_var.set("")
+        # Ensure URL has a scheme
+        if not u.startswith(("http://", "https://")):
+            u = "https://" + u
+            url_e.delete(0, "end")
+            url_e.insert(0, u)
+
+        # Disable the button and show a testing message while the check runs.
+        save_btn.configure(state="disabled", text="Testing connection…")
+        err_var.set("")
+
+        def _check():
+            err = _test_connection(u, ins)
+            root.after(0, lambda: _after_check(err, u, k, ins))
+
+        def _after_check(err: str | None, u: str, k: str, ins: bool) -> None:
+            save_btn.configure(state="normal", text="Save settings")
+            if err:
+                err_var.set(err)
+            else:
+                _do_save(u, k, ins)
+
+        threading.Thread(target=_check, daemon=True).start()
+
     ttk.Button(btns, text="Cancel", style="Ghost.TButton",
                command=root.destroy).pack(side="right", padx=(6, 0))
-    ttk.Button(btns, text="Save settings", style="Accent.TButton",
-               command=save).pack(side="right")
+    save_btn = ttk.Button(btns, text="Save settings", style="Accent.TButton", command=save)
+    save_btn.pack(side="right")
 
     outer.columnconfigure(1, weight=1)
     root.mainloop()
