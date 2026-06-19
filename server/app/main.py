@@ -66,7 +66,7 @@ def _resolve_version() -> str:
 
 
 SERVER_VERSION = _resolve_version()
-AGENT_VERSION = "1.1.8"  # keep in sync with agent/inventory.py
+AGENT_VERSION = "1.1.9"  # keep in sync with agent/inventory.py
 
 
 class _RingLogHandler(logging.Handler):
