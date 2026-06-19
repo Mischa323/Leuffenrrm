@@ -216,6 +216,30 @@ CREATE TABLE IF NOT EXISTS enroll_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_hash ON enroll_tokens(token_hash);
 
+-- User access groups (separate from device groups).
+-- An access group bundles users together and grants them roles in organisations.
+CREATE TABLE IF NOT EXISTS access_groups (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS access_group_members (
+    group_id   TEXT NOT NULL,
+    user_email TEXT NOT NULL,
+    PRIMARY KEY (group_id, user_email),
+    FOREIGN KEY (group_id) REFERENCES access_groups(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS access_group_orgs (
+    group_id TEXT NOT NULL,
+    org_id   TEXT NOT NULL,
+    role     TEXT NOT NULL DEFAULT 'member',
+    PRIMARY KEY (group_id, org_id),
+    FOREIGN KEY (group_id) REFERENCES access_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (org_id)   REFERENCES organizations(id) ON DELETE CASCADE
+);
+
 -- Per-user configurable dashboard layout.
 CREATE TABLE IF NOT EXISTS dashboard_prefs (
     user_email  TEXT PRIMARY KEY,
