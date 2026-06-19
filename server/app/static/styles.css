@@ -533,3 +533,5 @@ dl.inv dt:last-of-type, dl.inv dd:last-of-type { border-bottom: 0; }
 .cl-item { font-size: 13px; color: var(--text-dim); padding: 2px 0 2px 14px; position: relative; }
 .cl-item::before { content: "–"; position: absolute; left: 0; color: var(--border-strong); }
 .cl-hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.cl-pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.cl-page-info { font-size: 12px; color: var(--text-dim); }
