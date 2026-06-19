@@ -13,8 +13,9 @@ import subprocess
 
 
 class ScreenSession:
-    def __init__(self, send_bytes, fps: int = 4, quality: int = 50):
+    def __init__(self, send_bytes, fps: int = 4, quality: int = 50, on_error=None):
         self.send_bytes = send_bytes
+        self.on_error = on_error
         self.fps = max(1, min(fps, 15))
         self.quality = max(10, min(quality, 90))
         self._task: asyncio.Task | None = None
@@ -46,8 +47,15 @@ class ScreenSession:
                     await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            # Common cause on Windows: the agent runs as SYSTEM in session 0 and
+            # cannot capture the interactive user's desktop. Report it so the
+            # viewer shows a reason instead of hanging.
+            if self.on_error:
+                try:
+                    await self.on_error(f"capture failed: {exc}")
+                except Exception:
+                    pass
 
     def stop(self) -> None:
         if self._task:

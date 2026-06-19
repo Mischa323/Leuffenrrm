@@ -388,11 +388,16 @@ class Agent:
         async def send_bytes(b: bytes) -> None:
             await self.ws.send(b)
 
+        async def on_error(err: str) -> None:
+            await self._send({"type": "screen_error", "error": err})
+
         self.screen = ScreenSession(send_bytes, fps=msg.get("fps", 4),
-                                    quality=msg.get("quality", 50))
+                                    quality=msg.get("quality", 50), on_error=on_error)
         err = await self.screen.start()
         if err:
-            await self._send({"type": "shell_output", "data": f"[screen] {err}\n", "code": 1})
+            # Surface on the screen channel so the remote viewer shows the reason
+            # instead of hanging on "Connecting…".
+            await self._send({"type": "screen_error", "error": err})
             self.screen = None
 
 
