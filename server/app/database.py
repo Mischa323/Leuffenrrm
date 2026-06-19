@@ -1099,6 +1099,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # Reclassify machine-minted download/update tokens created before this split.
         conn.execute("UPDATE enroll_tokens SET kind='internal' "
                      "WHERE label IN ('agent-update','installer')")
+    if "use_count" not in tcols:
+        conn.execute("ALTER TABLE enroll_tokens ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0")
     # Tidy up: drop expired internal download tokens so they don't accumulate.
     conn.execute("DELETE FROM enroll_tokens WHERE kind='internal' "
                  "AND expires_at IS NOT NULL AND expires_at < ?", (_now(),))
@@ -1287,6 +1289,49 @@ def get_enroll_token(token_id: str) -> dict | None:
 def delete_enroll_token(token_id: str) -> None:
     with write() as conn:
         conn.execute("DELETE FROM enroll_tokens WHERE id=?", (token_id,))
+
+
+# ---------- shareable download-link tokens (kind='download') ----------
+
+def create_download_token(org_id: str, label: str | None = None,
+                          ttl_days: float = 7) -> dict:
+    """Create a multi-use, time-limited download token for the MSI/zip.
+
+    Unlike enrolment tokens these are never consumed on use — they remain valid
+    until they expire or are explicitly revoked by an admin."""
+    tid = uuid.uuid4().hex
+    token = "lrmm_dl_" + secrets.token_urlsafe(30)
+    exp = _now() + ttl_days * 86400
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO enroll_tokens (id, org_id, token_hash, label, created_at, "
+            "expires_at, kind, use_count) VALUES (?,?,?,?,?,?,?,0)",
+            (tid, org_id, _sha256_hex(token), label, _now(), exp, "download"),
+        )
+    return {"id": tid, "org_id": org_id, "token": token, "label": label, "expires_at": exp}
+
+
+def list_download_tokens(org_id: str) -> list[dict]:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT id, label, created_at, expires_at, use_count "
+        "FROM enroll_tokens WHERE org_id=? AND kind='download' ORDER BY created_at DESC",
+        (org_id,)).fetchall()]
+
+
+def download_token_valid(org_id: str, token: str) -> bool:
+    """True if the download token belongs to this org and has not expired."""
+    row = get_conn().execute(
+        "SELECT org_id, expires_at FROM enroll_tokens "
+        "WHERE token_hash=? AND kind='download'",
+        (_sha256_hex(token),)).fetchone()
+    if not row or row["org_id"] != org_id:
+        return False
+    if row["expires_at"] and _now() > row["expires_at"]:
+        return False
+    with write() as conn:
+        conn.execute("UPDATE enroll_tokens SET use_count=use_count+1 WHERE token_hash=?",
+                     (_sha256_hex(token),))
+    return True
 
 
 def get_dashboard_layout(email: str) -> list | None:

@@ -672,6 +672,20 @@ async function renderDownloads() {
     <div class="dl-block"><div class="lab">${ICON.refresh} Update installed agents</div>
       <div class="h-sub" style="margin:4px 0 10px">Push the latest build to every online agent in this organisation. Each updates in place and reconnects automatically.</div>
       <button class="btn sm" id="update-all">${ICON.download} Update all online agents</button></div>
+    <div class="dl-block"><div class="lab">${ICON.link} Shareable MSI download link</div>
+      <div class="h-sub" style="margin:4px 0 10px">Generate a link you can share with anyone. The link downloads the MSI pre-configured for this organisation — valid for a set number of days, unlimited installs. Revoke anytime.</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <select id="dl-ttl" class="inp" style="width:auto">
+          <option value="1">1 day</option>
+          <option value="3">3 days</option>
+          <option value="7" selected>7 days</option>
+          <option value="14">14 days</option>
+          <option value="30">30 days</option>
+        </select>
+        <button class="btn sm" id="gen-dl-link">${ICON.plus} Generate link</button>
+      </div>
+      <div id="dl-link-result" style="margin-top:10px"></div>
+      <div id="dl-link-list" style="margin-top:10px"></div></div>
     <div class="dl-block"><div class="lab">${ICON.key} Active enrolment keys</div>
       <div id="token-list"></div></div>`;
   $("update-all").onclick = async () => {
@@ -688,6 +702,47 @@ async function renderDownloads() {
     } catch (e) { toast(e.message); }
   };
   renderTokenList(info.tokens);
+
+  // Shareable download links
+  let dlLinks = [];
+  try { dlLinks = (await api(`/api/orgs/${state.org}/download-links`)).links || []; } catch {}
+  renderDlLinkList(dlLinks);
+  $("gen-dl-link").onclick = async () => {
+    const ttl = parseFloat($("dl-ttl").value) || 7;
+    try {
+      const r = await api(`/api/orgs/${state.org}/download-links`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ttl_days: ttl }),
+      });
+      const host = $("dl-link-result");
+      host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.link}</div><div style="flex:1">
+        <div class="ct">Shareable MSI download link</div>
+        <div class="h-sub" style="margin:4px 0 6px">Valid for ${ttl} day${ttl !== 1 ? "s" : ""} · unlimited downloads · anyone with the link can install the agent</div>
+        <div class="code"><button class="btn ghost sm tcopy" data-c="${escapeAttr(r.msi_url)}">${ICON.copy} Copy link</button>${escapeHtml(r.msi_url)}</div>
+      </div></div>`;
+      host.querySelectorAll(".tcopy").forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.c); toast("Copied"); });
+      dlLinks = (await api(`/api/orgs/${state.org}/download-links`)).links || [];
+      renderDlLinkList(dlLinks);
+    } catch (e) { toast(e.message); }
+  };
+}
+function renderDlLinkList(links) {
+  const host = $("dl-link-list");
+  if (!links.length) { host.innerHTML = `<div class="h-sub">No active links.</div>`; return; }
+  const now = Date.now() / 1000;
+  host.innerHTML = `<table class="grid"><thead><tr><th>Created</th><th>Expires</th><th>Downloads</th><th></th></tr></thead><tbody>${links.map((l) => {
+    const expired = l.expires_at && l.expires_at < now;
+    const exp = l.expires_at ? (expired ? `<span class="badge na">expired</span>` : `<span class="badge ok">${relTime(l.expires_at)}</span>`) : `<span class="h-sub">never</span>`;
+    return `<tr><td class="h-sub">${relTime(l.created_at)}</td><td>${exp}</td><td class="h-sub">${l.use_count || 0}</td><td style="text-align:right"><button class="btn ghost sm dldel" data-id="${l.id}">${ICON.trash}</button></td></tr>`;
+  }).join("")}</tbody></table>`;
+  host.querySelectorAll(".dldel").forEach((b) => b.onclick = async () => {
+    try {
+      await api(`/api/orgs/${state.org}/download-links/${b.dataset.id}`, { method: "DELETE" });
+      const r = await api(`/api/orgs/${state.org}/download-links`);
+      renderDlLinkList(r.links || []);
+      toast("Link revoked");
+    } catch (e) { toast(e.message); }
+  });
 }
 function showNewToken(token, base, ins) {
   const cmds = {
