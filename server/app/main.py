@@ -1715,6 +1715,9 @@ async def _handle_agent_msg(device_id: str, org_id: str, data: dict) -> None:
         manager.resolve(data.get("rid", ""), data.get("payload", data))
     elif mtype == "shell_output":
         await manager.fanout(device_id, "terminal", data)
+    elif mtype == "screen_error":
+        await manager.fanout(device_id, "screen",
+                             {"type": "error", "error": data.get("error", "screen capture failed")})
     elif mtype == "scan_result":
         db.upsert_network_hosts(org_id, device_id, data.get("hosts", []))
     elif mtype == "register":
