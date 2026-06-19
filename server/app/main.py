@@ -60,7 +60,7 @@ def _resolve_version() -> str:
             return v.stdout.strip().lstrip("v")
     except Exception:
         pass
-    return "1.1.5"
+    return "1.1.6"
 
 
 SERVER_VERSION = _resolve_version()
@@ -619,6 +619,24 @@ async def _agent_file_op(device_id: str, user: dict, msg: dict, timeout: float =
     if not res.get("ok"):
         raise HTTPException(status_code=400, detail=res.get("error", "File operation failed"))
     return res
+
+
+@app.get("/api/devices/{device_id}/software")
+async def device_software(device_id: str, refresh: bool = Query(False),
+                          user: dict = Depends(auth.current_user)):
+    """Installed software for a device. Pulls a fresh list from the agent when it's
+    online (and caches it); otherwise returns the last cached list."""
+    _device_for_user(device_id, user)
+    if manager.is_online(device_id):
+        try:
+            res = await manager.request(device_id, {"type": "software_list"}, timeout=60)
+            if res.get("ok"):
+                db.set_device_software(device_id, res.get("software", []))
+        except Exception:
+            pass
+    cached = db.get_device_software(device_id)
+    return {"software": cached["software"], "collected_at": cached["collected_at"],
+            "online": manager.is_online(device_id)}
 
 
 @app.get("/api/devices/{device_id}/files")
