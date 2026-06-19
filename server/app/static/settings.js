@@ -132,10 +132,16 @@ function render() {
       ${block("Sign-in method", "The active method. Switching applies after a server restart.",
         `<div class="segmented" id="auth-seg"></div><div id="auth-extra" style="margin-top:4px"></div>`, "auth")}
       ${block("Microsoft 365 credentials", "Tenant and app registration for SSO sign-in and Graph mail. Changes apply after a server restart.",
-        `<div class="frow"><label>Tenant ID</label><input class="inp mono" id="ms-tenant" value="${esc(cfg.MS_TENANT_ID || "")}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></div>
+        `<div class="callout info" style="margin-bottom:14px"><div class="ic">${ICON.info}</div><div><div class="ct">Required Entra app permissions</div><div class="cd">
+           <b>API permissions</b> — Microsoft Graph → Application → <code>Mail.Send</code> (admin-consented, for alert emails).<br>
+           <b>Authentication</b> → Redirect URI (Web): <code>${esc(location.origin)}/auth/callback</code>.<br>
+           Find these in <b>Entra admin center → App registrations → your app</b>.
+         </div></div></div>
+         <div class="frow"><label>Tenant ID</label><input class="inp mono" id="ms-tenant" value="${esc(cfg.MS_TENANT_ID || "")}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></div>
          <div class="frow"><label>Client ID</label><input class="inp mono" id="ms-client" value="${esc(cfg.MS_CLIENT_ID || "")}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /></div>
          <div class="frow"><label>Client secret</label><input class="inp mono" type="password" id="ms-secret" value="${esc(cfg.MS_CLIENT_SECRET || "")}" /></div>
-         <div class="frow"><label>Redirect URI</label><input class="inp mono" id="ms-redirect" value="${esc(cfg.MS_REDIRECT_URI || (location.origin + "/auth/callback"))}" /><div class="hint">Must match the redirect URI registered in your Entra app.</div></div>`, "auth-sso")}
+         <div class="frow"><label>Redirect URI</label><input class="inp mono" id="ms-redirect" value="${esc(cfg.MS_REDIRECT_URI || (location.origin + "/auth/callback"))}" /><div class="hint">Must match the redirect URI registered in your Entra app.</div></div>
+         <div id="sso-validation-msg" style="display:none;color:var(--bad);font-size:12.5px;margin-top:8px"></div>`, "auth-sso")}
       ${block("Two-factor authentication", "Time-based one-time codes (TOTP) for local accounts.",
         `${toggle("enforce2fa", "Require 2FA for local accounts", "Local users are prompted to set up an authenticator before they can use the dashboard.", (cfg.RMM_ENFORCE_2FA ?? "0") === "1")}
          <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Per-user enrolment</div><div class="cd">Each user enables 2FA under <b>Account → Password</b>. ${authMethod === "local" ? "" : "Switch to local accounts to use this — SSO 2FA is managed in your identity provider."}</div></div></div>`, "auth-mfa")}
@@ -155,8 +161,14 @@ function render() {
              <div class="frow"><label>From address</label><input class="inp mono" id="a-smtp-from" value="${esc(cfg.SMTP_FROM || "")}" placeholder="Leuffen RMM &lt;alerts@example.com&gt;" /></div>
            </div>
            <div id="mm-graph" style="display:none">
-             <div class="frow"><label>Sender mailbox</label><input class="inp mono" id="a-sender" value="${esc(cfg.GRAPH_SENDER || "")}" /><div class="hint">A licensed mailbox with <code>Mail.Send</code> granted to the app.</div></div>
-             <div class="frow"><label>From address</label><input class="inp mono" id="a-from" value="${esc(cfg.GRAPH_FROM || "")}" /></div>
+             <div class="callout info" style="margin-bottom:14px"><div class="ic">${ICON.info}</div><div><div class="ct">Required Entra app permissions</div><div class="cd">
+               Microsoft Graph → Application → <code>Mail.Send</code> (admin-consented).<br>
+               The sender mailbox must be a licensed Microsoft 365 mailbox.<br>
+               Set up credentials in <b>Settings → Authentication → Microsoft 365 credentials</b>.
+             </div></div></div>
+             <div class="frow"><label>Sender mailbox</label><input class="inp mono" id="a-sender" value="${esc(cfg.GRAPH_SENDER || "")}" placeholder="alerts@yourdomain.com" /><div class="hint">A licensed mailbox with <code>Mail.Send</code> granted to the app.</div></div>
+             <div class="frow"><label>From address</label><input class="inp mono" id="a-from" value="${esc(cfg.GRAPH_FROM || "")}" placeholder="Leuffen RMM &lt;alerts@yourdomain.com&gt;" /></div>
+             <div id="graph-validation-msg" style="display:none;color:var(--bad);font-size:12.5px;margin-top:8px"></div>
            </div>
          </div>`, "alerts-delivery")}
       ${block("Recipients", "Who gets alert emails.",
@@ -527,11 +539,40 @@ function wire() {
 function onSave(which) {
   if (which === "general") return saveKeys({ RMM_SERVER_NAME: $("g-name").value, RMM_PUBLIC_URL: $("g-url").value }, "General settings saved");
   if (which === "auth") return saveKeys({ RMM_AUTH_MODE: authMethod }, "Auth mode saved — restart to apply");
-  if (which === "auth-sso") return saveKeys({ MS_TENANT_ID: $("ms-tenant").value, MS_CLIENT_ID: $("ms-client").value, MS_CLIENT_SECRET: $("ms-secret").value, MS_REDIRECT_URI: $("ms-redirect").value }, "SSO credentials saved — restart to apply");
+  if (which === "auth-sso") {
+    const missing = [];
+    if (!$("ms-tenant").value.trim()) missing.push("Tenant ID");
+    if (!$("ms-client").value.trim()) missing.push("Client ID");
+    if (!$("ms-secret").value.trim()) missing.push("Client secret");
+    if (!$("ms-redirect").value.trim()) missing.push("Redirect URI");
+    const msg = $("sso-validation-msg");
+    if (missing.length) {
+      msg.textContent = "Missing required fields: " + missing.join(", ");
+      msg.style.display = "";
+      return;
+    }
+    msg.style.display = "none";
+    return saveKeys({ MS_TENANT_ID: $("ms-tenant").value, MS_CLIENT_ID: $("ms-client").value, MS_CLIENT_SECRET: $("ms-secret").value, MS_REDIRECT_URI: $("ms-redirect").value }, "SSO credentials saved — restart to apply");
+  }
   if (which === "auth-mfa") return saveKeys({ RMM_ENFORCE_2FA: document.querySelector('[data-toggle="enforce2fa"]').classList.contains("on") ? "1" : "0" }, "Two-factor policy saved");
   if (which === "alerts-delivery") {
-    if (mailMethod === "smtp")
+    if (mailMethod === "smtp") {
+      const missing = [];
+      if (!$("a-smtp-host").value.trim()) missing.push("SMTP host");
+      if (!$("a-smtp-from").value.trim()) missing.push("From address");
+      const msg = $("graph-validation-msg"); // reuse slot (hidden in smtp view anyway)
+      if (missing.length) { toast("Missing required fields: " + missing.join(", ")); return; }
       return saveKeys({ SMTP_HOST: $("a-smtp-host").value, SMTP_PORT: $("a-smtp-port").value, SMTP_TLS: smtpTls, SMTP_USER: $("a-smtp-user").value, SMTP_PASSWORD: $("a-smtp-pass").value, SMTP_FROM: $("a-smtp-from").value, GRAPH_SENDER: "", GRAPH_FROM: "" }, "SMTP settings saved");
+    }
+    const missing = [];
+    if (!$("a-sender").value.trim()) missing.push("Sender mailbox");
+    const msg = $("graph-validation-msg");
+    if (missing.length) {
+      msg.textContent = "Missing required fields: " + missing.join(", ");
+      msg.style.display = "";
+      return;
+    }
+    msg.style.display = "none";
     return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value, SMTP_HOST: "" }, "Graph settings saved");
   }
   if (which === "alerts-recipients") return saveKeys({ RMM_ALERT_RECIPIENTS: $("a-recipients").value }, "Recipients saved");
