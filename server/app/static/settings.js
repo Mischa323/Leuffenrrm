@@ -326,27 +326,53 @@ async function deleteOrg(id, name) {
   catch (e) { toast(e.message); }
 }
 
+const CL_PAGE_SIZE = 5;
+let clSections = [], clPage = 0;
+
+function renderChangelog() {
+  const host = $("changelog-body");
+  if (!host || !clSections.length) return;
+  const total = clSections.length;
+  const pages = Math.ceil(total / CL_PAGE_SIZE);
+  const slice = clSections.slice(clPage * CL_PAGE_SIZE, (clPage + 1) * CL_PAGE_SIZE);
+  let html = `<div class="cl-wrap">${slice.join("")}</div>`;
+  if (pages > 1) {
+    html += `<div class="cl-pager">
+      <button class="btn ghost sm" id="cl-prev" ${clPage === 0 ? "disabled" : ""}>&larr; Newer</button>
+      <span class="cl-page-info">${clPage + 1} / ${pages}</span>
+      <button class="btn ghost sm" id="cl-next" ${clPage >= pages - 1 ? "disabled" : ""}>Older &rarr;</button>
+    </div>`;
+  }
+  host.innerHTML = html;
+  const p = $("cl-prev"); if (p) p.onclick = () => { clPage--; renderChangelog(); };
+  const n = $("cl-next"); if (n) n.onclick = () => { clPage++; renderChangelog(); };
+}
+
 async function loadChangelog() {
   const host = $("changelog-body");
   if (!host) return;
   try {
     const { md } = await api("/api/changelog");
     if (!md) { host.innerHTML = `<div class="muted">No changelog available.</div>`; return; }
-    // Minimal markdown renderer for changelog format (## headings, ### sub, - lists, --- hr)
-    let html = "";
+    // Split into per-version sections at each ## heading
+    clSections = [];
+    let cur = null;
     for (const line of md.split("\n")) {
       if (line.startsWith("## ")) {
-        html += `<h3 class="cl-ver">${esc(line.slice(3))}</h3>`;
-      } else if (line.startsWith("### ")) {
-        html += `<div class="cl-cat">${esc(line.slice(4))}</div>`;
-      } else if (line.startsWith("- ")) {
-        const inner = line.slice(2).replace(/\*\*(.+?)\*\*/g, (_, t) => `<strong>${esc(t)}</strong>`);
-        html += `<div class="cl-item">${inner}</div>`;
-      } else if (line.startsWith("---")) {
-        html += `<hr class="cl-hr">`;
+        if (cur !== null) clSections.push(cur);
+        cur = `<h3 class="cl-ver">${esc(line.slice(3))}</h3>`;
+      } else if (cur !== null) {
+        if (line.startsWith("### ")) {
+          cur += `<div class="cl-cat">${esc(line.slice(4))}</div>`;
+        } else if (line.startsWith("- ")) {
+          const inner = line.slice(2).replace(/\*\*(.+?)\*\*/g, (_, t) => `<strong>${esc(t)}</strong>`);
+          cur += `<div class="cl-item">${inner}</div>`;
+        }
       }
     }
-    host.innerHTML = `<div class="cl-wrap">${html}</div>`;
+    if (cur !== null) clSections.push(cur);
+    clPage = 0;
+    renderChangelog();
   } catch (e) {
     host.innerHTML = `<div class="muted">${esc(e.message)}</div>`;
   }
