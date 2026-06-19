@@ -709,7 +709,7 @@ async def device_software(device_id: str, refresh: bool = Query(False),
     _device_for_user(device_id, user)
     if manager.is_online(device_id):
         try:
-            res = await manager.request(device_id, {"type": "software_list"}, timeout=60)
+            res = await manager.request(device_id, {"type": "software_list"}, timeout=100)
             if res.get("ok"):
                 db.set_device_software(device_id, res.get("software", []))
         except Exception:
