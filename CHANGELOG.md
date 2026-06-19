@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0] - 2026-06-19
+
+### Added
+- **User invites** — Settings → Users & roles has an "Invite user" button. Generates a link (emailed + shown as fallback) that expires after 2 days. Invitees pick a username and password on the accept page. Pending invites are listed with a revoke button.
+- **User delete** — Delete button on each row in the users table.
+- **SSO credentials in Settings** — Settings → Authentication now has a Microsoft 365 credentials block (tenant ID, client ID, client secret, redirect URI) so you can update them without re-running the setup wizard.
+- **Permissions guidance** — The SSO credentials block and Graph mail section now show a callout explaining exactly which Entra app permissions are required (Mail.Send, redirect URI).
+- **Validation on save** — Saving SSO or Graph mail settings highlights which required fields are missing before making any changes.
+- **Changelog pagination** — The "What's new" block in Settings → General shows 5 versions per page with Newer/Older navigation.
+
+### Changed
+- Email delivery (SMTP vs Microsoft Graph) is now a single picker block instead of two separate sections — select one and only that method's fields are shown.
+
+---
+
 ## [1.2.0] - 2026-06-19
 
 ### Added
