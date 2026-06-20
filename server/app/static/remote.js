@@ -25,11 +25,12 @@
   // Marks a clipboard payload on the (otherwise JPEG) binary stream.
   const CLIP_MAGIC = "LRMMCLIP";
 
-  // Speed/quality presets sent to the agent via screen_start.
+  // Speed/quality presets sent to the agent via screen_start. max_edge caps the
+  // captured frame's longest side: smaller = higher fps, larger = crisper.
   const PRESETS = {
-    balanced: { fps: 12, quality: 60 },
-    smooth:   { fps: 18, quality: 45 },
-    sharp:    { fps: 8,  quality: 80 },
+    balanced: { fps: 12, quality: 60, max_edge: 1600 },
+    smooth:   { fps: 20, quality: 50, max_edge: 1200 },
+    sharp:    { fps: 10, quality: 75, max_edge: 2400 },
   };
 
   // ---- live stats (frames + bytes per second) ----
@@ -68,7 +69,7 @@
 
   function startCapture() {
     const p = PRESETS[selQual.value] || PRESETS.balanced;
-    send({ type: "screen_start", fps: p.fps, quality: p.quality });
+    send({ type: "screen_start", fps: p.fps, quality: p.quality, max_edge: p.max_edge });
   }
 
   // ---- coordinate scaling (display -> native image pixels) ----
@@ -110,7 +111,7 @@
 
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") {
-        // JSON control message (error or info)
+        // JSON control message (error / session ended / info)
         try {
           const m = JSON.parse(ev.data);
           if (m.error) setStatus("bad", m.error);
