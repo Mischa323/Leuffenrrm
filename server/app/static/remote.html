@@ -18,7 +18,7 @@
     #topbar {
       display: flex; align-items: center; gap: 10px;
       padding: 8px 16px; background: var(--surface);
-      border-bottom: 1px solid var(--border); flex-shrink: 0;
+      border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap;
     }
     #topbar svg.logo { width: 22px; height: 22px; flex-shrink: 0; }
     #dev-title { font-weight: 600; font-size: 14px; }
@@ -86,9 +86,10 @@
       <option value="sharp">Sharp (slower)</option>
     </select>
     <button class="tbtn" id="btn-size" title="Toggle fit-to-window / actual size">Actual size</button>
+    <button class="tbtn" id="btn-copy" title="Copy the remote clipboard to this computer">Copy</button>
+    <button class="tbtn" id="btn-clip" title="Paste this computer's clipboard into the remote">Paste</button>
     <button class="tbtn" id="btn-lock" title="Lock the remote device">Lock</button>
     <button class="tbtn" id="btn-cad">Ctrl+Alt+Del</button>
-    <button class="tbtn" id="btn-clip">Paste clipboard</button>
     <button class="tbtn" id="btn-reconnect">Reconnect</button>
     <button class="tbtn" id="btn-fs">⛶ Fullscreen</button>
   </div>
