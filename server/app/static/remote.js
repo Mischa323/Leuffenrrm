@@ -15,10 +15,15 @@
   const selQual  = document.getElementById("sel-quality");
   const btnSize  = document.getElementById("btn-size");
   const btnLock  = document.getElementById("btn-lock");
+  const btnCopy  = document.getElementById("btn-copy");
+  const btnClip  = document.getElementById("btn-clip");
 
   let ws         = null;
   let nativeW    = 0;
   let nativeH    = 0;
+
+  // Marks a clipboard payload on the (otherwise JPEG) binary stream.
+  const CLIP_MAGIC = "LRMMCLIP";
 
   // Speed/quality presets sent to the agent via screen_start.
   const PRESETS = {
@@ -41,7 +46,7 @@
     byteCount  = 0;
   }, 1000);
 
-  // ---- connection status helpers ----
+  // ---- small helpers ----
   function setStatus(state, msg) {
     statusTx.textContent = msg;
     connLbl.textContent  = msg;
@@ -50,7 +55,13 @@
     canvas.style.display = state === "ok" ? "block" : "none";
   }
 
-  // ---- send helper ----
+  function flash(btn, label) {
+    const orig = btn.dataset.label || btn.textContent;
+    btn.dataset.label = orig;
+    btn.textContent = label;
+    setTimeout(() => { btn.textContent = btn.dataset.label; }, 1500);
+  }
+
   function send(obj) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
@@ -71,6 +82,15 @@
 
   function btnName(b) {
     return b === 2 ? "right" : b === 1 ? "middle" : "left";
+  }
+
+  function isClipBlob(buf) {
+    if (buf.byteLength < CLIP_MAGIC.length) return false;
+    const h = new Uint8Array(buf, 0, CLIP_MAGIC.length);
+    for (let i = 0; i < CLIP_MAGIC.length; i++) {
+      if (h[i] !== CLIP_MAGIC.charCodeAt(i)) return false;
+    }
+    return true;
   }
 
   // ---- connect ----
@@ -95,6 +115,14 @@
           const m = JSON.parse(ev.data);
           if (m.error) setStatus("bad", m.error);
         } catch {}
+        return;
+      }
+      // Clipboard text coming back from the remote?
+      if (isClipBlob(ev.data)) {
+        const text = new TextDecoder("utf-8").decode(new Uint8Array(ev.data, CLIP_MAGIC.length));
+        navigator.clipboard.writeText(text)
+          .then(() => flash(btnCopy, "Copied ✓"))
+          .catch(() => flash(btnCopy, "Copy blocked"));
         return;
       }
       // Binary: JPEG frame
@@ -203,19 +231,30 @@
     btnSize.textContent = actual ? "Fit to window" : "Actual size";
   };
 
+  // Copy: pull the remote clipboard to this computer.
+  btnCopy.onclick = () => { send({ kind: "clip_get" }); };
+
+  // Paste: push this computer's clipboard into the remote.
+  btnClip.onclick = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) { send({ kind: "clip_paste", text }); flash(btnClip, "Pasted ✓"); }
+    } catch {
+      flash(btnClip, "Clipboard blocked");
+    }
+  };
+
   btnLock.onclick = async () => {
-    const orig = btnLock.textContent;
     try {
       await fetch(`/api/devices/${deviceId}/power`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "lock" }),
       });
-      btnLock.textContent = "Locked ✓";
+      flash(btnLock, "Locked ✓");
     } catch {
-      btnLock.textContent = "Failed";
+      flash(btnLock, "Failed");
     }
-    setTimeout(() => { btnLock.textContent = orig; }, 1500);
   };
 
   document.getElementById("btn-fs").onclick = () => {
@@ -226,15 +265,6 @@
 
   document.getElementById("btn-cad").onclick = () => {
     send({ kind: "hotkey", keys: ["ctrl", "alt", "delete"] });
-  };
-
-  document.getElementById("btn-clip").onclick = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) send({ kind: "key", text });
-    } catch {
-      // Clipboard permission denied — silently ignore.
-    }
   };
 
   // ---- fetch device name ----
