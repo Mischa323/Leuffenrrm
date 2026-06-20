@@ -1686,7 +1686,7 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
                 o = db.get_org_by_key(key)
                 org_id = o["id"] if o else None
             org = db.get_org(org_id) if org_id else None
-                if org is None:
+        if org is None:
             await ws.close(code=4401)
             return
         # Per-device secret: defends reconnect against device_id impersonation.
