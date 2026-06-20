@@ -325,6 +325,8 @@ Explicit environment variables always take precedence over wizard-saved values.
 | `RMM_OFFLINE_AFTER` | `120` | Seconds before a device is "offline" |
 | `RMM_METRIC_RETENTION` | `604800` | Metric retention (seconds) |
 | `RMM_ALERT_INTERVAL` | `60` | Alert evaluation interval (seconds) |
+| `RMM_GH_REPO` | `Mischa323/Leuffenrrm` | GitHub `owner/repo` the dashboard reads agent **releases** from — i.e. the "Latest" version shown in the device drawer. Point at `mischa323/leuffen-rmm-agent` when the agent is built/released from its own repo. |
+| `RMM_MSI_URL` | *(leuffenrrm latest MSI)* | Direct URL the server streams the Windows agent **MSI** from for downloads **and updates**. Set this to the agent repo's release asset so updates install the matching build: `https://github.com/mischa323/leuffen-rmm-agent/releases/latest/download/leuffen-rmm-agent.msi`. **Keep it in sync with `RMM_GH_REPO`** — `RMM_GH_REPO` only controls the version *shown*, `RMM_MSI_URL` the installer actually *delivered*; a mismatch makes the UI show a new version while handing out an old MSI (update fails with MSI 1603). |
 | `MS_*`, `GRAPH_SENDER`, `SESSION_SECRET`, `RMM_BOOTSTRAP_ADMIN` | — | SSO / mail |
 
 **Agent**
