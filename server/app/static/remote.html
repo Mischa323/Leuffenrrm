@@ -20,7 +20,7 @@
       padding: 8px 16px; background: var(--surface);
       border-bottom: 1px solid var(--border); flex-shrink: 0;
     }
-    #topbar svg { width: 22px; height: 22px; flex-shrink: 0; }
+    #topbar svg.logo { width: 22px; height: 22px; flex-shrink: 0; }
     #dev-title { font-weight: 600; font-size: 14px; }
     #conn-badge {
       display: inline-flex; align-items: center; gap: 5px;
@@ -30,14 +30,19 @@
     #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
     #conn-dot.ok  { background: var(--good); }
     #conn-dot.bad { background: var(--bad); }
+    #stats {
+      font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
     .spacer { flex: 1; }
-    .tbtn {
+    .tbtn, select.tbtn {
       background: var(--bg); border: 1px solid var(--border); color: var(--text);
       border-radius: 6px; padding: 5px 11px; font-size: 12px; cursor: pointer;
       font-family: inherit; transition: background .15s;
     }
     .tbtn:hover { background: #1c2128; }
     .tbtn:disabled { opacity: .45; cursor: default; }
+    select.tbtn { padding: 5px 8px; }
 
     /* ---- viewport ---- */
     #viewport {
@@ -45,10 +50,15 @@
       display: flex; align-items: center; justify-content: center;
       position: relative;
     }
+    /* Fit-to-window (default): shrink to fit. */
     #remote-canvas {
       display: block; max-width: 100%; max-height: 100%;
-      cursor: crosshair; outline: none; image-rendering: auto;
+      cursor: default; outline: none; image-rendering: auto;
     }
+    /* Actual size: show 1:1 and let the viewport scroll. */
+    #viewport.actual { align-items: flex-start; justify-content: flex-start; }
+    #viewport.actual #remote-canvas { max-width: none; max-height: none; }
+
     #overlay {
       position: absolute; inset: 0; display: flex; flex-direction: column;
       align-items: center; justify-content: center; gap: 12px;
@@ -62,13 +72,21 @@
 <body>
   <div id="topbar">
     <!-- Shield logo -->
-    <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg class="logo" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
       <polygon points="13,13 51,13 51,33 32,55 13,33" fill="#3b82f6"/>
       <polyline points="24,28 30,35 42,21" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
     </svg>
     <span id="dev-title">Remote control</span>
     <span id="conn-badge"><span id="conn-dot"></span><span id="conn-label">Connecting…</span></span>
+    <span id="stats">—</span>
     <span class="spacer"></span>
+    <select class="tbtn" id="sel-quality" title="Speed vs. quality">
+      <option value="balanced">Balanced</option>
+      <option value="smooth">Smooth (faster)</option>
+      <option value="sharp">Sharp (slower)</option>
+    </select>
+    <button class="tbtn" id="btn-size" title="Toggle fit-to-window / actual size">Actual size</button>
+    <button class="tbtn" id="btn-lock" title="Lock the remote device">Lock</button>
     <button class="tbtn" id="btn-cad">Ctrl+Alt+Del</button>
     <button class="tbtn" id="btn-clip">Paste clipboard</button>
     <button class="tbtn" id="btn-reconnect">Reconnect</button>
