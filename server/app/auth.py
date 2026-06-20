@@ -10,6 +10,7 @@ verifiable without an Azure app registration.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import HTTPException, Request
@@ -17,13 +18,17 @@ from itsdangerous import BadSignature, URLSafeSerializer
 
 from . import database as db
 
+log = logging.getLogger("rmm.auth")
+
 TENANT_ID = os.environ.get("MS_TENANT_ID", "")
 CLIENT_ID = os.environ.get("MS_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET", "")
 REDIRECT_URI = os.environ.get("MS_REDIRECT_URI", "http://localhost:8000/auth/callback")
-SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-insecure-secret-change-me")
 COOKIE = "rmm_session"
 SCOPES = ["User.Read"]
+
+# Known-insecure placeholder that must never be used to sign real sessions.
+_INSECURE_SECRET = "dev-insecure-secret-change-me"
 
 # Comma-separated list of bootstrap/global-admin emails.
 BOOTSTRAP_ADMINS = {
@@ -57,6 +62,52 @@ if AUTH_MODE == "hybrid" and not SSO_ENABLED:
 DEV_USER = (next(iter(BOOTSTRAP_ADMINS)) if BOOTSTRAP_ADMINS else "admin@localhost")
 
 
+def _resolve_session_secret() -> str:
+    """The signing key for session cookies — never the known-insecure default.
+
+    Order of preference:
+      1. A strong ``SESSION_SECRET`` from the environment (operator-controlled).
+      2. In real (non-dev) mode, a strong random secret generated once and
+         persisted in the DB ``settings`` table, so the app is secure-by-default
+         and the secret survives restarts (sessions stay valid across reboots).
+      3. Dev mode only: the placeholder is tolerated (evaluation, no real users).
+
+    This closes the hole where an unset ``SESSION_SECRET`` left cookies signed
+    with a public default that anyone could forge into an admin session."""
+    import secrets as _secrets
+    env = os.environ.get("SESSION_SECRET", "").strip()
+    if env and env != _INSECURE_SECRET and len(env) >= 16:
+        return env
+    if DEV_AUTH:
+        return env or _INSECURE_SECRET
+    # Real deployment with no usable secret: generate + persist a strong one.
+    try:
+        stored = db.get_setting("session_secret")
+        if stored and len(stored) >= 16:
+            return stored
+        gen = _secrets.token_urlsafe(48)
+        db.set_setting("session_secret", gen)
+        log.warning("SESSION_SECRET was unset or insecure; generated a strong random "
+                    "secret and stored it. Set SESSION_SECRET in the environment to "
+                    "pin it explicitly (and to share it across multiple instances).")
+        return gen
+    except Exception:
+        # Last resort: a per-process random secret (sessions reset on restart) —
+        # still infinitely better than a publicly known default.
+        log.error("Could not persist a session secret; using a per-process random one.")
+        return _secrets.token_urlsafe(48)
+
+
+SESSION_SECRET = _resolve_session_secret()
+
+# Mark session cookies Secure unless explicitly disabled (TLS is on by default).
+# Auto-off for plain-HTTP proxy mode without TLS termination.
+SECURE_COOKIES = os.environ.get("RMM_SECURE_COOKIES",
+                                "0" if os.environ.get("RMM_TLS_MODE") == "none" else "1") == "1"
+
+_serializer = URLSafeSerializer(SESSION_SECRET, salt="rmm-session")
+
+
 def resolve_sso_identity(email: str) -> str:
     """Map a Microsoft 365 email onto a local account (by email) when one exists,
     so the same person has one identity and the local account's admin rights."""
@@ -74,13 +125,6 @@ def sso_permitted(email: str) -> bool:
     if email.lower() in BOOTSTRAP_ADMINS:
         return True
     return db.get_user_by_email(email) is not None
-
-# Mark session cookies Secure unless explicitly disabled (TLS is on by default).
-# Auto-off for plain-HTTP proxy mode without TLS termination.
-SECURE_COOKIES = os.environ.get("RMM_SECURE_COOKIES",
-                                "0" if os.environ.get("RMM_TLS_MODE") == "none" else "1") == "1"
-
-_serializer = URLSafeSerializer(SESSION_SECRET, salt="rmm-session")
 
 
 def _msal_app():

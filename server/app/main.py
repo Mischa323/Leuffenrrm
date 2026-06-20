@@ -1689,8 +1689,31 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
         if org is None:
             await ws.close(code=4401)
             return
+        # Per-device secret: defends reconnect against device_id impersonation.
+        # Trust-on-first-use — issue a secret to agents that support it and then
+        # require it on later reconnects. Legacy agents (no support) are allowed
+        # unless RMM_REQUIRE_DEVICE_SECRET is set (enable once the fleet is updated).
+        import hashlib as _hl, hmac as _hmac, secrets as _secrets
+        _dsk = f"devsecret:{device_id}"
+        _stored = db.get_setting(_dsk)
+        _presented = first.get("device_secret") or ""
+        _issue = None
+        if _stored:
+            if not (_presented and _hmac.compare_digest(
+                    _hl.sha256(_presented.encode()).hexdigest(), _stored)):
+                log.warning("Agent %s failed device-secret check; rejecting", device_id)
+                await ws.close(code=4401)
+                return
+        elif first.get("supports_secret"):
+            _issue = _secrets.token_urlsafe(32)
+            db.set_setting(_dsk, _hl.sha256(_issue.encode()).hexdigest())
+        elif os.environ.get("RMM_REQUIRE_DEVICE_SECRET", "").lower() in ("1", "true", "yes"):
+            await ws.close(code=4401)
+            return
         db.upsert_device(org["id"], first, require_approval=require_approval())
         await manager.register(device_id, org["id"], ws)
+        if _issue:
+            await ws.send_json({"type": "device_secret", "secret": _issue})
         # Push admin-controlled device policy (Wake-on-LAN), per the policies that
         # target this device and whether its OS supports it.
         await ws.send_json({"type": "agent_policy",
@@ -1759,10 +1782,24 @@ async def screen_ws(ws: WebSocket, device_id: str):
 
 async def _bridge_ws(ws: WebSocket, device_id: str, channel: str) -> None:
     # Cookie auth (browser sends it automatically); dev mode is always allowed.
+    # Authenticate the operator via the signed session cookie ...
+    user = None
     if not auth.DEV_AUTH:
         raw = ws.cookies.get(auth.COOKIE)
-        if not (raw and auth.read_cookie(raw)):
+        data = auth.read_cookie(raw) if raw else None
+        if not data:
             await ws.close(code=4401)
+            return
+        user = {"email": data["email"],
+                "is_global_admin": auth.is_global_admin(data["email"])}
+    # ... and AUTHORISE: they must have access to this device's organisation, so a
+    # signed-in user can't drive a device in another org by guessing its id.
+    dev = db.get_device(device_id)
+    if user is not None and dev is not None:
+        try:
+            auth.require_org(user, dev["org_id"])
+        except HTTPException:
+            await ws.close(code=4403)
             return
     await ws.accept()
     agent = manager.get(device_id)
