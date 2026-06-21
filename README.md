@@ -280,12 +280,19 @@ backward compatible.
 |---|---|---|
 | `SESSION_SECRET` | server | Signing key for session cookies. A non-dev server **refuses** the insecure default and auto-generates one (persisted), but pin it explicitly in production. |
 | `RMM_SERVER_FINGERPRINT` | agent | SHA-256 of the server's TLS cert → pins it (MITM-proof even with self-signed). Also settable via `server_fingerprint` in `rmm_config.json`. |
-| `RMM_REQUIRE_DEVICE_SECRET` | server | Reject agents that present no device secret. **Leave unset during rollout**; set to `1` **after** the whole fleet is on an agent that supports the secret (≥ v2.2.x), to enforce it. |
+| `RMM_REQUIRE_DEVICE_SECRET` | server | Reject agents that present no device secret. Normally managed from **Settings → Security → Device identity** (this env var, if set, overrides the toggle). **New installs default this on**; existing installs default off so a not-yet-updated fleet isn't locked out. |
 
-> **Rollout order:** update all agents → confirm each has reconnected at least once
-> (so the server has issued + stored its secret) → then set
-> `RMM_REQUIRE_DEVICE_SECRET=1` and restart the server. Setting it too early locks
-> out legacy agents that haven't received a secret yet.
+The device-secret requirement is a **toggle in Settings → Security → Device identity**
+(applies immediately, no restart). It's **on by default for new installs** (detected
+by having no enrolled devices yet) and **off for existing installs**, which you turn
+on once the fleet is ready. Setting `RMM_REQUIRE_DEVICE_SECRET` in the environment
+pins the value and hides it from the toggle.
+
+> **Rollout order (existing installs):** update all agents → confirm each has
+> reconnected at least once (so the server has issued + stored its secret) → then
+> enable **Settings → Security → Device identity**. Enabling it too early rejects
+> legacy agents that haven't received a secret yet. (Reconnects of a device that
+> *already* has a stored secret are always verified, toggle or not.)
 
 ---
 

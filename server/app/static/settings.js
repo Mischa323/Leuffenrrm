@@ -229,6 +229,8 @@ function render() {
         `${toggle("secureCookies", "Secure cookies", "Only send session cookies over HTTPS. Disable only behind a TLS-terminating proxy on a trusted network.", secure)}`, "security-session")}
       ${block("Agent certificate pinning", "Pin this server's TLS certificate on agents so even a self-signed deployment is safe against man-in-the-middle.",
         `<div id="cert-fp" class="muted">Loading fingerprint…</div>`, null)}
+      ${block("Device identity", "On by default for new installs. Safe to enable once your whole fleet runs an agent that supports it (v2.2.x+) — older agents that can't present a secret will be rejected.",
+        `${toggle("requireDeviceSecret", "Require device secret", "Reject reconnects that use a device ID without the matching per-device secret, so a stolen device ID alone can't impersonate a machine.", (cfg.RMM_REQUIRE_DEVICE_SECRET ?? "0") === "1")}`, "security-devsecret")}
       <div class="card-block">
         <div class="cb-head"><h3>Danger zone</h3><p>Reset all server configuration and re-run the first-run setup wizard.</p></div>
         <div class="cb-body"><div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Reset configuration</div><div class="cd">Clears auth mode, TLS, public URL and secrets, then sends you to <b>Setup</b>. Your devices, organisations and accounts are kept. A restart applies the new settings.</div></div></div></div>
@@ -781,6 +783,7 @@ function onSave(which) {
   if (which === "alerts-recipients") return saveKeys({ RMM_ALERT_RECIPIENTS: $("a-recipients").value }, "Recipients saved");
   if (which === "security-tls") return saveKeys({ RMM_TLS_MODE: tlsMode }, "TLS mode saved — restart to apply");
   if (which === "security-session") return saveKeys({ RMM_SECURE_COOKIES: document.querySelector('[data-toggle="secureCookies"]').classList.contains("on") ? "1" : "0" }, "Security saved");
+  if (which === "security-devsecret") return saveKeys({ RMM_REQUIRE_DEVICE_SECRET: document.querySelector('[data-toggle="requireDeviceSecret"]').classList.contains("on") ? "1" : "0" }, "Device-secret policy saved");
   if (which === "agents-approval") return saveKeys({ RMM_REQUIRE_APPROVAL: document.querySelector('[data-toggle="requireApproval"]').classList.contains("on") ? "1" : "0" }, "Enrolment policy saved");
 }
 
