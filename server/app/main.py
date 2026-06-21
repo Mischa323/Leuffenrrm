@@ -169,6 +169,7 @@ async def _startup() -> None:
     db.init_db()
     _resolve_setup_state()
     _ensure_default_org()
+    _seed_device_secret_default()
     asyncio.create_task(_alert_loop())
     asyncio.create_task(_prune_loop())
     asyncio.create_task(_schedule_loop())
@@ -198,6 +199,36 @@ def _ensure_default_org() -> None:
     for admin in auth.BOOTSTRAP_ADMINS or {auth.DEV_USER}:
         db.add_org_user(org["id"], admin, "admin")
     log.info("Seeded default organisation 'Default'")
+
+
+def _require_device_secret() -> bool:
+    """Whether to reject agents that present no per-device secret.
+
+    Configurable from Settings → Security (stored in the DB) or via the
+    ``RMM_REQUIRE_DEVICE_SECRET`` env var, which takes precedence. Read live on
+    each connect so the toggle applies without a restart."""
+    val = os.environ.get("RMM_REQUIRE_DEVICE_SECRET")
+    if val is None:
+        val = db.get_setting("RMM_REQUIRE_DEVICE_SECRET") or ""
+    return val.strip().lower() in ("1", "true", "yes")
+
+
+def _seed_device_secret_default() -> None:
+    """New installs require the per-device secret by default; existing fleets opt in.
+
+    A new install is detected by the absence of any enrolled device, so upgrading a
+    server that may still run legacy (pre-secret) agents is never locked out — the
+    admin enables it from Settings there. Skipped if it's already configured via env
+    or a previous save."""
+    if os.environ.get("RMM_REQUIRE_DEVICE_SECRET") is not None:
+        return
+    if db.get_setting("RMM_REQUIRE_DEVICE_SECRET") is not None:
+        return
+    if db.all_devices():
+        return  # existing install — don't risk rejecting not-yet-updated agents
+    db.set_setting("RMM_REQUIRE_DEVICE_SECRET", "1")
+    os.environ["RMM_REQUIRE_DEVICE_SECRET"] = "1"
+    log.info("New install: requiring per-device secret by default")
 
 
 async def _alert_loop() -> None:
@@ -1692,7 +1723,8 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
         # Per-device secret: defends reconnect against device_id impersonation.
         # Trust-on-first-use — issue a secret to agents that support it and then
         # require it on later reconnects. Legacy agents (no support) are allowed
-        # unless RMM_REQUIRE_DEVICE_SECRET is set (enable once the fleet is updated).
+        # unless the device-secret requirement is on (Settings → Security, or the
+        # RMM_REQUIRE_DEVICE_SECRET env var; default on for new installs).
         import hashlib as _hl, hmac as _hmac, secrets as _secrets
         _dsk = f"devsecret:{device_id}"
         _stored = db.get_setting(_dsk)
@@ -1707,7 +1739,7 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
         elif first.get("supports_secret"):
             _issue = _secrets.token_urlsafe(32)
             db.set_setting(_dsk, _hl.sha256(_issue.encode()).hexdigest())
-        elif os.environ.get("RMM_REQUIRE_DEVICE_SECRET", "").lower() in ("1", "true", "yes"):
+        elif _require_device_secret():
             await ws.close(code=4401)
             return
         db.upsert_device(org["id"], first, require_approval=require_approval())
@@ -2201,7 +2233,7 @@ async def do_setup(request: Request):
 SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
-    "RMM_REQUIRE_APPROVAL", "RMM_ALERT_RECIPIENTS",
+    "RMM_REQUIRE_APPROVAL", "RMM_REQUIRE_DEVICE_SECRET", "RMM_ALERT_RECIPIENTS",
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS",
     "MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_REDIRECT_URI",
 ]
