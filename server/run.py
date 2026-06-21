@@ -61,6 +61,14 @@ def main() -> None:
     else:
         raise SystemExit(f"[tls] unknown RMM_TLS_MODE={mode!r}")
 
+    if mode != "proxy":
+        from app import tls
+        fp = tls.cert_fingerprint(cert)
+        if fp:
+            print(f"[tls] server cert SHA-256 = {fp}")
+            print("[tls] pin on agents via RMM_SERVER_FINGERPRINT to harden against MITM "
+                  "(also shown in Settings → GET /api/server-fingerprint)")
+
     uvicorn.run("app.main:app", **kwargs)
 
 

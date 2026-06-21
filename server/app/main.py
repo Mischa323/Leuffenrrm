@@ -1938,10 +1938,13 @@ Write-Host "Leuffen RMM agent installed."
 """
 
 
+# The agent (incl. the MSI) is built and released from the dedicated agent repo;
+# the server only proxies the latest release. Override with RMM_MSI_URL /
+# RMM_GH_REPO if you fork or self-host the agent build.
 MSI_URL = os.environ.get(
     "RMM_MSI_URL",
-    "https://github.com/Mischa323/Leuffenrrm/releases/latest/download/leuffen-rmm-agent.msi")
-GH_REPO = os.environ.get("RMM_GH_REPO", "Mischa323/Leuffenrrm")
+    "https://github.com/Mischa323/leuffen-rmm-agent/releases/latest/download/leuffen-rmm-agent.msi")
+GH_REPO = os.environ.get("RMM_GH_REPO", "Mischa323/leuffen-rmm-agent")
 _release_cache: dict = {"t": 0.0, "data": None}
 
 
@@ -2214,6 +2217,22 @@ def get_settings(user: dict = Depends(auth.current_user)):
     out["RMM_AUTH_MODE"] = auth.AUTH_MODE
     out["RMM_VERSION"] = SERVER_VERSION
     return out
+
+
+@app.get("/api/server-fingerprint")
+def server_fingerprint(user: dict = Depends(auth.current_user)):
+    """SHA-256 of the server's TLS cert, so an admin can pin it on agents.
+
+    Set the returned value as ``RMM_SERVER_FINGERPRINT`` (or ``server_fingerprint``
+    in the agent's ``rmm_config.json``) to pin this exact certificate — MITM-proof
+    even with a self-signed cert. ``fingerprint`` is null in proxy mode (TLS is
+    terminated upstream, so the app can't see the served cert)."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    from . import tls
+    mode = os.environ.get("RMM_TLS_MODE", "self-signed").lower()
+    fp = None if mode == "proxy" else tls.cert_fingerprint()
+    return {"fingerprint": fp, "tls_mode": mode}
 
 
 @app.get("/api/version")
