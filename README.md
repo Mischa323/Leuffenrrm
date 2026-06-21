@@ -254,6 +254,41 @@ subnets and report discovered hosts (IP/MAC/hostname/manufacturer) under
 
 ---
 
+## Secure connection (cert pinning & device secret)
+
+The agent holds a single outbound WebSocket to the server. Two mechanisms harden
+it beyond plain TLS:
+
+**1. TLS certificate pinning** — even a self-signed / `RMM_INSECURE_TLS` agent can
+be made MITM-proof by pinning the server's exact certificate.
+
+- Get the server's fingerprint: **Settings → Security → Agent certificate pinning**
+  (or `GET /api/server-fingerprint` as a global admin; it's also printed in the
+  server log on startup).
+- Set it on the agent as `RMM_SERVER_FINGERPRINT` (machine env var) **or** the
+  `server_fingerprint` key in the agent's `rmm_config.json`. Colons/case optional.
+- When set, the agent accepts **only** that certificate after connect and refuses
+  anything else as a possible MITM.
+
+**2. Per-device secret (trust-on-first-use)** — on first connect the server issues
+each agent a random secret (stored hashed in the `settings` table) and the agent
+persists it; on every later reconnect the agent must present it, so a stolen
+`device_id` alone can't impersonate a device. No setup needed — it's automatic and
+backward compatible.
+
+| Variable | Where | Purpose |
+|---|---|---|
+| `SESSION_SECRET` | server | Signing key for session cookies. A non-dev server **refuses** the insecure default and auto-generates one (persisted), but pin it explicitly in production. |
+| `RMM_SERVER_FINGERPRINT` | agent | SHA-256 of the server's TLS cert → pins it (MITM-proof even with self-signed). Also settable via `server_fingerprint` in `rmm_config.json`. |
+| `RMM_REQUIRE_DEVICE_SECRET` | server | Reject agents that present no device secret. **Leave unset during rollout**; set to `1` **after** the whole fleet is on an agent that supports the secret (≥ v2.2.x), to enforce it. |
+
+> **Rollout order:** update all agents → confirm each has reconnected at least once
+> (so the server has issued + stored its secret) → then set
+> `RMM_REQUIRE_DEVICE_SECRET=1` and restart the server. Setting it too early locks
+> out legacy agents that haven't received a secret yet.
+
+---
+
 ## Office 365 SSO & Graph mail setup
 
 1. **App registration** (Entra admin center → App registrations):

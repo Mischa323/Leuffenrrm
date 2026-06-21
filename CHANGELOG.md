@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Secure agent connection** — End-to-end hardening of the agent WebSocket:
+  - **TLS certificate pinning.** The server now exposes its certificate's SHA-256 fingerprint (Settings → Security, `GET /api/server-fingerprint`, and the startup log). Pin it on agents via `RMM_SERVER_FINGERPRINT` or the `server_fingerprint` config key so a self-signed deployment is still safe against man-in-the-middle.
+  - **Per-device secret (trust-on-first-use).** The server issues each agent a secret on first connect (stored hashed) and requires it on later reconnects, so a stolen `device_id` can't impersonate a device. Enforce fleet-wide with `RMM_REQUIRE_DEVICE_SECRET=1` after all agents are updated.
+
+### Fixed
+- **Agent MSI download pointed at the wrong repo.** `RMM_MSI_URL` / `RMM_GH_REPO` defaulted to the server repo (stale v1.1.x agent) instead of `leuffen-rmm-agent` (current v2.x with the secure-connection code). Defaults now point at the agent repo.
+
+### Changed
+- **Vendored agent synced to v2.2.10** — the agent bundled in the server image (served via `agent.zip`) now matches the canonical agent: cert pinning, per-device secret, and login/lock-screen capture.
+
+---
+
 ## [1.5.1] - 2026-06-19
 
 ### Added
