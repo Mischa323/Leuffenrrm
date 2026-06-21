@@ -49,6 +49,26 @@ function selectSec(sec) {
   document.querySelectorAll(".sec").forEach((s) => s.classList.toggle("on", s.dataset.sec === sec));
   window.scrollTo(0, 0);
   if (sec === "logs") loadLogs();
+  if (sec === "security") loadFingerprint();
+}
+
+async function loadFingerprint() {
+  const host = $("cert-fp");
+  if (!host) return;
+  try {
+    const r = await api("/api/server-fingerprint");
+    if (!r.fingerprint) {
+      host.innerHTML = `<div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Not applicable in proxy mode</div><div class="cd">TLS is terminated upstream (<span class="mono">RMM_TLS_MODE=${esc(r.tls_mode)}</span>); pin the certificate at your reverse proxy instead.</div></div></div>`;
+      return;
+    }
+    host.innerHTML = `<div class="frow"><label>SHA-256 fingerprint</label><code class="mono" style="word-break:break-all">${esc(r.fingerprint)}</code></div>
+      <div style="margin-top:8px"><button class="btn" id="fp-copy">${ICON.copy || ICON.info} Copy</button></div>
+      <div class="callout info" style="margin-top:12px"><div class="ic">${ICON.info}</div><div><div class="ct">Pin it on agents</div><div class="cd">Set <code>RMM_SERVER_FINGERPRINT</code> (or <code>server_fingerprint</code> in the agent's <code>rmm_config.json</code>) to this value. Then set <code>RMM_REQUIRE_DEVICE_SECRET=1</code> once the fleet is updated to enforce per-device identity.</div></div></div>`;
+    const cp = $("fp-copy");
+    if (cp) cp.onclick = () => navigator.clipboard.writeText(r.fingerprint).then(() => toast("Fingerprint copied"));
+  } catch (e) {
+    host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Couldn't load fingerprint</div><div class="cd">${esc(e.message)}</div></div></div>`;
+  }
 }
 
 async function loadLogs() {
@@ -196,6 +216,8 @@ function render() {
         `<div class="segmented" id="tls-seg"></div><div id="tls-extra" style="margin-top:4px"></div>`, "security-tls")}
       ${block("Session & access", "",
         `${toggle("secureCookies", "Secure cookies", "Only send session cookies over HTTPS. Disable only behind a TLS-terminating proxy on a trusted network.", secure)}`, "security-session")}
+      ${block("Agent certificate pinning", "Pin this server's TLS certificate on agents so even a self-signed deployment is safe against man-in-the-middle.",
+        `<div id="cert-fp" class="muted">Loading fingerprint…</div>`, null)}
       <div class="card-block">
         <div class="cb-head"><h3>Danger zone</h3><p>Reset all server configuration and re-run the first-run setup wizard.</p></div>
         <div class="cb-body"><div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Reset configuration</div><div class="cd">Clears auth mode, TLS, public URL and secrets, then sends you to <b>Setup</b>. Your devices, organisations and accounts are kept. A restart applies the new settings.</div></div></div></div>

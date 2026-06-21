@@ -12,10 +12,55 @@ pure-Python dependency of several of our libs).
 """
 from __future__ import annotations
 
+import base64
 import datetime
+import hashlib
 import ipaddress
 import os
 import socket
+
+
+def _data_dir() -> str:
+    db = os.environ.get(
+        "RMM_DB_PATH",
+        os.path.join(os.path.dirname(__file__), "..", "data", "rmm.db"))
+    return os.path.dirname(os.path.abspath(db))
+
+
+def default_cert_path() -> str:
+    """The TLS cert path the server serves, mirroring ``run.py``'s resolution."""
+    return os.environ.get("RMM_TLS_CERT", os.path.join(_data_dir(), "tls", "cert.pem"))
+
+
+def cert_fingerprint(cert_path: str | None = None) -> str | None:
+    """SHA-256 (hex, lowercase) of the server's leaf TLS certificate, DER-encoded.
+
+    This is exactly the value an agent pins via ``RMM_SERVER_FINGERPRINT`` /
+    ``server_fingerprint``: the agent hashes ``getpeercert(binary_form=True)``,
+    i.e. the DER of the presented leaf cert, so we hash the same bytes here.
+    Returns ``None`` if the cert can't be read (e.g. ``RMM_TLS_MODE=proxy``,
+    where TLS is terminated upstream)."""
+    path = cert_path or default_cert_path()
+    try:
+        with open(path) as f:
+            pem = f.read()
+        # First (leaf) cert only — that's what the agent's getpeercert() returns.
+        b64 = []
+        in_cert = False
+        for line in pem.splitlines():
+            if "BEGIN CERTIFICATE" in line:
+                in_cert = True
+                continue
+            if "END CERTIFICATE" in line:
+                break
+            if in_cert:
+                b64.append(line.strip())
+        der = base64.b64decode("".join(b64))
+        if not der:
+            return None
+        return hashlib.sha256(der).hexdigest()
+    except Exception:
+        return None
 
 
 def ensure_self_signed(cert_path: str, key_path: str, hostname: str | None = None) -> None:

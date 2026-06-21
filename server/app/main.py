@@ -2216,6 +2216,22 @@ def get_settings(user: dict = Depends(auth.current_user)):
     return out
 
 
+@app.get("/api/server-fingerprint")
+def server_fingerprint(user: dict = Depends(auth.current_user)):
+    """SHA-256 of the server's TLS cert, so an admin can pin it on agents.
+
+    Set the returned value as ``RMM_SERVER_FINGERPRINT`` (or ``server_fingerprint``
+    in the agent's ``rmm_config.json``) to pin this exact certificate — MITM-proof
+    even with a self-signed cert. ``fingerprint`` is null in proxy mode (TLS is
+    terminated upstream, so the app can't see the served cert)."""
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    from . import tls
+    mode = os.environ.get("RMM_TLS_MODE", "self-signed").lower()
+    fp = None if mode == "proxy" else tls.cert_fingerprint()
+    return {"fingerprint": fp, "tls_mode": mode}
+
+
 @app.get("/api/version")
 def get_version(user: dict = Depends(auth.current_user)):
     return {"version": SERVER_VERSION}
