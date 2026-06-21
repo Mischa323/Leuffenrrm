@@ -10,6 +10,29 @@ import subprocess
 IS_WIN = platform.system() == "Windows"
 
 
+def _hlog(msg: str) -> None:
+    """Append a line to the shared remote-session logbook (best-effort).
+
+    Same file the screen helper writes to (%ProgramData%\\LeuffenRMM\\screen.log),
+    so the launch of the capture helper and the capture itself read as one story.
+    """
+    try:
+        import datetime
+        env = os.environ.get("RMM_DATA_DIR")
+        if env:
+            d = env
+        elif os.name == "nt":
+            d = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "LeuffenRMM")
+        else:
+            d = os.path.join(os.path.expanduser("~"), ".leuffen-rmm")
+        os.makedirs(d, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(os.path.join(d, "screen.log"), "a", encoding="utf-8") as f:
+            f.write(f"{ts} [pid {os.getpid()}] {msg}\n")
+    except Exception:
+        pass
+
+
 async def run_command(cmd: str, timeout: float = 60) -> dict:
     """Run a single shell command, returning combined output + exit code."""
     if IS_WIN:
@@ -91,16 +114,20 @@ def _run_in_active_session(cmdline: str) -> bool:
 
     sid = _active_session_id()
     if sid is None:
+        _hlog("user-session: no active console session")
         return False
     k32, wts, adv, env_api = (ctypes.windll.kernel32, ctypes.windll.wtsapi32,
                               ctypes.windll.advapi32, ctypes.windll.userenv)
     hTok = wintypes.HANDLE()
     if not wts.WTSQueryUserToken(sid, ctypes.byref(hTok)):
+        _hlog(f"user-session: WTSQueryUserToken(session {sid}) failed "
+              f"(err={k32.GetLastError()}; 1008 = nobody signed in)")
         return False
     try:
         hDup = wintypes.HANDLE()
         # TokenPrimary=1, SecurityImpersonation=2, TOKEN_ALL_ACCESS
         if not adv.DuplicateTokenEx(hTok, 0xF01FF, None, 2, 1, ctypes.byref(hDup)):
+            _hlog(f"user-session: DuplicateTokenEx failed (err={k32.GetLastError()})")
             return False
         try:
             env = ctypes.c_void_p()
@@ -132,8 +159,99 @@ def _run_in_active_session(cmdline: str) -> bool:
                                           False, flags, env, None, ctypes.byref(si),
                                           ctypes.byref(pi))
             if ok:
+                _hlog(f"user-session: CreateProcessAsUser ok in session {sid} "
+                      f"(pid {pi.dwProcessId})")
                 k32.CloseHandle(pi.hProcess)
                 k32.CloseHandle(pi.hThread)
+            else:
+                _hlog(f"user-session: CreateProcessAsUser FAILED (err={k32.GetLastError()})")
+            if env:
+                env_api.DestroyEnvironmentBlock(env)
+            return bool(ok)
+        finally:
+            k32.CloseHandle(hDup)
+    finally:
+        k32.CloseHandle(hTok)
+
+
+def _run_in_console_session_as_system(cmdline: str) -> bool:
+    """Launch a command as SYSTEM inside the physical console session.
+
+    This is what lets the capture helper see the secure ``Winlogon`` desktop
+    (lock screen / sign-in / UAC): only a SYSTEM process may attach to it. We
+    duplicate the agent's own SYSTEM token, retarget it to the console session,
+    and start the process there. The helper then attaches its thread to the
+    active *input* desktop (``OpenInputDesktop``/``SetThreadDesktop``)."""
+    import ctypes
+    from ctypes import wintypes
+
+    sid = _active_session_id()
+    if sid is None:
+        _hlog("console-session: no active console session")
+        return False
+    k32, adv, env_api = (ctypes.windll.kernel32, ctypes.windll.advapi32,
+                         ctypes.windll.userenv)
+    # Declare signatures so the 64-bit pseudo-handle from GetCurrentProcess and the
+    # token handle aren't truncated to 32-bit -- that truncation was the err=6
+    # (ERROR_INVALID_HANDLE) that sent every session to the user-session fallback,
+    # which can't see the secure Winlogon desktop (lock/login screen).
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    adv.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                     ctypes.POINTER(wintypes.HANDLE)]
+    hTok = wintypes.HANDLE()
+    # TOKEN_ALL_ACCESS on the agent's own (SYSTEM) process token.
+    if not adv.OpenProcessToken(k32.GetCurrentProcess(), 0xF01FF, ctypes.byref(hTok)):
+        _hlog(f"console-session: OpenProcessToken failed (err={k32.GetLastError()})")
+        return False
+    try:
+        hDup = wintypes.HANDLE()
+        # TokenPrimary=1, SecurityImpersonation=2, TOKEN_ALL_ACCESS
+        if not adv.DuplicateTokenEx(hTok, 0xF01FF, None, 2, 1, ctypes.byref(hDup)):
+            _hlog(f"console-session: DuplicateTokenEx failed (err={k32.GetLastError()})")
+            return False
+        try:
+            # Retarget the duplicated token at the console session (TokenSessionId=12).
+            target = wintypes.DWORD(sid)
+            if not adv.SetTokenInformation(hDup, 12, ctypes.byref(target),
+                                           ctypes.sizeof(target)):
+                _hlog(f"console-session: SetTokenInformation(session {sid}) failed "
+                      f"(err={k32.GetLastError()})")
+            env = ctypes.c_void_p()
+            if not env_api.CreateEnvironmentBlock(ctypes.byref(env), hDup, False):
+                env = None
+
+            class STARTUPINFO(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR),
+                            ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
+                            ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+                            ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
+                            ("dwXCountChars", wintypes.DWORD), ("dwYCountChars", wintypes.DWORD),
+                            ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                            ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+                            ("lpReserved2", ctypes.c_void_p), ("hStdInput", wintypes.HANDLE),
+                            ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE)]
+
+            class PROCESS_INFORMATION(ctypes.Structure):
+                _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+                            ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
+
+            si = STARTUPINFO()
+            si.cb = ctypes.sizeof(si)
+            # Start on the default desktop; the helper hops to the input desktop itself.
+            si.lpDesktop = "winsta0\\default"
+            pi = PROCESS_INFORMATION()
+            # CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW
+            flags = 0x00000400 | 0x08000000
+            ok = adv.CreateProcessAsUserW(hDup, None, ctypes.c_wchar_p(cmdline), None, None,
+                                          False, flags, env, None, ctypes.byref(si),
+                                          ctypes.byref(pi))
+            if ok:
+                _hlog(f"console-session: CreateProcessAsUser ok as SYSTEM in session {sid} "
+                      f"(pid {pi.dwProcessId})")
+                k32.CloseHandle(pi.hProcess)
+                k32.CloseHandle(pi.hThread)
+            else:
+                _hlog(f"console-session: CreateProcessAsUser FAILED (err={k32.GetLastError()})")
             if env:
                 env_api.DestroyEnvironmentBlock(env)
             return bool(ok)

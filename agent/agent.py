@@ -11,6 +11,8 @@ heavy screen deps imported only on demand, and below-normal process priority.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -57,7 +59,8 @@ def _data_dir() -> str:
 def _load_config() -> dict:
     """Config precedence: env vars > bundled rmm_config.json."""
     cfg = {"server_url": os.environ.get("RMM_SERVER_URL"),
-           "api_key": os.environ.get("RMM_API_KEY")}
+           "api_key": os.environ.get("RMM_API_KEY"),
+           "fingerprint": os.environ.get("RMM_SERVER_FINGERPRINT")}
     path = os.path.join(_data_dir(), "rmm_config.json")
     if os.path.exists(path):
         try:
@@ -66,6 +69,7 @@ def _load_config() -> dict:
             cfg["server_url"] = cfg["server_url"] or filecfg.get("server_url")
             cfg["api_key"] = cfg["api_key"] or filecfg.get("api_key")
             cfg["insecure_tls"] = cfg.get("insecure_tls", filecfg.get("insecure_tls", False))
+            cfg["fingerprint"] = cfg["fingerprint"] or filecfg.get("server_fingerprint")
         except Exception:
             pass
     cfg["interval"] = float(os.environ.get("RMM_INTERVAL", "30"))
@@ -79,6 +83,9 @@ def _load_config() -> dict:
     if su and not su.startswith(("http://", "https://")):
         su = "https://" + su
     cfg["server_url"] = su.rstrip("/") or None
+    # Normalise the cert pin (hex, colons/case optional) so it survives the file
+    # round-trip and matches what _verify_pin compares against.
+    cfg["fingerprint"] = (cfg.get("fingerprint") or "").replace(":", "").strip().lower() or None
     return cfg
 
 
@@ -93,6 +100,8 @@ def _persist_config(cfg: dict) -> None:
     path = os.path.join(_data_dir(), "rmm_config.json")
     want = {"server_url": cfg["server_url"], "api_key": cfg["api_key"],
             "insecure_tls": bool(cfg.get("insecure_tls"))}
+    if cfg.get("fingerprint"):
+        want["server_fingerprint"] = cfg["fingerprint"]
     try:
         if os.path.exists(path):
             with open(path) as f:
@@ -117,6 +126,34 @@ def _device_id() -> str:
     except Exception:
         pass
     return did
+
+
+def _device_secret_path() -> str:
+    return os.path.join(_data_dir(), "rmm_device_secret")
+
+
+def _load_device_secret() -> str:
+    """Per-device secret issued by the server (proves identity on reconnect)."""
+    try:
+        with open(_device_secret_path()) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _save_device_secret(secret: str) -> None:
+    if not secret:
+        return
+    try:
+        with open(_device_secret_path(), "w") as f:
+            f.write(secret)
+        if os.name != "nt":
+            try:
+                os.chmod(_device_secret_path(), 0o600)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _ws_url(server_url: str, api_key: str) -> str:
@@ -209,6 +246,9 @@ class Agent:
 
         For a server with a self-signed cert (``insecure_tls``) verification is
         disabled; with a real cert (Let's Encrypt / reverse proxy) it stays on.
+        Either way, if ``RMM_SERVER_FINGERPRINT`` is set the server's certificate
+        is pinned after connect (see ``_verify_pin``), which defeats MITM even in
+        insecure_tls mode.
         """
         if not url.startswith("wss://"):
             return None
@@ -218,6 +258,31 @@ class Agent:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
         return ctx
+
+    def _verify_pin(self, ws) -> None:
+        """Pin the server's TLS certificate when a fingerprint is configured.
+
+        The pin comes from ``RMM_SERVER_FINGERPRINT`` or the ``server_fingerprint``
+        key in ``rmm_config.json`` (resolved into ``cfg['fingerprint']`` by
+        ``_load_config``). The value is the SHA-256 of the server cert (DER), hex,
+        colons optional. When set, only that exact certificate is accepted -- so a
+        self-signed / ``insecure_tls`` deployment is still safe against
+        man-in-the-middle, because an attacker's substituted cert won't match the
+        pin."""
+        pin = (self.cfg.get("fingerprint") or "").replace(":", "").strip().lower()
+        if not pin:
+            return
+        try:
+            ssl_obj = ws.transport.get_extra_info("ssl_object")
+            der = ssl_obj.getpeercert(binary_form=True)
+            got = hashlib.sha256(der).hexdigest()
+        except Exception as exc:
+            raise RuntimeError(f"cannot read server certificate to verify fingerprint: {exc}")
+        if not hmac.compare_digest(got, pin):
+            raise RuntimeError("server certificate fingerprint mismatch — possible MITM; refusing")
+
+    def _ssl_context_for(self, url: str):
+        return self._ssl_context(url)
 
     async def run(self) -> None:
         _lower_priority()
@@ -229,6 +294,7 @@ class Agent:
             try:
                 async with websockets.connect(url, max_size=None, ping_interval=30,
                                               ssl=ssl_ctx) as ws:
+                    self._verify_pin(ws)   # certificate pinning (if configured)
                     self.ws = ws
                     await self._register()
                     self.last_sync = time.time()
@@ -270,8 +336,13 @@ class Agent:
 
     async def _register(self) -> None:
         inv = inventory.collect()
+        # ``device_secret`` proves this is the same device on reconnect; the agent
+        # advertises support so the server can issue one (trust-on-first-use) and
+        # require it thereafter. Empty on the very first connect.
         await self._send({"type": "register", "id": self.id,
-                          "hostname": inv["hostname"], "inventory": inv})
+                          "hostname": inv["hostname"], "inventory": inv,
+                          "supports_secret": True,
+                          "device_secret": _load_device_secret()})
         log.info("registered as %s (%s)", inv["hostname"], self.id)
 
     async def _metrics_loop(self) -> None:
@@ -306,6 +377,11 @@ class Agent:
             self.role = msg.get("role", "agent")
             self.subnets = msg.get("subnets", [])
             log.info("role set to %s, subnets=%s", self.role, self.subnets)
+        elif t == "device_secret":
+            # Server-issued per-device secret (trust-on-first-use); persist it so
+            # subsequent reconnects can prove this device's identity.
+            _save_device_secret(msg.get("secret", ""))
+            log.info("stored server-issued device secret")
         elif t == "agent_policy":
             # Admin-controlled device policy pushed from the server.
             if "enable_wol" in msg:
@@ -396,7 +472,9 @@ class Agent:
             await self._send({"type": "screen_error", "error": err})
 
         self.screen = ScreenSession(send_bytes, fps=msg.get("fps", 4),
-                                    quality=msg.get("quality", 50), on_error=on_error)
+                                    quality=msg.get("quality", 50),
+                                    max_edge=msg.get("max_edge", 1600),
+                                    on_error=on_error)
         err = await self.screen.start()
         if err:
             # Surface on the screen channel so the remote viewer shows the reason
@@ -572,4 +650,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # When launched in the interactive session as a screen-capture helper, run
+    # that loop instead of the full agent (skips the single-instance lock).
+    if "--screen-helper" in sys.argv:
+        from screen import run_screen_helper
+        run_screen_helper(sys.argv)
+    else:
+        main()
