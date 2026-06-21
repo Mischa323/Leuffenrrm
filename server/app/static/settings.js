@@ -36,6 +36,28 @@ async function saveKeys(obj, msg) {
   catch (e) { toast(e.message); }
 }
 
+/* ---- lightweight modal ---- */
+function modal(title, bodyHtml) {
+  const scrim = document.createElement("div");
+  scrim.className = "modal-scrim";
+  scrim.style.cssText = "display:grid;place-items:center;padding:24px";
+  scrim.innerHTML = `<div role="dialog" aria-modal="true" style="width:100%;max-width:420px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:var(--shadow-lg);padding:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <h3 style="margin:0;font-size:16px;font-weight:700">${title}</h3>
+        <button type="button" class="btn ghost sm modal-x" aria-label="Close" style="padding:4px 9px;font-size:18px;line-height:1">&times;</button>
+      </div>
+      <div class="modal-body">${bodyHtml}</div>
+    </div>`;
+  document.body.appendChild(scrim);
+  const close = () => { scrim.remove(); document.removeEventListener("keydown", onEsc); };
+  function onEsc(e) { if (e.key === "Escape") close(); }
+  scrim.querySelector(".modal-x").onclick = close;
+  scrim.onclick = (e) => { if (e.target === scrim) close(); };
+  document.addEventListener("keydown", onEsc);
+  return { close, q: (sel) => scrim.querySelector(sel) };
+}
+const mfield = (label, html, hint) => `<div style="margin-bottom:14px"><label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">${label}</label>${html}${hint ? `<div class="hint" style="margin-top:5px">${hint}</div>` : ""}</div>`;
+
 /* ---- nav ---- */
 function buildNav() {
   document.querySelectorAll("#settings-nav button").forEach((b) => {
@@ -285,10 +307,10 @@ function render() {
 function usersRows() {
   if ((authMethod === "local" || authMethod === "hybrid") && USERS.users.length) {
     return USERS.users.map((u) => `<tr>
-      <td><div class="u-cell"><div class="av" style="background:linear-gradient(140deg,${colorFor(u.username)},color-mix(in srgb,${colorFor(u.username)} 50%,#000))">${initials2(u.username)}</div><div><div class="un">${esc(u.display_name || u.username)}</div><div class="ue">${esc(u.email || "@" + u.username)}</div></div></div></td>
+      <td><div class="u-cell"><div class="av" style="background:linear-gradient(140deg,${colorFor(u.username)},color-mix(in srgb,${colorFor(u.username)} 50%,#000))">${initials2(u.username)}</div><div><div class="un">${esc(u.display_name || u.username)}</div><div class="ue">${esc(u.email || "@" + u.username)}${u.email && !u.email_verified ? ` <span class="role-pill" style="padding:0 7px;font-size:10.5px" title="Email not verified yet">unverified</span>` : ""}</div></div></div></td>
       <td><span class="role-pill ${u.is_admin ? "admin" : "member"}">${u.is_admin ? ICON.shieldCheck : ICON.user} ${u.is_admin ? "Global admin" : "Member"}</span></td>
       <td class="muted">${u.last_active ? new Date(u.last_active * 1000).toLocaleString() : "never"}</td>
-      <td><button class="btn ghost sm user-del" data-username="${esc(u.username)}" title="Delete user">${ICON.trash}</button></td></tr>`).join("");
+      <td><div class="u-actions"><button class="btn ghost sm user-edit" data-username="${esc(u.username)}" title="Edit user">${ICON.pencil}</button><button class="btn ghost sm user-del" data-username="${esc(u.username)}" title="Delete user">${ICON.trash}</button></div></td></tr>`).join("");
   }
   const admins = USERS.bootstrap_admins.length ? USERS.bootstrap_admins : (USERS.users.map((u) => u.email || u.username));
   if (!admins.length) return `<tr><td colspan="4" class="muted" style="padding:20px">No administrators configured.</td></tr>`;
@@ -318,6 +340,78 @@ async function loadInvites() {
       toast("Invite revoked"); loadInvites();
     });
   } catch (e) { list.innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+}
+
+function openInviteModal() {
+  const m = modal("Invite user", `
+    ${mfield("Email address", `<input class="inp mono" id="iv-email" type="email" placeholder="person@example.com" />`)}
+    ${mfield("Role", `<select class="inp" id="iv-role"><option value="0">Member</option><option value="1">Global admin</option></select>`)}
+    ${mfield("How to send", `<select class="inp" id="iv-delivery"><option value="both">Email + link</option><option value="email">Email only</option><option value="link">Link only</option></select>`,
+      "The invitee verifies this email with a code when they set up their account.")}
+    <div id="iv-err" style="color:var(--bad);font-size:12.5px;min-height:16px;margin-bottom:6px"></div>
+    <div id="iv-result" style="display:none"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
+      <button class="btn ghost" id="iv-cancel" type="button">Cancel</button>
+      <button class="btn" id="iv-send" type="button">${ICON.mail} Send invite</button>
+    </div>`);
+  m.q("#iv-cancel").onclick = m.close;
+  m.q("#iv-email").focus();
+  m.q("#iv-send").onclick = async () => {
+    const email = m.q("#iv-email").value.trim();
+    const err = m.q("#iv-err"); err.textContent = "";
+    if (!email || !email.includes("@")) { err.textContent = "Enter a valid email address"; return; }
+    const body = { email, is_admin: m.q("#iv-role").value === "1", delivery: m.q("#iv-delivery").value };
+    const btn = m.q("#iv-send"); btn.disabled = true; const orig = btn.innerHTML; btn.textContent = "Sending…";
+    try {
+      const r = await api("/api/invites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      loadInvites();
+      const parts = [];
+      if (r.emailed) parts.push(`Invitation emailed to <b>${esc(email)}</b>.`);
+      else if (body.delivery !== "link") parts.push(`<span style="color:var(--warn)">Email couldn't be sent${r.mail_configured ? "" : " (no mail delivery configured)"} — share the link below instead.</span>`);
+      const result = m.q("#iv-result");
+      result.style.display = "";
+      result.innerHTML = `<div style="font-size:12.5px;color:var(--text-dim);margin-bottom:10px">${parts.join(" ")}</div>` +
+        (r.invite_url ? `<div style="display:flex;gap:6px">
+            <input class="inp mono" id="iv-link" readonly value="${esc(r.invite_url)}" style="flex:1" />
+            <button class="btn ghost sm" id="iv-copy" type="button">${ICON.copy} Copy</button>
+          </div><div class="hint" style="margin-top:6px">Link expires in 2 days.</div>` : "");
+      // Swap the action button to a Done once the invite exists.
+      btn.style.display = "none"; m.q("#iv-cancel").textContent = "Done";
+      const copy = m.q("#iv-copy");
+      if (copy) copy.onclick = () => { navigator.clipboard.writeText(r.invite_url); m.q("#iv-link").select(); toast("Link copied"); };
+    } catch (e) { err.textContent = e.message; btn.disabled = false; btn.innerHTML = orig; }
+  };
+}
+
+function openEditUserModal(u) {
+  const m = modal("Edit user", `
+    ${mfield("Display name", `<input class="inp" id="eu-name" value="${esc(u.display_name || "")}" placeholder="${esc(u.username)}" />`)}
+    ${mfield("Email", `<input class="inp mono" id="eu-email" type="email" value="${esc(u.email || "")}" placeholder="person@example.com" />`)}
+    ${mfield("Role", `<select class="inp" id="eu-role"><option value="0" ${u.is_admin ? "" : "selected"}>Member</option><option value="1" ${u.is_admin ? "selected" : ""}>Global admin</option></select>`)}
+    ${mfield("Reset password", `<input class="inp mono" id="eu-pw" type="password" autocomplete="new-password" placeholder="Leave blank to keep current" />`, "At least 8 characters.")}
+    <div id="eu-err" style="color:var(--bad);font-size:12.5px;min-height:16px;margin-bottom:6px"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
+      <button class="btn ghost" id="eu-cancel" type="button">Cancel</button>
+      <button class="btn" id="eu-save" type="button">${ICON.check} Save changes</button>
+    </div>`);
+  m.q("#eu-cancel").onclick = m.close;
+  m.q("#eu-name").focus();
+  m.q("#eu-save").onclick = async () => {
+    const err = m.q("#eu-err"); err.textContent = "";
+    const body = {
+      display_name: m.q("#eu-name").value,
+      email: m.q("#eu-email").value.trim(),
+      is_admin: m.q("#eu-role").value === "1",
+    };
+    const pw = m.q("#eu-pw").value;
+    if (pw) body.password = pw;
+    const btn = m.q("#eu-save"); btn.disabled = true; const orig = btn.innerHTML; btn.textContent = "Saving…";
+    try {
+      await api(`/api/users/${encodeURIComponent(u.username)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      toast("User updated"); m.close();
+      USERS = await api("/api/users"); render(); selectSec("users");
+    } catch (e) { err.textContent = e.message; btn.disabled = false; btn.innerHTML = orig; }
+  };
 }
 
 // --------------------------------------------------------------------------- //
@@ -693,6 +787,10 @@ function wire() {
   document.querySelectorAll(".save-btn").forEach((b) => b.onclick = () => onSave(b.dataset.save));
   const oc = $("add-org"); if (oc) oc.onclick = createOrg;
   document.querySelectorAll(".org-del").forEach((b) => b.onclick = () => deleteOrg(b.dataset.id, b.dataset.name));
+  document.querySelectorAll(".user-edit").forEach((b) => b.onclick = () => {
+    const u = (USERS.users || []).find((x) => x.username === b.dataset.username);
+    if (u) openEditUserModal(u);
+  });
   document.querySelectorAll(".user-del").forEach((b) => b.onclick = async () => {
     const un = b.dataset.username;
     if (!confirm(`Delete user "${un}"? This cannot be undone.`)) return;
@@ -700,17 +798,7 @@ function wire() {
     catch (e) { toast(e.message); }
   });
   const ib = $("invite-btn");
-  if (ib) ib.onclick = async () => {
-    const email = (prompt("Email address to invite:") || "").trim();
-    if (!email) return;
-    const adminAns = confirm("Grant global admin role? (Cancel for member)");
-    try {
-      const r = await api("/api/invites", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, is_admin: adminAns }) });
-      toast(`Invite sent to ${email}`);
-      if (r.invite_url) prompt("Invite link (also emailed):", r.invite_url);
-      loadInvites();
-    } catch (e) { toast(e.message); }
-  };
+  if (ib) ib.onclick = openInviteModal;
   const testSend = $("a-test-send");
   if (testSend) testSend.onclick = async () => {
     const email = ($("a-test-email").value || "").trim();

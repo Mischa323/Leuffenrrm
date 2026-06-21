@@ -1204,22 +1204,61 @@ async function loadHistory(id, range) {
   try { s = await api(`/api/devices/${id}/metrics?range=${range}`); } catch (e) { host.innerHTML = `<div class="muted" style="padding:8px 0">${escapeHtml(e.message)}</div>`; return; }
   if (!s.length) { host.innerHTML = `<div class="muted" style="padding:8px 0;font-size:12.5px">No history collected for this range yet.</div>`; return; }
   const pick = (k) => s.map((x) => x[k] == null ? 0 : x[k]);
-  host.innerHTML = histRow("CPU", pick("cpu_percent"), "var(--accent)") +
-                   histRow("Memory", pick("mem_percent"), "var(--good)") +
-                   histRow("Disk", pick("disk_percent"), "var(--warn)");
+  const times = s.map((x) => x.ts || 0);
+  host.innerHTML = histRow("CPU", pick("cpu_percent"), "var(--accent)", times) +
+                   histRow("Memory", pick("mem_percent"), "var(--good)", times) +
+                   histRow("Disk", pick("disk_percent"), "var(--warn)", times);
+  wireAreaTips();
 }
-function histRow(label, data, color) {
+function histRow(label, data, color, times) {
   const last = data.length ? Math.round(data[data.length - 1]) : 0;
   const peak = data.length ? Math.round(Math.max(...data)) : 0;
-  return `<div class="hist-row"><div class="hist-head"><span>${label}</span><span class="muted">now ${last}% · peak ${peak}%</span></div>${areaChart(data, color, 100)}</div>`;
+  return `<div class="hist-row"><div class="hist-head"><span>${label}</span><span class="muted">now ${last}% · peak ${peak}%</span></div>${areaChart(data, color, 100, times)}</div>`;
 }
-function areaChart(data, color, fixedMax) {
+function areaChart(data, color, fixedMax, times) {
   if (!data || !data.length) return "";
   const w = 320, h = 56, max = fixedMax || Math.max(...data, 1), rng = Math.max(max, 1), n = data.length;
   const pts = data.map((v, i) => [(i / Math.max(n - 1, 1)) * w, h - (Math.min(v, max) / rng) * (h - 6) - 3]);
   const path = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
   const id = "a" + Math.random().toString(36).slice(2, 7);
-  return `<svg class="area" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".3"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs><path d="${path} L${w} ${h} L0 ${h} Z" fill="url(#${id})"/><path d="${path}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+  const vals = data.map((v) => Math.round(v * 10) / 10).join(",");
+  const ts = (times || []).map((t) => Math.round(t)).join(",");
+  return `<div class="area-wrap" data-vals="${vals}" data-times="${ts}" data-color="${color}" data-max="${fixedMax || 0}">
+    <svg class="area" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".3"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs><path d="${path} L${w} ${h} L0 ${h} Z" fill="url(#${id})"/><path d="${path}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <div class="area-guide"></div><div class="area-dot"></div><div class="area-tip"></div>
+  </div>`;
+}
+function wireAreaTips() {
+  document.querySelectorAll(".area-wrap").forEach((wrap) => {
+    if (wrap._wired) return;
+    wrap._wired = true;
+    const vals = wrap.dataset.vals ? wrap.dataset.vals.split(",").map(Number) : [];
+    const times = wrap.dataset.times ? wrap.dataset.times.split(",").map(Number) : [];
+    const color = wrap.dataset.color || "var(--accent)";
+    const max = Number(wrap.dataset.max) || (vals.length ? Math.max(...vals, 1) : 100);
+    if (!vals.length) return;
+    const guide = wrap.querySelector(".area-guide"), dot = wrap.querySelector(".area-dot"), tip = wrap.querySelector(".area-tip");
+    guide.style.background = color; dot.style.background = color;
+    const H = 56, rng = Math.max(max, 1);
+    const move = (e) => {
+      const rect = wrap.getBoundingClientRect();
+      const frac = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
+      const i = Math.round(frac * (vals.length - 1));
+      const v = vals[i];
+      const x = (i / Math.max(vals.length - 1, 1)) * rect.width;
+      const y = H - (Math.min(v, max) / rng) * (H - 6) - 3;
+      guide.style.left = x + "px"; guide.style.display = "block";
+      dot.style.left = x + "px"; dot.style.top = y + "px"; dot.style.display = "block";
+      const when = times[i] ? new Date(times[i] * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+      tip.innerHTML = `<b>${v}%</b>${when ? `<span>${when}</span>` : ""}`;
+      tip.style.display = "block";
+      const tw = tip.offsetWidth;
+      tip.style.left = Math.min(Math.max(x - tw / 2, 0), rect.width - tw) + "px";
+    };
+    const hide = () => { guide.style.display = dot.style.display = tip.style.display = "none"; };
+    wrap.addEventListener("mousemove", move);
+    wrap.addEventListener("mouseleave", hide);
+  });
 }
 function diskRows(disks) {
   if (!disks.length) return `<div class="muted" style="font-size:12.5px">No drive details reported yet.</div>`;

@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Added
+- **History chart tooltips** — Hovering the CPU / Memory / Disk history charts on a device now shows the exact percentage and timestamp at that point, with a guide line and marker dot.
+- **Invite delivery choice** — When inviting a user you now pick how the invite is sent: **email + link**, **email only**, or **link only**. The invite dialog shows the shareable link with a copy button (and falls back to it automatically if email delivery isn't configured or fails).
+- **Email verification on signup** — Invitees confirm their email with a 6-digit code when setting up their account. If the server has no mail delivery configured the step is skipped gracefully and the account is flagged unverified. Unverified accounts are marked in Settings → Users & roles.
+- **Edit user accounts** — Admins can edit an existing account (display name, email, role, and password reset) from the pencil button on each user row, not just delete it.
 - **Secure agent connection** — End-to-end hardening of the agent WebSocket:
   - **TLS certificate pinning.** The server now exposes its certificate's SHA-256 fingerprint (Settings → Security, `GET /api/server-fingerprint`, and the startup log). Pin it on agents via `RMM_SERVER_FINGERPRINT` or the `server_fingerprint` config key so a self-signed deployment is still safe against man-in-the-middle.
   - **Per-device secret (trust-on-first-use).** The server issues each agent a secret on first connect (stored hashed) and requires it on later reconnects, so a stolen `device_id` can't impersonate a device.

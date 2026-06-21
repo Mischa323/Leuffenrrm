@@ -149,13 +149,14 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-    username     TEXT PRIMARY KEY,
-    email        TEXT,
-    display_name TEXT,
-    pw_hash      TEXT NOT NULL,
-    is_admin     INTEGER NOT NULL DEFAULT 0,
-    created_at   REAL NOT NULL,
-    last_active  REAL
+    username       TEXT PRIMARY KEY,
+    email          TEXT,
+    display_name   TEXT,
+    pw_hash        TEXT NOT NULL,
+    is_admin       INTEGER NOT NULL DEFAULT 0,
+    email_verified INTEGER NOT NULL DEFAULT 0,
+    created_at     REAL NOT NULL,
+    last_active    REAL
 );
 
 CREATE TABLE IF NOT EXISTS recovery_codes (
@@ -167,12 +168,15 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
 );
 
 CREATE TABLE IF NOT EXISTS invites (
-    token      TEXT PRIMARY KEY,
-    email      TEXT NOT NULL,
-    is_admin   INTEGER NOT NULL DEFAULT 0,
-    created_at REAL NOT NULL,
-    expires_at REAL NOT NULL,
-    used_at    REAL
+    token          TEXT PRIMARY KEY,
+    email          TEXT NOT NULL,
+    is_admin       INTEGER NOT NULL DEFAULT 0,
+    delivery       TEXT NOT NULL DEFAULT 'both',  -- 'email' | 'link' | 'both'
+    verify_code    TEXT,
+    verify_expires REAL,
+    created_at     REAL NOT NULL,
+    expires_at     REAL NOT NULL,
+    used_at        REAL
 );
 
 -- Phase 2: scripts library + run history.
@@ -396,15 +400,42 @@ def verify_pw(password: str, stored: str) -> bool:
 
 
 def create_user(username: str, password: str, is_admin: bool = False,
-                email: str | None = None, display_name: str | None = None) -> None:
+                email: str | None = None, display_name: str | None = None,
+                email_verified: bool = False) -> None:
     with write() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO users
-               (username, email, display_name, pw_hash, is_admin, created_at, last_active)
-               VALUES (?,?,?,?,?,?,?)""",
+               (username, email, display_name, pw_hash, is_admin, email_verified, created_at, last_active)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (username.lower(), email, display_name or username, _hash_pw(password),
-             1 if is_admin else 0, _now(), None),
+             1 if is_admin else 0, 1 if email_verified else 0, _now(), None),
         )
+
+
+def update_user(username: str, *, display_name: str | None = None,
+                email: str | None = None, is_admin: bool | None = None) -> None:
+    """Admin edit of an account. Only the provided fields are changed.
+
+    Pass ``display_name``/``email`` as an empty string to clear them; ``None``
+    leaves the field untouched."""
+    sets, args = [], []
+    if display_name is not None:
+        sets.append("display_name=?"); args.append(display_name.strip() or username)
+    if email is not None:
+        sets.append("email=?"); args.append((email or "").lower().strip() or None)
+    if is_admin is not None:
+        sets.append("is_admin=?"); args.append(1 if is_admin else 0)
+    if not sets:
+        return
+    args.append(username.lower())
+    with write() as conn:
+        conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE username=?", args)
+
+
+def set_user_email_verified(username: str, verified: bool = True) -> None:
+    with write() as conn:
+        conn.execute("UPDATE users SET email_verified=? WHERE username=?",
+                     (1 if verified else 0, username.lower()))
 
 
 def get_user(username: str) -> dict | None:
@@ -421,7 +452,7 @@ def get_user_by_email(email: str) -> dict | None:
 
 def list_users() -> list[dict]:
     return [dict(r) for r in get_conn().execute(
-        "SELECT username, email, display_name, is_admin, created_at, last_active "
+        "SELECT username, email, display_name, is_admin, email_verified, created_at, last_active "
         "FROM users ORDER BY is_admin DESC, username").fetchall()]
 
 
@@ -450,15 +481,24 @@ def delete_user(username: str) -> None:
 INVITE_TTL = 2 * 24 * 3600  # 2 days
 
 
-def create_invite(email: str, is_admin: bool) -> str:
+def create_invite(email: str, is_admin: bool, delivery: str = "both") -> str:
     token = secrets.token_urlsafe(32)
     now = _now()
+    if delivery not in ("email", "link", "both"):
+        delivery = "both"
     with write() as conn:
         conn.execute(
-            "INSERT INTO invites (token, email, is_admin, created_at, expires_at) VALUES (?,?,?,?,?)",
-            (token, email.lower(), int(is_admin), now, now + INVITE_TTL),
+            "INSERT INTO invites (token, email, is_admin, delivery, created_at, expires_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (token, email.lower(), int(is_admin), delivery, now, now + INVITE_TTL),
         )
     return token
+
+
+def set_invite_code(token: str, code: str | None, expires: float | None) -> None:
+    with write() as conn:
+        conn.execute("UPDATE invites SET verify_code=?, verify_expires=? WHERE token=?",
+                     (code, expires, token))
 
 
 def get_invite(token: str) -> dict | None:
@@ -1074,6 +1114,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col, ddl in (("totp_secret", "TEXT"), ("totp_enabled", "INTEGER NOT NULL DEFAULT 0")):
         if col not in cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
+    if "email_verified" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
+        # Accounts that predate email verification are treated as already verified
+        # (they were created by an admin/setup before the check existed).
+        conn.execute("UPDATE users SET email_verified=1")
+    icols = {r[1] for r in conn.execute("PRAGMA table_info(invites)")}
+    if "delivery" not in icols:
+        conn.execute("ALTER TABLE invites ADD COLUMN delivery TEXT NOT NULL DEFAULT 'both'")
+    if "verify_code" not in icols:
+        conn.execute("ALTER TABLE invites ADD COLUMN verify_code TEXT")
+        conn.execute("ALTER TABLE invites ADD COLUMN verify_expires REAL")
     scols = {r[1] for r in conn.execute("PRAGMA table_info(scripts)")}
     if "category" not in scols:
         conn.execute("ALTER TABLE scripts ADD COLUMN category TEXT DEFAULT 'Script'")
