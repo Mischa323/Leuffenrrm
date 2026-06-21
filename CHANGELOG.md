@@ -13,6 +13,7 @@
   - **Device-secret enforcement is now a Settings toggle** (Security → Device identity), applied live without a restart. **On by default for new installs** (detected by having no enrolled devices); **off for existing installs** so a not-yet-updated fleet isn't locked out. The `RMM_REQUIRE_DEVICE_SECRET` env var still works and overrides the toggle.
 
 ### Fixed
+- **Web remote "Send Ctrl+Alt+Del" did nothing (e.g. the Windows Server login screen).** The agent's `SendSAS` call from the SYSTEM service is silently ignored unless the `SoftwareSASGeneration` policy permits services, which Windows doesn't enable by default. The agent now enables that policy on demand (no reboot) before sending the SAS, so the button works at the login/lock screen. Requires the updated agent (v2.2.12+).
 - **Agent MSI download pointed at the wrong repo.** `RMM_MSI_URL` / `RMM_GH_REPO` defaulted to the server repo (stale v1.1.x agent) instead of `leuffen-rmm-agent` (current v2.x with the secure-connection code). Defaults now point at the agent repo.
 
 ### Changed
