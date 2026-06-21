@@ -28,7 +28,8 @@ from .models import (AccessGroupMemberRequest, AccessGroupOrgRequest, AccessGrou
                      AccessGroupRequest, GroupRequest, InviteRequest, MonitorRequest,
                      MonitorRuleRequest, MoveDeviceRequest, MoveOrgRequest, OrgRequest,
                      OrgUserRequest, PowerRequest, ScheduleRequest, ScriptFileRequest,
-                     ScriptRequest, ScriptRunRequest, ShellRequest, SubnetRequest, WakeRequest)
+                     ScriptRequest, ScriptRunRequest, ShellRequest, SubnetRequest,
+                     UserUpdateRequest, WakeRequest)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
@@ -2210,7 +2211,8 @@ async def do_setup(request: Request):
         if not uname or len(pw) < 8:
             continue
         db.create_user(uname, pw, is_admin=bool(acc.get("admin") or i == 0),
-                       email=(acc.get("email") or "").strip().lower() or None)
+                       email=(acc.get("email") or "").strip().lower() or None,
+                       email_verified=True)
 
     # Map bootstrap admin emails onto the default org.
     org = db.get_org("default") or (db.list_orgs() or [None])[0]
@@ -2479,6 +2481,40 @@ async def change_password(request: Request, user: dict = Depends(auth.current_us
 # --------------------------------------------------------------------------- #
 # User management
 # --------------------------------------------------------------------------- #
+@app.patch("/api/users/{username}")
+def edit_user(username: str, body: UserUpdateRequest,
+              user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    target = db.get_user(username)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    is_self = username.lower() == user["email"].lower()
+
+    # Don't let an admin lock themselves out of admin.
+    if body.is_admin is False and is_self:
+        raise HTTPException(status_code=400, detail="You can't remove your own admin role")
+
+    # Email must stay unique across accounts.
+    if body.email is not None:
+        new_email = (body.email or "").strip().lower()
+        if new_email and "@" not in new_email:
+            raise HTTPException(status_code=400, detail="Enter a valid email address")
+        if new_email:
+            other = db.get_user_by_email(new_email)
+            if other and other["username"] != username.lower():
+                raise HTTPException(status_code=409, detail="Another account already uses that email")
+
+    if body.password is not None and body.password != "":
+        if len(body.password) < 8:
+            raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+        db.set_user_password(username, body.password)
+
+    db.update_user(username, display_name=body.display_name,
+                   email=body.email, is_admin=body.is_admin)
+    return {"ok": True}
+
+
 @app.delete("/api/users/{username}")
 def delete_user(username: str, user: dict = Depends(auth.current_user)):
     if not user["is_global_admin"]:
@@ -2497,17 +2533,32 @@ async def create_invite(req: InviteRequest, request: Request,
                         user: dict = Depends(auth.current_user)):
     if not user["is_global_admin"]:
         raise HTTPException(status_code=403, detail="Global admin required")
-    token = db.create_invite(req.email, req.is_admin)
+    email = (req.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Enter a valid email address")
+    delivery = req.delivery if req.delivery in ("email", "link", "both") else "both"
+    token = db.create_invite(email, req.is_admin, delivery)
     public_url = (db.get_setting("RMM_PUBLIC_URL") or "").rstrip("/") or str(request.base_url).rstrip("/")
     invite_url = f"{public_url}/invite/{token}"
-    subject = "You've been invited to Leuffen RMM"
-    html = (
-        f"<p>You have been invited to sign in to <b>Leuffen RMM</b>.</p>"
-        f"<p><a href='{invite_url}'>Accept invitation</a></p>"
-        f"<p>This link expires in 2 days. If you did not expect this email, you can ignore it.</p>"
-    )
-    mailer.send_mail(subject, html, [req.email])
-    return {"ok": True, "invite_url": invite_url}
+
+    emailed = False
+    if delivery in ("email", "both"):
+        subject = "You've been invited to Leuffen RMM"
+        html = (
+            f"<p>You have been invited to sign in to <b>Leuffen RMM</b>.</p>"
+            f"<p><a href='{invite_url}'>Accept invitation</a></p>"
+            f"<p>This link expires in 2 days. You'll confirm this email address with a "
+            f"verification code when you set up your account. If you did not expect this "
+            f"email, you can ignore it.</p>"
+        )
+        emailed = mailer.send_mail(subject, html, [email])
+
+    # If email was the only requested method but delivery failed, surface the link
+    # so the admin can still share it manually rather than silently losing the invite.
+    show_link = delivery in ("link", "both") or not emailed
+    return {"ok": True, "invite_url": invite_url if show_link else None,
+            "delivery": delivery, "emailed": emailed,
+            "mail_configured": mailer.is_configured()}
 
 
 @app.get("/api/invites")
@@ -2550,13 +2601,18 @@ async def invite_page(token: str):
     return _serve_html("invite.html")
 
 
-@app.post("/invite/{token}")
-async def accept_invite(token: str, request: Request):
+INVITE_CODE_TTL = 15 * 60  # verification codes are valid for 15 minutes
+
+
+def _live_invite(token: str) -> dict:
     import time as _time
     inv = db.get_invite(token)
     if not inv or inv["used_at"] or inv["expires_at"] < _time.time():
         raise HTTPException(status_code=410, detail="Invite link is invalid or has expired")
-    data = await request.json()
+    return inv
+
+
+def _validate_new_account(data: dict) -> tuple[str, str]:
     username = (data.get("username") or "").strip().lower()
     password = data.get("password") or ""
     if not username or len(username) < 2:
@@ -2565,7 +2621,56 @@ async def accept_invite(token: str, request: Request):
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     if db.get_user(username):
         raise HTTPException(status_code=409, detail="Username already taken")
-    db.create_user(username, password, is_admin=bool(inv["is_admin"]), email=inv["email"])
+    return username, password
+
+
+@app.post("/invite/{token}/send-code")
+async def send_invite_code(token: str, request: Request):
+    """Email a 6-digit verification code to the invited address so the invitee
+    proves they control it before the account is created."""
+    import time as _time
+    inv = _live_invite(token)
+    data = await request.json()
+    _validate_new_account(data)  # surface format/uniqueness errors before sending
+    if not mailer.is_configured():
+        return {"ok": True, "sent": False, "mail_configured": False, "email": inv["email"]}
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    db.set_invite_code(token, code, _time.time() + INVITE_CODE_TTL)
+    html = (
+        f"<p>Your <b>Leuffen RMM</b> email verification code is:</p>"
+        f"<p style='font-size:24px;font-weight:700;letter-spacing:3px'>{code}</p>"
+        f"<p>It expires in 15 minutes. If you did not request this, you can ignore it.</p>"
+    )
+    sent = mailer.send_mail("Leuffen RMM — verify your email", html, [inv["email"]])
+    if not sent:
+        db.set_invite_code(token, None, None)
+    return {"ok": True, "sent": sent, "mail_configured": True, "email": inv["email"]}
+
+
+@app.post("/invite/{token}")
+async def accept_invite(token: str, request: Request):
+    import time as _time
+    inv = _live_invite(token)
+    data = await request.json()
+    username, password = _validate_new_account(data)
+
+    # When mail works, the invitee must confirm the address with the code we sent.
+    # When mail isn't configured, verification is skipped (we can't deliver a code).
+    email_verified = False
+    if mailer.is_configured():
+        code = (data.get("code") or "").strip()
+        stored, expires = inv.get("verify_code"), inv.get("verify_expires")
+        if not stored:
+            raise HTTPException(status_code=400, detail="Request a verification code first")
+        if not expires or expires < _time.time():
+            raise HTTPException(status_code=400, detail="Verification code expired — request a new one")
+        if not code or not secrets.compare_digest(code, str(stored)):
+            raise HTTPException(status_code=400, detail="Incorrect verification code")
+        email_verified = True
+
+    db.create_user(username, password, is_admin=bool(inv["is_admin"]),
+                   email=inv["email"], email_verified=email_verified)
+    db.set_invite_code(token, None, None)
     db.use_invite(token)
     response = JSONResponse({"ok": True})
     response.set_cookie(

@@ -68,6 +68,14 @@ def _send_smtp(cfg: dict, subject: str, html: str, recipients: list[str]) -> boo
         return False
 
 
+def is_configured() -> bool:
+    """True if either SMTP or Microsoft Graph is set up to deliver mail."""
+    if _smtp_cfg():
+        return True
+    return bool(os.environ.get("MS_TENANT_ID") and os.environ.get("MS_CLIENT_ID")
+                and os.environ.get("MS_CLIENT_SECRET") and os.environ.get("GRAPH_SENDER"))
+
+
 def send_mail(subject: str, html: str, recipients: list[str]) -> bool:
     if not recipients:
         return False

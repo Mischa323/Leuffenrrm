@@ -11,41 +11,101 @@
 </head>
 <body>
   <div style="min-height:100vh;display:grid;place-items:center;padding:24px">
-    <form id="form" style="width:100%;max-width:380px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:var(--shadow-lg);padding:32px">
+    <div style="width:100%;max-width:380px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:var(--shadow-lg);padding:32px">
       <div style="display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700;margin-bottom:6px">
         <span class="logo" id="brand-logo" style="width:30px;height:30px;display:inline-grid;place-items:center;border-radius:var(--r-md);background:linear-gradient(140deg,var(--accent),color-mix(in srgb,var(--accent) 55%,#000));color:#fff"></span>
         Leuffen <span style="color:var(--text-dim)">RMM</span>
       </div>
-      <p style="color:var(--text-dim);font-size:13px;margin:0 0 22px">Create your account to accept this invitation.</p>
-      <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">Username</label>
-      <input id="u" autocomplete="username" placeholder="Choose a username" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;margin-bottom:14px" />
-      <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">Password</label>
-      <input id="p" type="password" autocomplete="new-password" placeholder="At least 8 characters" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;margin-bottom:14px" />
-      <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">Confirm password</label>
-      <input id="p2" type="password" autocomplete="new-password" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;margin-bottom:8px" />
-      <div id="err" style="color:var(--bad);font-size:12.5px;min-height:18px;margin-bottom:10px"></div>
-      <button class="btn" id="submit" type="submit" style="width:100%;justify-content:center;padding:11px">Create account</button>
-    </form>
+
+      <!-- Step 1: pick username + password -->
+      <form id="form-account">
+        <p style="color:var(--text-dim);font-size:13px;margin:0 0 22px">Create your account to accept this invitation.</p>
+        <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">Username</label>
+        <input id="u" autocomplete="username" placeholder="Choose a username" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;margin-bottom:14px" />
+        <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">Password</label>
+        <input id="p" type="password" autocomplete="new-password" placeholder="At least 8 characters" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;margin-bottom:14px" />
+        <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">Confirm password</label>
+        <input id="p2" type="password" autocomplete="new-password" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;margin-bottom:8px" />
+        <div id="err1" style="color:var(--bad);font-size:12.5px;min-height:18px;margin-bottom:10px"></div>
+        <button class="btn" id="continue" type="submit" style="width:100%;justify-content:center;padding:11px">Continue</button>
+      </form>
+
+      <!-- Step 2: verify the emailed address with a code -->
+      <form id="form-verify" style="display:none">
+        <p style="color:var(--text-dim);font-size:13px;margin:0 0 6px">Verify your email</p>
+        <p style="color:var(--text-dim);font-size:12.5px;margin:0 0 22px">We sent a 6-digit code to <b id="verify-email" style="color:var(--text)"></b>. Enter it below to finish.</p>
+        <label style="display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px">Verification code</label>
+        <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:18px;letter-spacing:4px;text-align:center;margin-bottom:8px" />
+        <div id="err2" style="color:var(--bad);font-size:12.5px;min-height:18px;margin-bottom:10px"></div>
+        <button class="btn" id="finish" type="submit" style="width:100%;justify-content:center;padding:11px">Create account</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:12.5px">
+          <button type="button" id="back" class="btn ghost sm" style="padding:4px 8px">Back</button>
+          <button type="button" id="resend" class="btn ghost sm" style="padding:4px 8px">Resend code</button>
+        </div>
+      </form>
+    </div>
   </div>
   <script src="/icons.js"></script>
   <script src="/appearance.js"></script>
   <script>
     document.getElementById("brand-logo").innerHTML = ICON.shield.replace("<svg", '<svg style="width:18px;height:18px"');
-    const token = location.pathname.split("/").pop();
-    document.getElementById("form").onsubmit = async (e) => {
+    const token = location.pathname.split("/").filter(Boolean).pop();
+    const $ = (id) => document.getElementById(id);
+    const formA = $("form-account"), formV = $("form-verify");
+
+    function creds() { return { username: $("u").value, password: $("p").value }; }
+
+    async function post(path, body) {
+      const r = await fetch(path, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || "Something went wrong");
+      return data;
+    }
+
+    // Create the account (used after verification, or directly when mail is off).
+    async function createAccount(extra) {
+      await post(`/invite/${token}`, { ...creds(), ...(extra || {}) });
+      location.href = "/";
+    }
+
+    // Step 1 → request a code (or skip straight to creation if mail isn't set up).
+    formA.onsubmit = async (e) => {
       e.preventDefault();
-      const err = document.getElementById("err"); err.textContent = "";
-      const p = document.getElementById("p").value;
-      if (p !== document.getElementById("p2").value) { err.textContent = "Passwords do not match"; return; }
+      const err = $("err1"); err.textContent = "";
+      if ($("p").value !== $("p2").value) { err.textContent = "Passwords do not match"; return; }
+      const btn = $("continue"); btn.disabled = true; const orig = btn.textContent; btn.textContent = "Sending code…";
       try {
-        const r = await fetch(`/invite/${token}`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: document.getElementById("u").value, password: p }),
-        });
-        const data = await r.json().catch(() => ({}));
-        if (r.ok) { location.href = "/"; return; }
-        err.textContent = data.detail || "Something went wrong";
+        const r = await post(`/invite/${token}/send-code`, creds());
+        if (r.sent) {
+          $("verify-email").textContent = r.email || "your email";
+          formA.style.display = "none"; formV.style.display = "";
+          $("code").focus();
+        } else {
+          // No email delivery configured — verification isn't possible, create directly.
+          await createAccount();
+        }
       } catch (ex) { err.textContent = ex.message; }
+      finally { btn.disabled = false; btn.textContent = orig; }
+    };
+
+    // Step 2 → verify code and create.
+    formV.onsubmit = async (e) => {
+      e.preventDefault();
+      const err = $("err2"); err.textContent = "";
+      const btn = $("finish"); btn.disabled = true; const orig = btn.textContent; btn.textContent = "Verifying…";
+      try { await createAccount({ code: $("code").value.trim() }); }
+      catch (ex) { err.textContent = ex.message; }
+      finally { btn.disabled = false; btn.textContent = orig; }
+    };
+
+    $("back").onclick = () => { formV.style.display = "none"; formA.style.display = ""; };
+    $("resend").onclick = async () => {
+      const err = $("err2"); err.textContent = "";
+      try { await post(`/invite/${token}/send-code`, creds()); err.style.color = "var(--good)"; err.textContent = "A new code is on its way."; }
+      catch (ex) { err.style.color = "var(--bad)"; err.textContent = ex.message; }
     };
   </script>
 </body>

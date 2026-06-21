@@ -103,6 +103,14 @@ class MonitorRuleRequest(BaseModel):
 class InviteRequest(BaseModel):
     email: str
     is_admin: bool = False
+    delivery: str = "both"  # 'email' | 'link' | 'both'
+
+
+class UserUpdateRequest(BaseModel):
+    display_name: str | None = None
+    email: str | None = None
+    is_admin: bool | None = None
+    password: str | None = None
 
 
 class AccessGroupRequest(BaseModel):
