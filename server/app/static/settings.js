@@ -61,9 +61,20 @@ async function loadFingerprint() {
       host.innerHTML = `<div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Not applicable in proxy mode</div><div class="cd">TLS is terminated upstream (<span class="mono">RMM_TLS_MODE=${esc(r.tls_mode)}</span>); pin the certificate at your reverse proxy instead.</div></div></div>`;
       return;
     }
-    host.innerHTML = `<div class="frow"><label>SHA-256 fingerprint</label><code class="mono" style="word-break:break-all">${esc(r.fingerprint)}</code></div>
-      <div style="margin-top:8px"><button class="btn" id="fp-copy">${ICON.copy || ICON.info} Copy</button></div>
+    const mask = "•".repeat(64);
+    host.innerHTML = `<div class="frow"><label>SHA-256 fingerprint</label><code class="mono" id="fp-val" style="word-break:break-all">${mask}</code></div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn" id="fp-toggle">${ICON.eye} Show</button>
+        <button class="btn" id="fp-copy">${ICON.copy || ICON.info} Copy</button>
+      </div>
       <div class="callout info" style="margin-top:12px"><div class="ic">${ICON.info}</div><div><div class="ct">Pin it on agents</div><div class="cd">Set <code>RMM_SERVER_FINGERPRINT</code> (or <code>server_fingerprint</code> in the agent's <code>rmm_config.json</code>) to this value. Then set <code>RMM_REQUIRE_DEVICE_SECRET=1</code> once the fleet is updated to enforce per-device identity.</div></div></div>`;
+    let shown = false;
+    const valEl = $("fp-val"), tgl = $("fp-toggle");
+    if (tgl) tgl.onclick = () => {
+      shown = !shown;
+      valEl.textContent = shown ? r.fingerprint : mask;
+      tgl.innerHTML = `${shown ? ICON.eyeOff : ICON.eye} ${shown ? "Hide" : "Show"}`;
+    };
     const cp = $("fp-copy");
     if (cp) cp.onclick = () => navigator.clipboard.writeText(r.fingerprint).then(() => toast("Fingerprint copied"));
   } catch (e) {
