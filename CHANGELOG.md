@@ -13,12 +13,13 @@
   - **Device-secret enforcement is now a Settings toggle** (Security → Device identity), applied live without a restart. **On by default for new installs** (detected by having no enrolled devices); **off for existing installs** so a not-yet-updated fleet isn't locked out. The `RMM_REQUIRE_DEVICE_SECRET` env var still works and overrides the toggle.
 
 ### Fixed
+- **Software page always showed "0 programs".** The agent collected installed software with `ConvertTo-Json -AsArray`, a parameter that only exists in PowerShell 7+. On Windows 10/11 (which ship Windows PowerShell 5.1 as `powershell.exe`) the command errored and the agent reported an empty list. The scan now reads the uninstall registry directly via `winreg` — no PowerShell, faster, and it also recovers per-user (HKU) installs that the old script missed. Requires the updated agent (v2.2.13+).
 - **Web remote "Send Ctrl+Alt+Del" did nothing (e.g. the Windows Server login screen).** The agent's `SendSAS` call from the SYSTEM service is silently ignored unless the `SoftwareSASGeneration` policy permits services, which Windows doesn't enable by default. The agent now enables that policy on demand (no reboot) before sending the SAS, so the button works at the login/lock screen. Requires the updated agent (v2.2.12+).
 - **Agent MSI download pointed at the wrong repo.** `RMM_MSI_URL` / `RMM_GH_REPO` defaulted to the server repo (stale v1.1.x agent) instead of `leuffen-rmm-agent` (current v2.x with the secure-connection code). Defaults now point at the agent repo.
 
 ### Changed
 - **Branded emails** — All outgoing email (invites, the email-verification code, alert/resolved notifications, and test emails) now uses a single dashboard-styled template: dark card, the Leuffen RMM logo and wordmark, a primary action button on invites, a coloured status header on alerts, and an "Open dashboard" footer link. The wordmark and footer follow your configured server name.
-- **Vendored agent synced to v2.2.10** — the agent bundled in the server image (served via `agent.zip`) now matches the canonical agent: cert pinning, per-device secret, and login/lock-screen capture.
+- **Vendored agent synced to v2.2.13** — the agent bundled in the server image (served via `agent.zip`) now matches the canonical agent: cert pinning, per-device secret, login/lock-screen capture, the Ctrl+Alt+Del SAS fix, and the winreg-based software scan.
 
 ---
 
