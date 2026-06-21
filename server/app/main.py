@@ -1938,10 +1938,13 @@ Write-Host "Leuffen RMM agent installed."
 """
 
 
+# The agent (incl. the MSI) is built and released from the dedicated agent repo;
+# the server only proxies the latest release. Override with RMM_MSI_URL /
+# RMM_GH_REPO if you fork or self-host the agent build.
 MSI_URL = os.environ.get(
     "RMM_MSI_URL",
-    "https://github.com/Mischa323/Leuffenrrm/releases/latest/download/leuffen-rmm-agent.msi")
-GH_REPO = os.environ.get("RMM_GH_REPO", "Mischa323/Leuffenrrm")
+    "https://github.com/Mischa323/leuffen-rmm-agent/releases/latest/download/leuffen-rmm-agent.msi")
+GH_REPO = os.environ.get("RMM_GH_REPO", "Mischa323/leuffen-rmm-agent")
 _release_cache: dict = {"t": 0.0, "data": None}
 
 
