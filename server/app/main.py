@@ -1190,13 +1190,20 @@ def _monitor_notify(mon: dict, old_status: str | None, new_status: str) -> None:
     tag = f"[{severity.upper()}] " if severity != "info" else ""
     if new_status == "alert" and old_status != "alert":
         subject = f"{tag}Monitor alerting: {mon['name']}"
-        body = (f"<p>The monitoring policy <b>{mon['name']}</b> is now <b>alerting</b>.</p>"
-                f"<p>The monitor script exited non-zero on one or more devices"
-                + (" and the remediation script was run." if mon.get('remediation_script_id')
-                   else ".") + "</p>")
+        kind = "bad" if severity in ("critical", "error") else ("info" if severity == "info" else "warn")
+        body = mailer.status_block(
+            f"Monitor alerting: {mon['name']}",
+            f"<p style='margin:0 0 6px'>The monitoring policy <b>{mon['name']}</b> is now <b>alerting</b>.</p>"
+            f"<p style='margin:0'>The monitor script exited non-zero on one or more devices"
+            + (" and the remediation script was run." if mon.get('remediation_script_id')
+               else ".") + "</p>",
+            kind)
     elif new_status == "ok" and old_status == "alert":
         subject = f"Monitor resolved: {mon['name']}"
-        body = f"<p>The monitoring policy <b>{mon['name']}</b> is healthy again.</p>"
+        body = mailer.status_block(
+            f"Monitor resolved: {mon['name']}",
+            f"<p style='margin:0'>The monitoring policy <b>{mon['name']}</b> is healthy again.</p>",
+            "good")
     else:
         return
     org_ids = [mon["org_id"]] if mon.get("org_id") else [o["id"] for o in db.list_orgs()]
@@ -2543,13 +2550,16 @@ async def create_invite(req: InviteRequest, request: Request,
 
     emailed = False
     if delivery in ("email", "both"):
-        subject = "You've been invited to Leuffen RMM"
+        name = os.environ.get("RMM_SERVER_NAME") or "Leuffen RMM"
+        subject = f"You've been invited to {name}"
         html = (
-            f"<p>You have been invited to sign in to <b>Leuffen RMM</b>.</p>"
-            f"<p><a href='{invite_url}'>Accept invitation</a></p>"
-            f"<p>This link expires in 2 days. You'll confirm this email address with a "
-            f"verification code when you set up your account. If you did not expect this "
-            f"email, you can ignore it.</p>"
+            f"<div style='font-size:18px;font-weight:700;margin:0 0 12px'>You're invited</div>"
+            f"<p style='margin:0 0 18px'>You've been invited to sign in to <b>{name}</b>. "
+            f"Click below to create your account.</p>"
+            f"<p style='margin:0 0 18px'>{mailer.button(invite_url, 'Accept invitation')}</p>"
+            f"<p style='margin:0;color:#97a3b4;font-size:12.5px'>This link expires in 2 days. "
+            f"You'll confirm this email address with a verification code when you set up your "
+            f"account. If you didn't expect this invite, you can ignore this email.</p>"
         )
         emailed = mailer.send_mail(subject, html, [email])
 
@@ -2583,9 +2593,12 @@ async def test_mail(request: Request, user: dict = Depends(auth.current_user)):
     recipient = (data.get("email") or "").strip()
     if not recipient:
         raise HTTPException(status_code=400, detail="Email address required")
+    name = os.environ.get("RMM_SERVER_NAME") or "Leuffen RMM"
     ok = mailer.send_mail(
-        "Leuffen RMM — test email",
-        "<p>This is a test email from <b>Leuffen RMM</b>. If you received this, your email delivery is working correctly.</p>",
+        f"{name} — test email",
+        "<div style='font-size:18px;font-weight:700;margin:0 0 10px'>Email delivery works</div>"
+        f"<p style='margin:0'>This is a test email from <b>{name}</b>. If you can read this, "
+        "your SMTP or Microsoft Graph configuration is working correctly.</p>",
         [recipient],
     )
     if not ok:
@@ -2636,12 +2649,17 @@ async def send_invite_code(token: str, request: Request):
         return {"ok": True, "sent": False, "mail_configured": False, "email": inv["email"]}
     code = f"{secrets.randbelow(1_000_000):06d}"
     db.set_invite_code(token, code, _time.time() + INVITE_CODE_TTL)
+    name = os.environ.get("RMM_SERVER_NAME") or "Leuffen RMM"
     html = (
-        f"<p>Your <b>Leuffen RMM</b> email verification code is:</p>"
-        f"<p style='font-size:24px;font-weight:700;letter-spacing:3px'>{code}</p>"
-        f"<p>It expires in 15 minutes. If you did not request this, you can ignore it.</p>"
+        f"<div style='font-size:18px;font-weight:700;margin:0 0 12px'>Verify your email</div>"
+        f"<p style='margin:0 0 10px'>Enter this code to finish setting up your account:</p>"
+        f"<div style='font-size:30px;font-weight:800;letter-spacing:8px;color:#3b82f6;"
+        f"background:#0a0c11;border:1px solid #232b37;border-radius:12px;padding:16px;"
+        f"text-align:center;margin:0 0 16px'>{code}</div>"
+        f"<p style='margin:0;color:#97a3b4;font-size:12.5px'>It expires in 15 minutes. "
+        f"If you didn't request this, you can ignore this email.</p>"
     )
-    sent = mailer.send_mail("Leuffen RMM — verify your email", html, [inv["email"]])
+    sent = mailer.send_mail(f"{name} — verify your email", html, [inv["email"]])
     if not sent:
         db.set_invite_code(token, None, None)
     return {"ok": True, "sent": sent, "mail_configured": True, "email": inv["email"]}

@@ -75,23 +75,31 @@ def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
     state = db.get_alert_state(dev["id"], rule)
     cur = state["state"] if state else "ok"
     tag = f"[{severity.upper()}] " if severity != "info" else ""
+    kind = "bad" if severity in ("critical", "error") else ("info" if severity == "info" else "warn")
     if raised:
         if cur != "raised":
             db.set_alert_state(dev["id"], rule, "raised", now, now)
             log.info("ALERT raised: %s %s", dev["hostname"], rule)
             if notify:
-                mailer.send_mail(f"[RMM] {tag}{subject}", f"<p>{body}</p>", recipients)
+                mailer.send_mail(f"[RMM] {tag}{subject}",
+                                 mailer.status_block(subject, f"<p style='margin:0'>{body}</p>", kind),
+                                 recipients)
         else:
             last = (state or {}).get("last_email") or 0
             if now - last > EMAIL_COOLDOWN:
                 db.set_alert_state(dev["id"], rule, "raised", state.get("since"), now)
                 if notify:
-                    mailer.send_mail(f"[RMM] {tag}{subject} (still active)", f"<p>{body}</p>", recipients)
+                    mailer.send_mail(f"[RMM] {tag}{subject} (still active)",
+                                     mailer.status_block(f"{subject} (still active)",
+                                                         f"<p style='margin:0'>{body}</p>", kind),
+                                     recipients)
     else:
         if cur == "raised":
             db.set_alert_state(dev["id"], rule, "ok", None, None)
             log.info("ALERT cleared: %s %s", dev["hostname"], rule)
             if notify:
                 mailer.send_mail(f"[RMM] Resolved: {subject}",
-                                f"<p>{dev['hostname']} {rule} has returned to normal.</p>",
-                                recipients)
+                                 mailer.status_block(f"Resolved: {subject}",
+                                                     f"<p style='margin:0'>{dev['hostname']} {rule} has returned to normal.</p>",
+                                                     "good"),
+                                 recipients)

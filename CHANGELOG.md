@@ -16,6 +16,7 @@
 - **Agent MSI download pointed at the wrong repo.** `RMM_MSI_URL` / `RMM_GH_REPO` defaulted to the server repo (stale v1.1.x agent) instead of `leuffen-rmm-agent` (current v2.x with the secure-connection code). Defaults now point at the agent repo.
 
 ### Changed
+- **Branded emails** — All outgoing email (invites, the email-verification code, alert/resolved notifications, and test emails) now uses a single dashboard-styled template: dark card, the Leuffen RMM logo and wordmark, a primary action button on invites, a coloured status header on alerts, and an "Open dashboard" footer link. The wordmark and footer follow your configured server name.
 - **Vendored agent synced to v2.2.10** — the agent bundled in the server image (served via `agent.zip`) now matches the canonical agent: cert pinning, per-device secret, and login/lock-screen capture.
 
 ---
