@@ -57,6 +57,7 @@ function ringChart(p, color) {
     stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 22 22)"/>
     <text x="22" y="22" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="700" fill="var(--text)">${Math.round(p || 0)}</text></svg>`;
 }
+function tempColor(c) { return c == null ? "var(--text-dim)" : c >= 85 ? "var(--bad)" : c >= 70 ? "var(--warn)" : "var(--good)"; }
 const statusPill = (on) => `<span class="status ${on ? "on" : "off"}"><span class="led"></span>${on ? "Online" : "Offline"}</span>`;
 const initials = (s) => s.split(/[\s\-@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 
@@ -1002,20 +1003,24 @@ function metricIcon(metric) {
   if (metric === "cpu_percent") return ICON.cpu;
   if (metric === "mem_percent") return ICON.mem;
   if (metric === "disk_percent") return ICON.disk;
+  if (metric === "gpu_percent") return ICON.gpu;
+  if (metric === "cpu_temp" || metric === "gpu_temp") return ICON.thermo;
   if (metric === "wol") return ICON.power;
   return ICON.wifi;
 }
 function ruleValueText(r) {
   if (r.metric === "wol") return "Wake-on-LAN · Windows only";
   if (r.metric === "offline") return `unseen for ${Math.round(r.threshold)}s`;
-  return `${r.metric.replace("_percent", "")} ≥ ${r.threshold}% for ${r.duration_minutes} min`;
+  const unit = r.metric.endsWith("_temp") ? "°C" : "%";
+  const label = r.metric.replace("_percent", "").replace("_temp", " temp");
+  return `${label} ≥ ${r.threshold}${unit} for ${r.duration_minutes} min`;
 }
 function renderMonitorGallery() {
   const gallery = $("mon-gallery");
   gallery.innerHTML = (state.templates || []).map((t) => {
     const detail = t.kind === "policy"
       ? (t.os_support ? "Applies to: " + t.os_support.map((o) => o === "windows_server" ? "Windows Server" : "Windows").join(", ") : "All devices")
-      : "Default: " + (t.metric === "offline" ? t.default_threshold + "s unseen" : t.default_threshold + "% for " + t.default_duration_minutes + " min");
+      : "Default: " + (t.metric === "offline" ? t.default_threshold + "s unseen" : t.default_threshold + (t.unit || "%") + " for " + t.default_duration_minutes + " min");
     return `
     <div class="tile" data-tmpl="${t.id}" style="display:flex;flex-direction:column;gap:10px">
       <div style="display:flex;align-items:center;gap:10px"><div class="os-ico">${metricIcon(t.metric)}</div><div style="font-weight:650">${escapeHtml(t.name)}</div>${t.kind === "policy" ? `<span class="badge" style="margin-left:auto">policy</span>` : ""}</div>
@@ -1080,7 +1085,8 @@ function openRuleForm(tmpl, existing) {
   $("rm-metric-row").classList.toggle("hidden", isPolicy);
   $("rm-alert-row").classList.toggle("hidden", isPolicy);
   $("rm-name").value = existing ? existing.name : tmpl.name;
-  $("rm-threshold-label").textContent = tmpl.metric === "offline" ? "Unseen for (seconds)" : "Threshold (%)";
+  $("rm-threshold-label").textContent = tmpl.metric === "offline" ? "Unseen for (seconds)"
+    : `Threshold (${tmpl.unit || "%"})`;
   $("rm-threshold").value = existing ? existing.threshold : tmpl.default_threshold;
   $("rm-duration-wrap").classList.toggle("hidden", tmpl.metric === "offline");
   $("rm-duration").value = existing ? (existing.duration_minutes || "") : (tmpl.default_duration_minutes || "");
@@ -1175,6 +1181,8 @@ function incidentIcon(metric) {
   if (metric === "cpu_percent") return ICON.cpu;
   if (metric === "mem_percent") return ICON.mem;
   if (metric === "disk_percent") return ICON.disk;
+  if (metric === "gpu_percent") return ICON.gpu;
+  if (metric === "cpu_temp" || metric === "gpu_temp") return ICON.thermo;
   if (metric === "offline") return ICON.wifi;
   if (metric === "wol") return ICON.power;
   return ICON.bell;
@@ -1249,12 +1257,20 @@ function renderOverview(d) {
   const diskPct = primary ? primary.percent : m.disk_percent;
   const diskLabel = primary ? primary.mount.replace(/\\$/, "") : "Disk";
   const multi = disks.length > 1;
+  // GPU usage ring — only when the agent reported a GPU reading.
+  const gpuCard = (m.gpu_percent != null) ? `
+      <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">GPU${m.gpu_mem_percent != null ? ` <span class="mono" style="opacity:.7">VRAM ${Math.round(m.gpu_mem_percent)}%</span>` : ""}</div><div class="v">${Math.round(m.gpu_percent)}<small>%</small></div></div>${ringChart(m.gpu_percent, (m.gpu_percent >= 85) ? "var(--bad)" : "var(--accent)")}</div></div>` : "";
+  // Temperatures strip — only when a sensor was readable (often N/A on Windows).
+  const tempChip = (label, c) => c == null ? "" : `<span style="display:inline-flex;align-items:center;gap:6px;font-size:14px"><span style="color:${tempColor(c)};display:inline-flex">${ICON.thermo.replace("<svg", '<svg style="width:15px;height:15px"')}</span><span class="muted">${label}</span> <b style="color:${tempColor(c)}">${Math.round(c)}°C</b></span>`;
+  const hasTemp = (m.cpu_temp != null || m.gpu_temp != null);
+  const tempCard = hasTemp ? `
+      <div class="sg wide"><div class="l">Temperatures</div><div style="display:flex;gap:28px;margin-top:10px;flex-wrap:wrap">${tempChip("CPU", m.cpu_temp)}${tempChip("GPU", m.gpu_temp)}</div></div>` : "";
   const cards = d.online ? `
     <div class="stat-grid">
       <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">CPU</div><div class="v">${Math.round(m.cpu_percent || 0)}<small>%</small></div></div>${ringChart(m.cpu_percent, (m.cpu_percent >= 75) ? "var(--bad)" : "var(--accent)")}</div></div>
       <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">Memory</div><div class="v">${Math.round(m.mem_percent || 0)}<small>%</small></div></div>${ringChart(m.mem_percent, "var(--good)")}</div></div>
-      <div class="sg ${multi ? "clickable" : ""}" id="disk-card"${multi ? ' title="Show all drives"' : ""}><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">Disk ${diskLabel !== "Disk" ? `<span class="mono" style="opacity:.7">${escapeHtml(diskLabel)}</span>` : ""} ${multi ? `<span style="opacity:.6">${ICON.chevD.replace("<svg", '<svg style="width:11px;height:11px;vertical-align:middle"')}</span>` : ""}</div><div class="v">${Math.round(diskPct || 0)}<small>%</small></div></div>${ringChart(diskPct, (diskPct >= 90) ? "var(--bad)" : "var(--warn)")}</div></div>
-      <div class="sg"><div class="l">Uptime</div><div class="v" style="font-size:15px;margin-top:8px">${d.uptimeStr}</div></div>
+      <div class="sg ${multi ? "clickable" : ""}" id="disk-card"${multi ? ' title="Show all drives"' : ""}><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">Disk ${diskLabel !== "Disk" ? `<span class="mono" style="opacity:.7">${escapeHtml(diskLabel)}</span>` : ""} ${multi ? `<span style="opacity:.6">${ICON.chevD.replace("<svg", '<svg style="width:11px;height:11px;vertical-align:middle"')}</span>` : ""}</div><div class="v">${Math.round(diskPct || 0)}<small>%</small></div></div>${ringChart(diskPct, (diskPct >= 90) ? "var(--bad)" : "var(--warn)")}</div></div>${gpuCard}
+      <div class="sg"><div class="l">Uptime</div><div class="v" style="font-size:15px;margin-top:8px">${d.uptimeStr}</div></div>${tempCard}
     </div>
     <div id="disk-detail" class="hidden tile" style="margin-bottom:18px">${diskRows(disks)}</div>` : `<div class="tile" style="margin-bottom:20px;text-align:center;color:var(--text-dim)">Device offline · last seen ${relTime(d.last_seen)}</div>`;
   const rows = [
@@ -1290,18 +1306,25 @@ async function loadHistory(id, range) {
   try { s = await api(`/api/devices/${id}/metrics?range=${range}`); } catch (e) { host.innerHTML = `<div class="muted" style="padding:8px 0">${escapeHtml(e.message)}</div>`; return; }
   if (!s.length) { host.innerHTML = `<div class="muted" style="padding:8px 0;font-size:12.5px">No history collected for this range yet.</div>`; return; }
   const pick = (k) => s.map((x) => x[k] == null ? 0 : x[k]);
+  const has = (k) => s.some((x) => x[k] != null);
   const times = s.map((x) => x.ts || 0);
-  host.innerHTML = histRow("CPU", pick("cpu_percent"), "var(--accent)", times) +
-                   histRow("Memory", pick("mem_percent"), "var(--good)", times) +
-                   histRow("Disk", pick("disk_percent"), "var(--warn)", times);
+  let html = histRow("CPU", pick("cpu_percent"), "var(--accent)", times) +
+             histRow("Memory", pick("mem_percent"), "var(--good)", times) +
+             histRow("Disk", pick("disk_percent"), "var(--warn)", times);
+  if (has("gpu_percent")) html += histRow("GPU", pick("gpu_percent"), "#a78bfa", times);
+  if (has("cpu_temp")) html += histRow("CPU temp", pick("cpu_temp"), "#fb923c", times, "°C");
+  if (has("gpu_temp")) html += histRow("GPU temp", pick("gpu_temp"), "#f87171", times, "°C");
+  host.innerHTML = html;
   wireAreaTips();
 }
-function histRow(label, data, color, times) {
+function histRow(label, data, color, times, unit) {
+  unit = unit || "%";
   const last = data.length ? Math.round(data[data.length - 1]) : 0;
   const peak = data.length ? Math.round(Math.max(...data)) : 0;
-  return `<div class="hist-row"><div class="hist-head"><span>${label}</span><span class="muted">now ${last}% · peak ${peak}%</span></div>${areaChart(data, color, 100, times)}</div>`;
+  return `<div class="hist-row"><div class="hist-head"><span>${label}</span><span class="muted">now ${last}${unit} · peak ${peak}${unit}</span></div>${areaChart(data, color, 100, times, unit)}</div>`;
 }
-function areaChart(data, color, fixedMax, times) {
+function areaChart(data, color, fixedMax, times, unit) {
+  unit = unit || "%";
   if (!data || !data.length) return "";
   const w = 320, h = 56, max = fixedMax || Math.max(...data, 1), rng = Math.max(max, 1), n = data.length;
   const pts = data.map((v, i) => [(i / Math.max(n - 1, 1)) * w, h - (Math.min(v, max) / rng) * (h - 6) - 3]);
@@ -1309,7 +1332,7 @@ function areaChart(data, color, fixedMax, times) {
   const id = "a" + Math.random().toString(36).slice(2, 7);
   const vals = data.map((v) => Math.round(v * 10) / 10).join(",");
   const ts = (times || []).map((t) => Math.round(t)).join(",");
-  return `<div class="area-wrap" data-vals="${vals}" data-times="${ts}" data-color="${color}" data-max="${fixedMax || 0}">
+  return `<div class="area-wrap" data-vals="${vals}" data-times="${ts}" data-color="${color}" data-max="${fixedMax || 0}" data-unit="${unit}">
     <svg class="area" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".3"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs><path d="${path} L${w} ${h} L0 ${h} Z" fill="url(#${id})"/><path d="${path}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>
     <div class="area-guide"></div><div class="area-dot"></div><div class="area-tip"></div>
   </div>`;
@@ -1321,6 +1344,7 @@ function wireAreaTips() {
     const vals = wrap.dataset.vals ? wrap.dataset.vals.split(",").map(Number) : [];
     const times = wrap.dataset.times ? wrap.dataset.times.split(",").map(Number) : [];
     const color = wrap.dataset.color || "var(--accent)";
+    const unit = wrap.dataset.unit || "%";
     const max = Number(wrap.dataset.max) || (vals.length ? Math.max(...vals, 1) : 100);
     if (!vals.length) return;
     const guide = wrap.querySelector(".area-guide"), dot = wrap.querySelector(".area-dot"), tip = wrap.querySelector(".area-tip");
@@ -1336,7 +1360,7 @@ function wireAreaTips() {
       guide.style.left = x + "px"; guide.style.display = "block";
       dot.style.left = x + "px"; dot.style.top = y + "px"; dot.style.display = "block";
       const when = times[i] ? new Date(times[i] * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-      tip.innerHTML = `<b>${v}%</b>${when ? `<span>${when}</span>` : ""}`;
+      tip.innerHTML = `<b>${v}${unit}</b>${when ? `<span>${when}</span>` : ""}`;
       tip.style.display = "block";
       const tw = tip.offsetWidth;
       tip.style.left = Math.min(Math.max(x - tw / 2, 0), rect.width - tw) + "px";
