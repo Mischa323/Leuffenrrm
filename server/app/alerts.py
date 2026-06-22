@@ -53,24 +53,30 @@ def evaluate_once() -> None:
             if rule["metric"] == "offline":
                 last_seen = dev.get("last_seen") or 0
                 raised = (dev["id"] not in online) and (now - last_seen > rule["threshold"])
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": f"No heartbeat for {int(rule['threshold'])}s"}
                 _apply(dev, rule_key, raised, recipients,
                        f"{dev['hostname']}: {rule['name']}",
                        f"No heartbeat from <b>{dev['hostname']}</b> for over "
-                       f"{int(rule['threshold'])}s.", notify, severity)
+                       f"{int(rule['threshold'])}s.", notify, severity, meta)
                 continue
             if not latest:
                 continue
             avg = _avg_recent(metrics, rule["metric"], rule["duration_minutes"] or 0)
             raised = avg is not None and avg >= rule["threshold"]
+            meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                    "detail": f"{rule['metric'].replace('_percent', '')} ≥ {rule['threshold']:.0f}% "
+                              f"for {(rule['duration_minutes'] or 0):.0f} min"}
             _apply(dev, rule_key, raised, recipients,
                    f"{dev['hostname']}: {rule['name']}",
                    f"{rule['metric']} averaged {avg:.0f}% over {(rule['duration_minutes'] or 0):.0f} min "
                    f"(threshold {rule['threshold']:.0f}%)." if avg is not None else "",
-                   notify, severity)
+                   notify, severity, meta)
 
 
 def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
-           subject: str, body: str, notify: bool = True, severity: str = "warning") -> None:
+           subject: str, body: str, notify: bool = True, severity: str = "warning",
+           meta: dict | None = None) -> None:
     now = time.time()
     state = db.get_alert_state(dev["id"], rule)
     cur = state["state"] if state else "ok"
@@ -97,6 +103,11 @@ def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
         if cur == "raised":
             db.set_alert_state(dev["id"], rule, "ok", None, None)
             log.info("ALERT cleared: %s %s", dev["hostname"], rule)
+            if meta:
+                db.add_incident(dev["id"], dev.get("org_id"), meta.get("id"),
+                                meta.get("name") or subject, meta.get("metric"),
+                                severity, meta.get("detail"),
+                                (state or {}).get("since") or now, now)
             if notify:
                 mailer.send_mail(f"[RMM] Resolved: {subject}",
                                  mailer.status_block(f"Resolved: {subject}",
