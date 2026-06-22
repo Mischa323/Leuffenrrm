@@ -87,6 +87,8 @@ async function init() {
   setupScriptModal();
   setupMonitorModal();
   setupRuleModal();
+  setupScreenshotModal();
+  setupDeleteModal();
   document.querySelectorAll("#mon-view-seg button").forEach((b) => b.onclick = () => selectMonView(b.dataset.view));
   state.templates = await api("/api/monitor-templates").catch(() => []);
   refreshPendingBadge();
@@ -1283,10 +1285,12 @@ function renderActions(d) {
     { t: "Log off", d: "Sign out user", i: ICON.logout, c: "", f: () => power(d.id, "logoff") },
     { t: "Restart", d: "Reboot device", i: ICON.restart, c: "warn", f: () => confirm("Reboot " + d.hostname + "?") && power(d.id, "reboot") },
     { t: "Shut down", d: "Power off device", i: ICON.power, c: "danger", f: () => confirm("Shut down " + d.hostname + "?") && power(d.id, "shutdown") },
-    { t: "Remove", d: "Delete from RMM", i: ICON.trash, c: "danger", f: async () => { if (confirm("Remove " + d.hostname + "?")) { try { await api(`/api/devices/${d.id}`, { method: "DELETE" }); toast("Device removed"); closeDrawer(); refreshOrgCaches().then(() => { buildNav(); renderDevices(); }); } catch (e) { toast(e.message); } } } },
   ];
   let html = `<div class="actions-grid">${acts.map((a, i) => `<button class="action ${a.c}" data-i="${i}"><span class="ai">${a.i}</span><span><span class="at">${a.t}</span><br><span class="ad">${a.d}</span></span></button>`).join("")}</div>`;
-  if (d.online) html = `<div style="margin-bottom:12px"><button class="btn" style="width:100%;justify-content:center;gap:8px" id="remote-btn">${ICON.monitor} Remote control</button></div>` + html;
+  if (d.online) html = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+      <button class="btn" style="justify-content:center;gap:8px" id="remote-btn">${ICON.monitor} Remote control</button>
+      <button class="btn ghost" style="justify-content:center;gap:8px" id="shot-btn">${ICON.camera} Screenshot</button>
+    </div>` + html;
   html += `<div class="sec-label">Agent</div><div class="tile"><div class="field" style="align-items:center">
       <div style="flex:1;font-size:12.5px" class="muted">Installed: <b>v${d.agent_version || "—"}</b><span id="upd-latest"></span></div>
       <button class="btn" id="update-agent"${d.online ? "" : " disabled"}>${ICON.download} Update agent</button></div>
@@ -1307,9 +1311,24 @@ function renderActions(d) {
   } else {
     html += `<div class="tile"><div class="muted" style="font-size:12.5px;margin-bottom:12px">Promote this device to a network node so it can relay Wake-on-LAN and scan its local subnets.</div><button class="btn" id="promote">${ICON.nodes} Promote to network node</button></div>`;
   }
+  // Danger zone — kept at the very bottom and behind a confirmation dialog so the
+  // device can't be deleted by an accidental click.
+  html += `<div class="sec-label" style="color:var(--bad)">Danger zone</div>
+    <div class="tile" style="border-color:color-mix(in srgb, var(--bad) 32%, transparent)">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:180px">
+          <div style="font-weight:650;font-size:13px;margin-bottom:3px">Delete this device</div>
+          <div class="muted" style="font-size:12px;line-height:1.5">Permanently removes ${escapeHtml(d.hostname)} and its history from Leuffen RMM. The agent must re-enrol to reconnect.</div>
+        </div>
+        <button class="btn danger" id="del-device-btn">${ICON.trash} Delete device</button>
+      </div></div>`;
   $("dtab-actions").innerHTML = html;
   const remBtn = $("remote-btn");
   if (remBtn) remBtn.onclick = () => window.open(`/remote/${d.id}`, "_blank");
+  const shotBtn = $("shot-btn");
+  if (shotBtn) shotBtn.onclick = () => openScreenshot();
+  const delBtn = $("del-device-btn");
+  if (delBtn) delBtn.onclick = () => confirmDeleteDevice(d);
   $("dtab-actions").querySelectorAll(".action").forEach((b) => b.onclick = () => acts[+b.dataset.i].f());
   const upd = $("update-agent");
   if (upd) {
@@ -1373,7 +1392,101 @@ function cmpVer(a, b) {
   }
   return 0;
 }
-function closeDrawer() { closeTerminal(); closeFiles(); const d = $("drawer"); d.style.transform = "translateX(100%)"; setTimeout(() => d.classList.add("hidden"), 280); $("scrim").classList.add("hidden"); state.device = null; }
+function closeDrawer() { closeTerminal(); closeFiles(); closeScreenshot(); closeDeleteModal(); const d = $("drawer"); d.style.transform = "translateX(100%)"; setTimeout(() => d.classList.add("hidden"), 280); $("scrim").classList.add("hidden"); state.device = null; }
+
+/* ---------- screenshot (one-shot screen preview) ----------
+   Reuses the live screen-capture WebSocket: connect, keep the first JPEG frame,
+   then close so the agent stops capturing. No agent/server change needed. */
+let shotWS = null;
+function setupScreenshotModal() {
+  $("shot-close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
+  $("shot-refresh").innerHTML = `${ICON.refresh} Refresh`;
+  $("shot-remote").innerHTML = `${ICON.monitor} Remote control`;
+  $("shot-close").onclick = closeScreenshot;
+  $("shot-refresh").onclick = captureScreenshot;
+  $("shot-remote").onclick = () => { if (state.deviceObj) window.open(`/remote/${state.deviceObj.id}`, "_blank"); };
+  $("shot-modal").onclick = (e) => { if (e.target === $("shot-modal")) closeScreenshot(); };
+}
+function openScreenshot() {
+  const d = state.deviceObj; if (!d) return;
+  $("shot-host").textContent = `${d.hostname}${d.os ? " · " + d.os : ""}`;
+  $("shot-modal").classList.remove("hidden");
+  if (!d.online) {
+    $("shot-body").innerHTML = `<div class="muted" style="padding:48px 24px;text-align:center">Device is offline — can't capture a screenshot.</div>`;
+    $("shot-status").textContent = "Offline";
+    return;
+  }
+  captureScreenshot();
+}
+function captureScreenshot() {
+  const d = state.deviceObj;
+  if (!d || !d.online) return;
+  const body = $("shot-body"), status = $("shot-status");
+  body.innerHTML = `<div class="muted" style="padding:48px 24px;text-align:center">Capturing the live screen…<br><span style="font-size:12px">The person at the device briefly sees a "remote session" banner.</span></div>`;
+  status.textContent = "Connecting…";
+  if (shotWS) { try { shotWS.onclose = null; shotWS.close(); } catch {} shotWS = null; }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/api/devices/${d.id}/screen`);
+  shotWS = ws;
+  ws.binaryType = "arraybuffer";
+  const timer = setTimeout(() => {
+    if (shotWS === ws) { status.textContent = "No frame received — the device may be busy. Try Refresh."; try { ws.close(); } catch {} }
+  }, 20000);
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      try { const m = JSON.parse(ev.data); if (m.error) { clearTimeout(timer); status.textContent = m.error; body.innerHTML = `<div class="muted" style="padding:48px 24px;text-align:center">${escapeHtml(m.error)}</div>`; } } catch {}
+      return;
+    }
+    // First JPEG frame is our screenshot; skip the LRMMCLIP clipboard blob.
+    const head = new Uint8Array(ev.data, 0, Math.min(2, ev.data.byteLength));
+    if (head[0] !== 0xFF || head[1] !== 0xD8) return;
+    clearTimeout(timer);
+    const url = URL.createObjectURL(new Blob([ev.data], { type: "image/jpeg" }));
+    const img = new Image();
+    img.onload = () => URL.revokeObjectURL(url);
+    img.alt = "Screenshot of " + d.hostname;
+    img.style.cssText = "max-width:100%;max-height:100%;display:block;margin:auto";
+    body.innerHTML = ""; body.appendChild(img);
+    status.textContent = "Captured " + new Date().toLocaleTimeString();
+    // One-shot: close immediately so the agent stops capturing.
+    try { ws.close(); } catch {}
+    shotWS = null;
+  };
+  ws.onerror = () => { status.textContent = "Connection error."; };
+  ws.onclose = () => { clearTimeout(timer); if (shotWS === ws) shotWS = null; };
+}
+function closeScreenshot() {
+  if (shotWS) { try { shotWS.onclose = null; shotWS.close(); } catch {} shotWS = null; }
+  $("shot-modal").classList.add("hidden");
+}
+
+/* ---------- delete device (confirmation dialog) ---------- */
+function setupDeleteModal() {
+  $("del-ico").innerHTML = ICON.trash;
+  $("del-cancel").onclick = closeDeleteModal;
+  $("del-modal").onclick = (e) => { if (e.target === $("del-modal")) closeDeleteModal(); };
+}
+function confirmDeleteDevice(d) {
+  $("del-text").innerHTML = `This permanently removes <b>${escapeHtml(d.hostname)}</b> and all of its history and inventory from Leuffen RMM. The agent will need to re-enrol to reconnect. <b>This can't be undone.</b>`;
+  const btn = $("del-confirm");
+  btn.innerHTML = `${ICON.trash} Delete device`;
+  btn.disabled = false;
+  btn.onclick = async () => {
+    btn.disabled = true; btn.innerHTML = "Deleting…";
+    try {
+      await api(`/api/devices/${d.id}`, { method: "DELETE" });
+      toast("Device removed");
+      closeDeleteModal();
+      closeDrawer();
+      refreshOrgCaches().then(() => { buildNav(); renderDevices(); });
+    } catch (e) {
+      toast(e.message);
+      btn.disabled = false; btn.innerHTML = `${ICON.trash} Delete device`;
+    }
+  };
+  $("del-modal").classList.remove("hidden");
+}
+function closeDeleteModal() { $("del-modal").classList.add("hidden"); }
 
 /* ---------- remote file management (centered modal) ---------- */
 function openFiles() {
