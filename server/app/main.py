@@ -247,6 +247,7 @@ async def _prune_loop() -> None:
         await asyncio.sleep(3600)
         try:
             db.prune_metrics(METRIC_RETENTION)
+            db.prune_incidents()
         except Exception:  # pragma: no cover
             pass
 
@@ -729,6 +730,28 @@ def device_metrics(device_id: str, limit: int = 200, range: str | None = Query(N
             raise HTTPException(status_code=400, detail="range must be 24h, 7d or 30d")
         return db.get_metrics_series(device_id, time.time() - secs, points=120)
     return db.get_metrics(device_id, limit=limit)
+
+
+def _alert_detail(a: dict) -> str:
+    metric = a.get("metric")
+    if metric == "offline":
+        return f"No heartbeat for {int(a.get('threshold') or 0)}s"
+    if metric == "wol":
+        return "Wake-on-LAN policy"
+    return (f"{(metric or '').replace('_percent', '')} ≥ {float(a.get('threshold') or 0):.0f}% "
+            f"for {float(a.get('duration_minutes') or 0):.0f} min")
+
+
+@app.get("/api/devices/{device_id}/incidents")
+def device_incidents(device_id: str, user: dict = Depends(auth.current_user)):
+    """Policy-issue history for a device: currently raised alerts plus resolved ones."""
+    _device_for_user(device_id, user)
+    active = []
+    for a in db.device_active_alerts(device_id):
+        a["detail"] = _alert_detail(a)
+        a["opened_at"] = a.pop("since", None)
+        active.append(a)
+    return {"active": active, "resolved": db.list_incidents(device_id, limit=100)}
 
 
 @app.delete("/api/devices/{device_id}")

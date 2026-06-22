@@ -143,6 +143,24 @@ CREATE TABLE IF NOT EXISTS alert_state (
     PRIMARY KEY (device_id, rule)
 );
 
+-- Historical log of monitor-rule issues per device. A row is written when an
+-- alert clears (raised -> ok), capturing how long it was raised. Current/active
+-- issues live in alert_state; this is the resolved-issue history.
+CREATE TABLE IF NOT EXISTS incidents (
+    id          TEXT PRIMARY KEY,
+    device_id   TEXT NOT NULL,
+    org_id      TEXT,
+    rule_id     TEXT,
+    name        TEXT NOT NULL,
+    metric      TEXT,
+    severity    TEXT,
+    detail      TEXT,
+    opened_at   REAL NOT NULL,
+    resolved_at REAL,
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_device ON incidents(device_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -1834,3 +1852,51 @@ def list_raised_rule_alerts(org_id: str) -> list[dict]:
         (org_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# Incidents (per-device resolved-issue history)
+# --------------------------------------------------------------------------- #
+def add_incident(device_id: str, org_id: str | None, rule_id: str | None, name: str,
+                 metric: str | None, severity: str | None, detail: str | None,
+                 opened_at: float, resolved_at: float | None) -> str:
+    iid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute(
+            """INSERT INTO incidents (id, device_id, org_id, rule_id, name, metric, severity,
+                   detail, opened_at, resolved_at, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (iid, device_id, org_id, rule_id, name, metric, severity, detail,
+             opened_at, resolved_at, _now()),
+        )
+    return iid
+
+
+def list_incidents(device_id: str, limit: int = 100) -> list[dict]:
+    """Resolved incident history for a device, most recently resolved first."""
+    rows = get_conn().execute(
+        """SELECT * FROM incidents WHERE device_id=?
+           ORDER BY resolved_at DESC, opened_at DESC LIMIT ?""",
+        (device_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def device_active_alerts(device_id: str) -> list[dict]:
+    """Monitor-rule alerts currently raised on a device, with the rule's details."""
+    rows = get_conn().execute(
+        """SELECT a.since, mr.id AS rule_id, mr.name, mr.metric, mr.severity,
+                  mr.threshold, mr.duration_minutes
+           FROM alert_state a
+           JOIN monitor_rules mr ON 'rule:' || mr.id = a.rule
+           WHERE a.device_id=? AND a.state='raised'
+           ORDER BY a.since DESC""",
+        (device_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def prune_incidents(older_than_days: int = 90) -> None:
+    cutoff = _now() - older_than_days * 86400
+    with write() as conn:
+        conn.execute("DELETE FROM incidents WHERE resolved_at IS NOT NULL AND resolved_at < ?", (cutoff,))

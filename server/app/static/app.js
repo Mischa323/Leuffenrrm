@@ -1163,11 +1163,59 @@ async function openDrawer(id) {
 }
 function selectDrawerTab(tab) {
   document.querySelectorAll(".dtabs button").forEach((b) => b.classList.toggle("active", b.dataset.dtab === tab));
-  ["overview", "software", "files", "terminal", "actions"].forEach((t) => $("dtab-" + t).classList.toggle("hidden", t !== tab));
+  ["overview", "history", "software", "files", "terminal", "actions"].forEach((t) => $("dtab-" + t).classList.toggle("hidden", t !== tab));
   if (tab === "overview") renderOverview(state.deviceObj);
+  if (tab === "history") loadDeviceHistory(state.device);
   if (tab === "software") loadSoftware(state.device);
   if (tab === "files") openFiles(); else closeFiles();
   if (tab === "terminal") openTerminal(); else closeTerminal();
+}
+/* History tab: current policy issues (raised alerts) + resolved past issues. */
+function incidentIcon(metric) {
+  if (metric === "cpu_percent") return ICON.cpu;
+  if (metric === "mem_percent") return ICON.mem;
+  if (metric === "disk_percent") return ICON.disk;
+  if (metric === "offline") return ICON.wifi;
+  if (metric === "wol") return ICON.power;
+  return ICON.bell;
+}
+function fmtDuration(sec) {
+  if (sec == null || Number.isNaN(sec) || sec < 0) return "—";
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  if (d) return `${d}d ${h}h`; if (h) return `${h}h ${m}m`; if (m) return `${m}m`; return "<1m";
+}
+function incidentRow(it, resolved) {
+  const sev = severityBadge(it.severity);
+  const when = resolved
+    ? `resolved ${relTime(it.resolved_at)} · lasted ${fmtDuration((it.resolved_at || 0) - (it.opened_at || 0))}`
+    : `started ${relTime(it.opened_at)}`;
+  const dot = resolved
+    ? `<span class="badge ok">${ICON.check} resolved</span>`
+    : `<span class="badge bad">${ICON.alert} active</span>`;
+  return `<div class="tile" style="margin-bottom:10px;display:flex;align-items:center;gap:12px${resolved ? ";opacity:.85" : ""}">
+    <span class="os-ico">${incidentIcon(it.metric)}</span>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(it.name)} ${sev}</div>
+      <div class="h-sub">${escapeHtml(it.detail || "")} · ${when}</div>
+    </div>${dot}</div>`;
+}
+async function loadDeviceHistory(id) {
+  const host = $("dtab-history");
+  host.innerHTML = `<div class="muted" style="padding:14px;font-size:12.5px">Loading policy history…</div>`;
+  let data;
+  try { data = await api(`/api/devices/${id}/incidents`); }
+  catch (e) { host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Couldn't load history</div><div class="cd">${escapeHtml(e.message)}</div></div></div>`; return; }
+  const active = data.active || [], resolved = data.resolved || [];
+  let html = "";
+  html += `<div class="sec-label">Current issues${active.length ? ` <span class="muted">(${active.length})</span>` : ""}</div>`;
+  html += active.length
+    ? active.map((it) => incidentRow(it, false)).join("")
+    : `<div class="tile" style="margin-bottom:10px;color:var(--text-dim);display:flex;align-items:center;gap:10px"><span style="color:var(--good)">${ICON.check}</span> No active policy issues — this device is healthy.</div>`;
+  html += `<div class="sec-label" style="margin-top:18px">Resolved${resolved.length ? ` <span class="muted">(${resolved.length})</span>` : ""}</div>`;
+  html += resolved.length
+    ? resolved.map((it) => incidentRow(it, true)).join("")
+    : `<div class="muted" style="padding:6px 2px 14px;font-size:12.5px">No resolved issues recorded yet. Past issues will appear here once a policy alert clears.</div>`;
+  host.innerHTML = html;
 }
 async function loadSoftware(id) {
   const host = $("dtab-software");
