@@ -1527,6 +1527,21 @@ MONITOR_TEMPLATES = [
      "description": "Alert when memory usage stays above the threshold for a sustained period.",
      "metric": "mem_percent", "unit": "%", "default_threshold": 90, "default_duration_minutes": 10,
      "default_severity": "warning", "os_support": None},
+    {"id": "gpu", "name": "High GPU usage", "category": "Performance", "kind": "monitor",
+     "description": "Alert when GPU usage stays above the threshold for a sustained period. "
+                    "Reported for NVIDIA GPUs and most Windows/Linux GPUs.",
+     "metric": "gpu_percent", "unit": "%", "default_threshold": 90, "default_duration_minutes": 10,
+     "default_severity": "warning", "os_support": None},
+    {"id": "cpu_temp", "name": "High CPU temperature", "category": "Performance", "kind": "monitor",
+     "description": "Alert when CPU temperature stays above the threshold for a sustained period. "
+                    "Requires a readable temperature sensor (not available on every machine).",
+     "metric": "cpu_temp", "unit": "°C", "default_threshold": 90, "default_duration_minutes": 5,
+     "default_severity": "warning", "os_support": None},
+    {"id": "gpu_temp", "name": "High GPU temperature", "category": "Performance", "kind": "monitor",
+     "description": "Alert when GPU temperature stays above the threshold for a sustained period. "
+                    "Reported for NVIDIA GPUs.",
+     "metric": "gpu_temp", "unit": "°C", "default_threshold": 90, "default_duration_minutes": 5,
+     "default_severity": "warning", "os_support": None},
     {"id": "offline", "name": "Device offline", "category": "Availability", "kind": "monitor",
      "description": "Alert when a device hasn't sent a heartbeat for a while.",
      "metric": "offline", "unit": "s", "default_threshold": 120, "default_duration_minutes": None,
@@ -1563,12 +1578,12 @@ def _effective_policies(dev: dict) -> list[dict]:
     out = []
     for r in db.list_effective_monitor_rules(dev):
         tmpl = _template(r["template_id"]) or {}
+        unit = tmpl.get("unit") or ("s" if r["metric"] == "offline" else "%")
         out.append({"name": r["name"], "template_id": r["template_id"],
                     "kind": tmpl.get("kind", "monitor"), "severity": r.get("severity"),
                     "supported": _os_supported(r["template_id"], dev.get("os_kind")),
                     "value": ("Windows only" if r["template_id"] == "wol"
-                              else f"{r['metric']} ≥ {r['threshold']:.0f}"
-                                   f"{'%' if r['metric'] != 'offline' else 's'}")})
+                              else f"{r['metric']} ≥ {r['threshold']:.0f}{unit}")})
     return out
 
 

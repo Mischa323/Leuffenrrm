@@ -64,13 +64,15 @@ def evaluate_once() -> None:
                 continue
             avg = _avg_recent(metrics, rule["metric"], rule["duration_minutes"] or 0)
             raised = avg is not None and avg >= rule["threshold"]
+            unit = "°C" if rule["metric"].endswith("_temp") else "%"
+            label = rule["metric"].replace("_percent", "").replace("_temp", " temp")
+            dur = (rule["duration_minutes"] or 0)
             meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
-                    "detail": f"{rule['metric'].replace('_percent', '')} ≥ {rule['threshold']:.0f}% "
-                              f"for {(rule['duration_minutes'] or 0):.0f} min"}
+                    "detail": f"{label} ≥ {rule['threshold']:.0f}{unit} for {dur:.0f} min"}
             _apply(dev, rule_key, raised, recipients,
                    f"{dev['hostname']}: {rule['name']}",
-                   f"{rule['metric']} averaged {avg:.0f}% over {(rule['duration_minutes'] or 0):.0f} min "
-                   f"(threshold {rule['threshold']:.0f}%)." if avg is not None else "",
+                   f"{rule['metric']} averaged {avg:.0f}{unit} over {dur:.0f} min "
+                   f"(threshold {rule['threshold']:.0f}{unit})." if avg is not None else "",
                    notify, severity, meta)
 
 

@@ -107,6 +107,10 @@ CREATE TABLE IF NOT EXISTS metrics (
     uptime       REAL,
     net_sent     INTEGER,
     net_recv     INTEGER,
+    gpu_percent     REAL,
+    gpu_temp        REAL,
+    gpu_mem_percent REAL,
+    cpu_temp        REAL,
     FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_metrics_device_ts ON metrics(device_id, ts);
@@ -1217,6 +1221,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE monitor_rules ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 1")
     if "severity" not in mrcols:
         conn.execute("ALTER TABLE monitor_rules ADD COLUMN severity TEXT NOT NULL DEFAULT 'warning'")
+    # GPU + temperature metrics (added later; backfill columns on old databases).
+    metcols = {r[1] for r in conn.execute("PRAGMA table_info(metrics)")}
+    for col in ("gpu_percent", "gpu_temp", "gpu_mem_percent", "cpu_temp"):
+        if col not in metcols:
+            conn.execute(f"ALTER TABLE metrics ADD COLUMN {col} REAL")
     ocols = {r[1] for r in conn.execute("PRAGMA table_info(organizations)")}
     if "auto_update" not in ocols:
         # Per-org agent auto-update override: 'inherit' (use global default) | 'on' | 'off'.
@@ -1654,12 +1663,15 @@ def insert_metric(device_id: str, m: dict[str, Any]) -> None:
     with write() as conn:
         conn.execute(
             """INSERT INTO metrics (device_id, ts, cpu_percent, mem_percent, mem_total,
-                   mem_used, disk_percent, disk_total, disk_used, uptime, net_sent, net_recv)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   mem_used, disk_percent, disk_total, disk_used, uptime, net_sent, net_recv,
+                   gpu_percent, gpu_temp, gpu_mem_percent, cpu_temp)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (device_id, _now(), m.get("cpu_percent"), m.get("mem_percent"),
              m.get("mem_total"), m.get("mem_used"), m.get("disk_percent"),
              m.get("disk_total"), m.get("disk_used"), m.get("uptime"),
-             m.get("net_sent"), m.get("net_recv")),
+             m.get("net_sent"), m.get("net_recv"),
+             m.get("gpu_percent"), m.get("gpu_temp"), m.get("gpu_mem_percent"),
+             m.get("cpu_temp")),
         )
 
 
@@ -1721,11 +1733,13 @@ def get_metrics_series(device_id: str, since: float, points: int = 120) -> list[
     bucket = max((now - since) / max(points, 1), 1.0)
     rows = get_conn().execute(
         "SELECT MIN(ts) AS ts, AVG(cpu_percent) AS cpu, AVG(mem_percent) AS mem, "
-        "AVG(disk_percent) AS disk FROM metrics WHERE device_id=? AND ts>=? "
+        "AVG(disk_percent) AS disk, AVG(gpu_percent) AS gpu, AVG(gpu_temp) AS gpu_temp, "
+        "AVG(cpu_temp) AS cpu_temp FROM metrics WHERE device_id=? AND ts>=? "
         "GROUP BY CAST((ts - ?) / ? AS INT) ORDER BY ts",
         (device_id, since, since, bucket)).fetchall()
     return [{"ts": r["ts"], "cpu_percent": r["cpu"], "mem_percent": r["mem"],
-             "disk_percent": r["disk"]} for r in rows]
+             "disk_percent": r["disk"], "gpu_percent": r["gpu"],
+             "gpu_temp": r["gpu_temp"], "cpu_temp": r["cpu_temp"]} for r in rows]
 
 
 def set_device_group(device_id: str, group_id: str | None) -> None:
