@@ -1936,6 +1936,8 @@ async def _handle_agent_msg(device_id: str, org_id: str, data: dict) -> None:
             db.set_logged_in_user(device_id, m.get("logged_in_user"))
         if m.get("disks"):
             db.set_device_disks(device_id, m.get("disks"))
+        if m.get("hyperv"):
+            db.set_device_hyperv(device_id, m.get("hyperv"))
     elif mtype == "ack":
         manager.resolve(data.get("rid", ""), data.get("payload", data))
     elif mtype == "shell_output":

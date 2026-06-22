@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS devices (
     agent_version TEXT,
     logged_in_user TEXT,
     disks_json    TEXT,
+    hyperv_json   TEXT,
     is_node       INTEGER NOT NULL DEFAULT 0,
     inventory_json TEXT,
     compliant     INTEGER,
@@ -1158,6 +1159,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN logged_in_user TEXT")
     if "disks_json" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN disks_json TEXT")
+    if "hyperv_json" not in dcols:
+        conn.execute("ALTER TABLE devices ADD COLUMN hyperv_json TEXT")
     if "gpu" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN gpu TEXT")
     if "software_json" not in dcols:
@@ -1647,6 +1650,15 @@ def set_device_disks(device_id: str, disks: list | None) -> None:
                      (json.dumps(disks), device_id))
 
 
+def set_device_hyperv(device_id: str, hyperv: dict | None) -> None:
+    """Store the latest Hyper-V host summary + per-VM usage from a heartbeat."""
+    if not hyperv:
+        return
+    with write() as conn:
+        conn.execute("UPDATE devices SET hyperv_json=? WHERE id=?",
+                     (json.dumps(hyperv), device_id))
+
+
 def set_node(device_id: str, is_node: bool) -> None:
     with write() as conn:
         conn.execute("UPDATE devices SET is_node=? WHERE id=?",
@@ -1712,6 +1724,11 @@ def get_device(device_id: str) -> dict | None:
             d["disks"] = json.loads(d["disks_json"])
         except (ValueError, TypeError):
             d["disks"] = []
+    if d.get("hyperv_json"):
+        try:
+            d["hyperv"] = json.loads(d["hyperv_json"])
+        except (ValueError, TypeError):
+            d["hyperv"] = None
     # Attach configured subnets so the device drawer can list them for a node.
     if d.get("is_node"):
         d["subnets"] = list_subnets(device_id)
