@@ -132,17 +132,11 @@
             <div id="tab-monitors" class="hidden">
               <div class="panel">
                 <div class="panel-head"><h2>Policies</h2><span class="sub" id="mon-sub">Add monitors or standards</span><div class="spacer"></div>
-                  <div class="seg" id="mon-view-seg">
-                    <button data-view="policies" class="active">Script policies</button>
-                    <button data-view="templates">Template rules</button>
-                  </div>
-                  <button class="btn sm" id="mon-new"><span class="hi" data-i="shieldCheck"></span> New monitor</button></div>
-                <div id="mon-policies-view" style="padding:18px"><div id="mon-body"></div></div>
-                <div id="mon-templates-view" class="hidden" style="padding:18px">
-                  <div id="mon-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-bottom:22px"></div>
-                  <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><h3 style="margin:0;font-size:13px;color:var(--text-dim);font-weight:650;letter-spacing:.02em;text-transform:uppercase">Active rules</h3><span class="sub" id="mon-rules-sub"></span></div>
-                  <div id="mon-rules-body"></div>
-                </div>
+                  <div style="position:relative">
+                    <button class="btn sm" id="mon-new"><span class="hi" data-i="shieldCheck"></span> New policy <span class="hi" data-i="chevD" style="display:inline-flex;margin-left:2px"></span></button>
+                    <div class="hmenu" id="mon-new-menu" style="right:0;left:auto;min-width:264px"></div>
+                  </div></div>
+                <div style="padding:18px"><div id="mon-body"></div></div>
               </div>
             </div>
             <!-- Downloads -->
@@ -335,6 +329,19 @@
       <div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 22px;border-top:1px solid var(--border)">
         <button class="btn ghost" id="rm-cancel">Cancel</button>
         <button class="btn" id="rm-save">Add rule</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Template gallery (pick a standard to add) ===== -->
+  <div id="tmpl-modal" class="hidden" style="position:fixed;inset:0;z-index:80;display:grid;place-items:center;background:rgba(3,5,9,.55);backdrop-filter:blur(3px);padding:24px">
+    <div style="width:780px;max-width:96vw;max-height:92vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:var(--shadow-lg)">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)">
+        <div><h2 style="margin:0;font-size:16px">Add from a template</h2><div class="h-sub">Threshold rules and standards you can apply in one click</div></div>
+        <button class="icon-btn" id="tg-close"><span id="tg-close-ico"></span></button>
+      </div>
+      <div style="padding:20px 22px">
+        <div id="mon-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px"></div>
       </div>
     </div>
   </div>
