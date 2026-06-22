@@ -1921,10 +1921,14 @@ async def terminal_ws(ws: WebSocket, device_id: str):
 
 @app.websocket("/api/devices/{device_id}/screen")
 async def screen_ws(ws: WebSocket, device_id: str):
-    await _bridge_ws(ws, device_id, "screen")
+    # ?purpose=screenshot tells the agent this is a one-shot still, so it skips
+    # the on-device consent banner (a momentary capture, not an ongoing session).
+    purpose = "screenshot" if ws.query_params.get("purpose") == "screenshot" else "control"
+    await _bridge_ws(ws, device_id, "screen", purpose=purpose)
 
 
-async def _bridge_ws(ws: WebSocket, device_id: str, channel: str) -> None:
+async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
+                     purpose: str = "control") -> None:
     # Cookie auth (browser sends it automatically); dev mode is always allowed.
     # Authenticate the operator via the signed session cookie ...
     user = None
@@ -1953,7 +1957,8 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str) -> None:
         return
     manager.subscribe(device_id, channel, ws)
     if channel == "screen":
-        await agent.send({"type": "screen_start", "fps": 4, "quality": 50})
+        await agent.send({"type": "screen_start", "fps": 4, "quality": 50,
+                          "purpose": purpose})
     try:
         while True:
             data = await ws.receive_json()

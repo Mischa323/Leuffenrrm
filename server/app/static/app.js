@@ -1446,11 +1446,11 @@ function captureScreenshot() {
   const d = state.deviceObj;
   if (!d || !d.online) return;
   const body = $("shot-body"), status = $("shot-status");
-  body.innerHTML = `<div class="muted" style="padding:48px 24px;text-align:center">Capturing the live screen…<br><span style="font-size:12px">The person at the device briefly sees a "remote session" banner.</span></div>`;
+  body.innerHTML = `<div class="muted" style="padding:48px 24px;text-align:center">Capturing the live screen…</div>`;
   status.textContent = "Connecting…";
   if (shotWS) { try { shotWS.onclose = null; shotWS.close(); } catch {} shotWS = null; }
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/api/devices/${d.id}/screen`);
+  const ws = new WebSocket(`${proto}://${location.host}/api/devices/${d.id}/screen?purpose=screenshot`);
   shotWS = ws;
   ws.binaryType = "arraybuffer";
   const timer = setTimeout(() => {
