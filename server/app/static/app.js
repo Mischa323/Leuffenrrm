@@ -688,6 +688,8 @@ async function renderDownloads() {
   const ins = info.insecure_tls ? 1 : 0;
   let rel = { available: false };
   try { rel = await api(`/api/agent-release`); } catch {}
+  let au = { mode: "inherit", default: false, effective: false };
+  try { au = await api(`/api/orgs/${state.org}/auto-update`); } catch {}
   const relLabel = rel.available
     ? `<span class="badge ok" style="margin-left:8px">${escapeHtml(rel.name || rel.tag || "latest")}</span>${rel.size ? ` <span class="h-sub">${(rel.size / 1048576).toFixed(1)} MB${rel.published_at ? " · " + new Date(rel.published_at).toLocaleDateString() : ""}</span>` : ""}`
     : `<span class="badge na" style="margin-left:8px">no build published yet</span>`;
@@ -701,7 +703,16 @@ async function renderDownloads() {
       <div class="code">msiexec /i leuffen-rmm-agent.msi /qn RMM_SERVER_URL=${base} RMM_API_KEY=&lt;enrolment-key&gt; RMM_INSECURE_TLS=${ins}</div></div>
     <div class="dl-block"><div class="lab">${ICON.refresh} Update installed agents</div>
       <div class="h-sub" style="margin:4px 0 10px">Push the latest build to every online agent in this organisation. Each updates in place and reconnects automatically.</div>
-      <button class="btn sm" id="update-all">${ICON.download} Update all online agents</button></div>
+      <button class="btn sm" id="update-all">${ICON.download} Update all online agents</button>
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div><div style="font-weight:600;font-size:13px">Keep agents updated automatically</div>
+          <div class="h-sub" id="au-hint"></div></div>
+        <div class="seg" id="au-seg">
+          <button data-au="inherit">Default</button>
+          <button data-au="on">On</button>
+          <button data-au="off">Off</button>
+        </div>
+      </div></div>
     <div class="dl-block"><div class="lab">${ICON.link} Shareable MSI download link</div>
       <div class="h-sub" style="margin:4px 0 10px">Generate a link you can share with anyone. The link downloads the MSI pre-configured for this organisation — valid for a set number of days, unlimited installs. Revoke anytime.</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -724,6 +735,19 @@ async function renderDownloads() {
     try { const r = await api(`/api/orgs/${state.org}/update-agents`, { method: "POST" }); const skip = r.skipped ? ` (${r.skipped} already up to date)` : ""; toast(r.started ? `Update sent to ${r.started} agent(s)${skip}` : `All ${r.online} online agent(s) are already up to date`); }
     catch (e) { toast(e.message); } finally { b.disabled = false; b.innerHTML = old; }
   };
+  const auHint = (x) => `Currently ${x.effective ? "updating automatically" : "manual updates only"} · global default is ${x.default ? "On" : "Off"}`;
+  const auSeg = $("au-seg");
+  if (auSeg) {
+    const paint = (mode) => auSeg.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x.dataset.au === mode));
+    paint(au.mode); $("au-hint").textContent = auHint(au);
+    auSeg.querySelectorAll("button").forEach((x) => x.onclick = async () => {
+      try {
+        const r = await api(`/api/orgs/${state.org}/auto-update`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: x.dataset.au }) });
+        paint(r.mode); $("au-hint").textContent = auHint(r);
+        toast(r.mode === "inherit" ? "Auto-update: using global default" : `Auto-update ${r.mode} for this organisation`);
+      } catch (e) { toast(e.message); }
+    });
+  }
   $("gen-token").onclick = async () => {
     try {
       const t = await api(`/api/orgs/${state.org}/tokens`, { method: "POST" });

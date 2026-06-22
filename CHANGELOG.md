@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Automatic agent updates** — A new policy keeps agents on the latest build without clicking "Update all". Set a **global default** in Settings → Agents → Updates, and **override it per organisation** under each org's Downloads tab (Default / On / Off). When effectively on, an agent that connects on an older version is upgraded in place immediately, and a periodic server sweep (every ~6h) catches always-on devices after a new version ships. (Also fixes the "Update all online agents" button, which compared the agent build against the *server* version and so could mis-judge which agents were outdated.)
 - **Device screenshot** — A "Screenshot" button (next to Remote control on a device's Actions tab) grabs a single still of the device's current screen so you can quickly check whether someone's using it, without starting a full remote session. It reuses the existing secure screen channel — no agent update needed — and shows a timestamp with a Refresh button; the person at the device still briefly sees the "remote session" banner.
 - **History chart tooltips** — Hovering the CPU / Memory / Disk history charts on a device now shows the exact percentage and timestamp at that point, with a guide line and marker dot.
 - **Invite delivery choice** — When inviting a user you now pick how the invite is sent: **email + link**, **email only**, or **link only**. The invite dialog shows the shareable link with a copy button (and falls back to it automatically if email delivery isn't configured or fails).
