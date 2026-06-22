@@ -6,7 +6,7 @@
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
 
-const state = { me: null, org: null, orgName: null, group: null, tab: "devices", device: null, refresh: null, cache: {}, monView: "policies", templates: [] };
+const state = { me: null, org: null, orgName: null, group: null, tab: "devices", device: null, refresh: null, cache: {}, templates: [] };
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -89,7 +89,7 @@ async function init() {
   setupRuleModal();
   setupScreenshotModal();
   setupDeleteModal();
-  document.querySelectorAll("#mon-view-seg button").forEach((b) => b.onclick = () => selectMonView(b.dataset.view));
+  setupMonitorMenu();
   state.templates = await api("/api/monitor-templates").catch(() => []);
   refreshPendingBadge();
   setInterval(refreshPendingBadge, 30000);
@@ -845,47 +845,63 @@ function severityBadge(sev) {
   return `<span class="badge ${cls}">${s}</span>`;
 }
 function scriptName(id) { const s = (state.cache.scripts || []).find((x) => x.id === id); return s ? s.name : "—"; }
-function selectMonView(view) {
-  state.monView = view;
-  document.querySelectorAll("#mon-view-seg button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
-  $("mon-policies-view").classList.toggle("hidden", view !== "policies");
-  $("mon-templates-view").classList.toggle("hidden", view !== "templates");
-  $("mon-new").classList.toggle("hidden", view !== "policies");
-  if (view === "templates") renderMonitorRules();
+function kindTag(label) {
+  return `<span class="badge na" style="text-transform:none;font-weight:600">${label}</span>`;
 }
-function renderMonitorsTab() {
-  renderMonitors();
-  if (state.monView === "templates") renderMonitorRules();
+/* The "New policy" split button: choose a script policy or a template-based rule. */
+function setupMonitorMenu() {
+  const btn = $("mon-new"), menu = $("mon-new-menu");
+  menu.innerHTML = `
+    <a href="#" data-new="template" style="align-items:flex-start">${ICON.shieldCheck}<span><b style="font-weight:600">From a template</b><br><small style="color:var(--muted)">Threshold &amp; standard rules — one click</small></span></a>
+    <a href="#" data-new="script" style="align-items:flex-start">${ICON.terminal}<span><b style="font-weight:600">Script policy</b><br><small style="color:var(--muted)">Run a monitor script &amp; auto-remediate</small></span></a>`;
+  btn.onclick = (e) => { e.stopPropagation(); menu.classList.toggle("open"); };
+  document.addEventListener("click", () => menu.classList.remove("open"));
+  menu.querySelectorAll("[data-new]").forEach((a) => a.onclick = (e) => {
+    e.preventDefault(); menu.classList.remove("open");
+    if (a.dataset.new === "script") openMonitorForm(); else openTemplateGallery();
+  });
+  $("tg-close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
+  $("tg-close").onclick = () => $("tmpl-modal").classList.add("hidden");
+  $("tmpl-modal").addEventListener("click", (e) => { if (e.target === $("tmpl-modal")) $("tmpl-modal").classList.add("hidden"); });
 }
+function openTemplateGallery() { renderMonitorGallery(); $("tmpl-modal").classList.remove("hidden"); }
+function renderMonitorsTab() { renderMonitors(); }
+// Combined Policies list: script policies AND template rules in one place.
 function renderMonitors() {
   const mons = state.cache.monitors || [];
-  const totalMon = mons.length + (state.cache.monitorRules || []).length;
-  $("mon-sub").textContent = `${totalMon} polic${totalMon === 1 ? "y" : "ies"}`;
+  const rules = state.cache.monitorRules || [];
+  const total = mons.length + rules.length;
+  $("mon-sub").textContent = `${total} polic${total === 1 ? "y" : "ies"}`;
   const body = $("mon-body");
-  body.innerHTML = mons.length ? "" : `<div class="empty"><div class="big">${ICON.shieldCheck}</div>No monitoring policies yet.<br><span class="muted">Run a monitor script on a schedule and auto-remediate on failure.</span></div>`;
-  for (const m of mons) {
-    const isGlobal = m.org_id == null;
-    const canManage = !isGlobal || state.me.is_global_admin;
-    const row = el("div", "tile"); row.style.marginBottom = "10px";
-    const rem = m.remediation_script_id ? " → fix: " + escapeHtml(scriptName(m.remediation_script_id)) : " · no remediation";
-    row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
-      <div class="os-ico">${ICON.shieldCheck}</div>
-      <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px">${escapeHtml(m.name)} ${monStatusBadge(m.last_status)} ${severityBadge(m.severity)} ${isGlobal ? globalBadge() : ""}</div>
-        <div class="h-sub">monitor: ${escapeHtml(scriptName(m.monitor_script_id))}${rem} · ${cadenceText(m)} · ${escapeHtml(targetText(m))}${m.last_run ? " · last " + relTime(m.last_run) : ""}</div></div>
-      <span class="badge ${m.enabled ? "ok" : "na"}">${m.enabled ? "enabled" : "paused"}</span>
-      ${canManage ? `<button class="btn ghost sm run-now">${ICON.power} Run now</button>
-      <button class="btn ghost sm edit">${ICON.pencil}</button>
-      <button class="btn ghost sm toggle">${m.enabled ? "Pause" : "Resume"}</button>
-      <button class="btn ghost sm del">${ICON.trash}</button>` : ""}</div>`;
-    if (canManage) {
-      row.querySelector(".run-now").onclick = async () => { try { const r = await api(`/api/monitors/${m.id}/run`, { method: "POST" }); toast("Monitor ran: " + r.status); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); loadRuns(); } catch (e) { toast(e.message); } };
-      row.querySelector(".edit").onclick = () => openMonitorForm(m);
-      row.querySelector(".toggle").onclick = async () => { try { await api(`/api/monitors/${m.id}/toggle`, { method: "POST" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); } catch (e) { toast(e.message); } };
-      row.querySelector(".del").onclick = async () => { if (!confirm("Delete policy “" + m.name + "”?")) return; try { await api(`/api/monitors/${m.id}`, { method: "DELETE" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); buildNav(); renderMonitors(); toast("Policy deleted"); } catch (e) { toast(e.message); } };
-    }
-    body.appendChild(row);
+  if (!total) {
+    body.innerHTML = `<div class="empty"><div class="big">${ICON.shieldCheck}</div>No policies yet.<br><span class="muted">Click <b>New policy</b> to add a standard from a template, or a monitor script with auto-remediation.</span></div>`;
+    return;
   }
-  $("mon-new").onclick = openMonitorForm;
+  body.innerHTML = "";
+  for (const m of mons) body.appendChild(monitorRow(m));
+  for (const r of rules) body.appendChild(ruleRow(r));
+}
+function monitorRow(m) {
+  const isGlobal = m.org_id == null;
+  const canManage = !isGlobal || state.me.is_global_admin;
+  const row = el("div", "tile"); row.style.marginBottom = "10px";
+  const rem = m.remediation_script_id ? " → fix: " + escapeHtml(scriptName(m.remediation_script_id)) : " · no remediation";
+  row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
+    <div class="os-ico">${ICON.shieldCheck}</div>
+    <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(m.name)} ${kindTag("Script policy")} ${monStatusBadge(m.last_status)} ${severityBadge(m.severity)} ${isGlobal ? globalBadge() : ""}</div>
+      <div class="h-sub">monitor: ${escapeHtml(scriptName(m.monitor_script_id))}${rem} · ${cadenceText(m)} · ${escapeHtml(targetText(m))}${m.last_run ? " · last " + relTime(m.last_run) : ""}</div></div>
+    <span class="badge ${m.enabled ? "ok" : "na"}">${m.enabled ? "enabled" : "paused"}</span>
+    ${canManage ? `<button class="btn ghost sm run-now">${ICON.power} Run now</button>
+    <button class="btn ghost sm edit">${ICON.pencil}</button>
+    <button class="btn ghost sm toggle">${m.enabled ? "Pause" : "Resume"}</button>
+    <button class="btn ghost sm del">${ICON.trash}</button>` : ""}</div>`;
+  if (canManage) {
+    row.querySelector(".run-now").onclick = async () => { try { const r = await api(`/api/monitors/${m.id}/run`, { method: "POST" }); toast("Monitor ran: " + r.status); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); loadRuns(); } catch (e) { toast(e.message); } };
+    row.querySelector(".edit").onclick = () => openMonitorForm(m);
+    row.querySelector(".toggle").onclick = async () => { try { await api(`/api/monitors/${m.id}/toggle`, { method: "POST" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); } catch (e) { toast(e.message); } };
+    row.querySelector(".del").onclick = async () => { if (!confirm("Delete policy “" + m.name + "”?")) return; try { await api(`/api/monitors/${m.id}`, { method: "DELETE" }); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); buildNav(); renderMonitors(); toast("Policy deleted"); } catch (e) { toast(e.message); } };
+  }
+  return row;
 }
 let monitorScope = "site";
 let editingMonitorId = null;
@@ -1010,34 +1026,29 @@ function renderMonitorGallery() {
   }).join("");
   gallery.querySelectorAll(".add-tmpl").forEach((btn) => {
     const id = btn.closest("[data-tmpl]").dataset.tmpl;
-    btn.onclick = () => openRuleForm((state.templates || []).find((t) => t.id === id));
+    btn.onclick = () => { $("tmpl-modal").classList.add("hidden"); openRuleForm((state.templates || []).find((t) => t.id === id)); };
   });
 }
-function renderMonitorRules() {
-  renderMonitorGallery();
-  const rules = state.cache.monitorRules || [];
-  $("mon-rules-sub").textContent = `${rules.length} rule${rules.length === 1 ? "" : "s"}`;
-  const body = $("mon-rules-body");
-  body.innerHTML = rules.length ? "" : `<div class="empty"><div class="big">${ICON.shieldCheck}</div>No rules yet.<br><span class="muted">Add one from the gallery above.</span></div>`;
-  for (const r of rules) {
-    const isGlobal = r.org_id == null;
-    const canManage = !isGlobal || state.me.is_global_admin;
-    const row = el("div", "tile"); row.style.marginBottom = "10px";
-    row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
-      <div class="os-ico">${metricIcon(r.metric)}</div>
-      <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px">${escapeHtml(r.name)} ${severityBadge(r.severity)} ${isGlobal ? globalBadge() : ""}</div>
-        <div class="h-sub">${ruleValueText(r)} · ${escapeHtml(targetText(r))}</div></div>
-      <span class="badge ${r.enabled ? "ok" : "na"}">${r.enabled ? "enabled" : "paused"}</span>
-      ${canManage ? `<button class="btn ghost sm edit">${ICON.pencil}</button>
-      <button class="btn ghost sm toggle">${r.enabled ? "Pause" : "Resume"}</button>
-      <button class="btn ghost sm del">${ICON.trash}</button>` : ""}</div>`;
-    if (canManage) {
-      row.querySelector(".edit").onclick = () => openRuleForm((state.templates || []).find((t) => t.id === r.template_id), r);
-      row.querySelector(".toggle").onclick = async () => { try { await api(`/api/monitor-rules/${r.id}/toggle`, { method: "POST" }); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); renderMonitorRules(); } catch (e) { toast(e.message); } };
-      row.querySelector(".del").onclick = async () => { if (!confirm("Delete rule “" + r.name + "”?")) return; try { await api(`/api/monitor-rules/${r.id}`, { method: "DELETE" }); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); renderMonitorRules(); toast("Rule deleted"); } catch (e) { toast(e.message); } };
-    }
-    body.appendChild(row);
+function ruleRow(r) {
+  const isGlobal = r.org_id == null;
+  const canManage = !isGlobal || state.me.is_global_admin;
+  const tmpl = (state.templates || []).find((t) => t.id === r.template_id);
+  const isPolicy = tmpl && tmpl.kind === "policy";
+  const row = el("div", "tile"); row.style.marginBottom = "10px";
+  row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
+    <div class="os-ico">${metricIcon(r.metric)}</div>
+    <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(r.name)} ${kindTag(isPolicy ? "Standard" : "Template rule")} ${severityBadge(r.severity)} ${isGlobal ? globalBadge() : ""}</div>
+      <div class="h-sub">${ruleValueText(r)} · ${escapeHtml(targetText(r))}</div></div>
+    <span class="badge ${r.enabled ? "ok" : "na"}">${r.enabled ? "enabled" : "paused"}</span>
+    ${canManage ? `<button class="btn ghost sm edit">${ICON.pencil}</button>
+    <button class="btn ghost sm toggle">${r.enabled ? "Pause" : "Resume"}</button>
+    <button class="btn ghost sm del">${ICON.trash}</button>` : ""}</div>`;
+  if (canManage) {
+    row.querySelector(".edit").onclick = () => openRuleForm((state.templates || []).find((t) => t.id === r.template_id), r);
+    row.querySelector(".toggle").onclick = async () => { try { await api(`/api/monitor-rules/${r.id}/toggle`, { method: "POST" }); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); renderMonitors(); } catch (e) { toast(e.message); } };
+    row.querySelector(".del").onclick = async () => { if (!confirm("Delete rule “" + r.name + "”?")) return; try { await api(`/api/monitor-rules/${r.id}`, { method: "DELETE" }); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); buildNav(); renderMonitors(); toast("Rule deleted"); } catch (e) { toast(e.message); } };
   }
+  return row;
 }
 let ruleScope = "site";
 let currentTemplate = null;
@@ -1119,7 +1130,8 @@ async function saveRule() {
     }
     $("rule-modal").classList.add("hidden");
     state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`);
-    renderMonitorRules();
+    buildNav();
+    renderMonitors();
   } catch (e) { toast(e.message); }
 }
 
