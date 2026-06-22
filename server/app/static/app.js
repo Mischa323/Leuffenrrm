@@ -1289,7 +1289,7 @@ function renderActions(d) {
   let html = `<div class="actions-grid">${acts.map((a, i) => `<button class="action ${a.c}" data-i="${i}"><span class="ai">${a.i}</span><span><span class="at">${a.t}</span><br><span class="ad">${a.d}</span></span></button>`).join("")}</div>`;
   if (d.online) html = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
       <button class="btn" style="justify-content:center;gap:8px" id="remote-btn">${ICON.monitor} Remote control</button>
-      <button class="btn ghost" style="justify-content:center;gap:8px" id="shot-btn">${ICON.camera} Screenshot</button>
+      <button class="btn subtle" style="justify-content:center;gap:8px" id="shot-btn">${ICON.camera} Screenshot</button>
     </div>` + html;
   html += `<div class="sec-label">Agent</div><div class="tile"><div class="field" style="align-items:center">
       <div style="flex:1;font-size:12.5px" class="muted">Installed: <b>v${d.agent_version || "—"}</b><span id="upd-latest"></span></div>
@@ -1446,6 +1446,7 @@ function captureScreenshot() {
     img.onload = () => URL.revokeObjectURL(url);
     img.alt = "Screenshot of " + d.hostname;
     img.style.cssText = "max-width:100%;max-height:100%;display:block;margin:auto";
+    img.src = url;
     body.innerHTML = ""; body.appendChild(img);
     status.textContent = "Captured " + new Date().toLocaleTimeString();
     // One-shot: close immediately so the agent stops capturing.
