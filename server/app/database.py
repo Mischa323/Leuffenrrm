@@ -1199,6 +1199,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE monitor_rules ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 1")
     if "severity" not in mrcols:
         conn.execute("ALTER TABLE monitor_rules ADD COLUMN severity TEXT NOT NULL DEFAULT 'warning'")
+    ocols = {r[1] for r in conn.execute("PRAGMA table_info(organizations)")}
+    if "auto_update" not in ocols:
+        # Per-org agent auto-update override: 'inherit' (use global default) | 'on' | 'off'.
+        conn.execute("ALTER TABLE organizations ADD COLUMN auto_update TEXT NOT NULL DEFAULT 'inherit'")
 
 
 def get_conn() -> sqlite3.Connection:
@@ -1260,6 +1264,14 @@ def get_org_by_key(enroll_key: str) -> dict | None:
         "SELECT * FROM organizations WHERE enroll_key=?", (enroll_key,)
     ).fetchone()
     return dict(row) if row else None
+
+
+def set_org_auto_update(org_id: str, mode: str) -> None:
+    """Set an org's agent auto-update override: 'inherit' | 'on' | 'off'."""
+    if mode not in ("inherit", "on", "off"):
+        raise ValueError("mode must be inherit|on|off")
+    with write() as conn:
+        conn.execute("UPDATE organizations SET auto_update=? WHERE id=?", (mode, org_id))
 
 
 def rotate_org_key(org_id: str) -> str:

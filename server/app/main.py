@@ -174,6 +174,7 @@ async def _startup() -> None:
     asyncio.create_task(_alert_loop())
     asyncio.create_task(_prune_loop())
     asyncio.create_task(_schedule_loop())
+    asyncio.create_task(_auto_update_loop())
 
 
 def _resolve_setup_state() -> None:
@@ -902,6 +903,106 @@ def _update_message(org_id: str) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Agent auto-update policy (global default + per-org override).
+# --------------------------------------------------------------------------- #
+def _ver_tuple(v: str | None) -> tuple:
+    """Parse a dotted version into a comparable 4-tuple ('v2.2.13' -> (2,2,13,0))."""
+    parts = []
+    for part in str(v or "").lstrip("vV").split("."):
+        num = "".join(ch for ch in part if ch.isdigit())
+        parts.append(int(num) if num else 0)
+    while len(parts) < 4:
+        parts.append(0)
+    return tuple(parts[:4])
+
+
+def _agent_outdated(version: str | None) -> bool:
+    """True if an agent's version is older than the server's canonical AGENT_VERSION."""
+    return _ver_tuple(version) < _ver_tuple(AGENT_VERSION)
+
+
+def _auto_update_default() -> bool:
+    """Global default for agent auto-update (Settings -> Agents)."""
+    return os.environ.get("RMM_AUTO_UPDATE_AGENTS", "0").lower() in ("1", "true", "yes")
+
+
+def _org_auto_update_enabled(org: dict | None) -> bool:
+    """Effective auto-update for an org: per-org override wins, else the global default."""
+    mode = (org or {}).get("auto_update") or "inherit"
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    return _auto_update_default()
+
+
+async def _maybe_auto_update(device_id: str, org: dict, dev: dict) -> None:
+    """Push an in-place self-update if the org policy is on and the agent is outdated.
+    Best-effort; never raises into the caller."""
+    try:
+        if not _org_auto_update_enabled(org) or not _agent_outdated(dev.get("agent_version")):
+            return
+        conn = manager.get(device_id)
+        if conn:
+            await conn.send(_update_message(org["id"]))
+            log.info("auto-update: pushed update to %s (v%s -> v%s)",
+                     dev.get("hostname"), dev.get("agent_version") or "?", AGENT_VERSION)
+    except Exception as exc:  # pragma: no cover
+        log.warning("auto-update push failed for %s: %s", device_id, exc)
+
+
+async def _auto_update_loop() -> None:
+    """Periodically push self-updates to online, outdated agents in orgs whose
+    auto-update policy is effectively on. On-connect handles freshly-connected
+    agents; this sweep catches always-on devices after a new version ships."""
+    interval = float(os.environ.get("RMM_AUTO_UPDATE_INTERVAL", str(6 * 3600)))
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            for org in db.list_orgs():
+                if not _org_auto_update_enabled(org):
+                    continue
+                for dev in db.list_devices(org["id"]):
+                    if manager.is_online(dev["id"]) and _agent_outdated(dev.get("agent_version")):
+                        await _maybe_auto_update(dev["id"], org, dev)
+        except Exception as exc:  # pragma: no cover
+            log.warning("auto-update loop error: %s", exc)
+
+
+@app.get("/api/orgs/{org_id}/auto-update")
+def get_org_auto_update(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    org = db.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    return {"mode": org.get("auto_update") or "inherit",
+            "default": _auto_update_default(),
+            "effective": _org_auto_update_enabled(org),
+            "agent_version": AGENT_VERSION}
+
+
+@app.post("/api/orgs/{org_id}/auto-update")
+async def set_org_auto_update(org_id: str, request: Request,
+                              user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    if not db.get_org(org_id):
+        raise HTTPException(status_code=404, detail="Org not found")
+    data = await request.json()
+    mode = str(data.get("mode", "inherit"))
+    if mode not in ("inherit", "on", "off"):
+        raise HTTPException(status_code=400, detail="mode must be inherit|on|off")
+    db.set_org_auto_update(org_id, mode)
+    org = db.get_org(org_id)
+    # Apply right away to any online, outdated agents if the policy is now on.
+    if _org_auto_update_enabled(org):
+        for dev in db.list_devices(org_id):
+            if manager.is_online(dev["id"]) and _agent_outdated(dev.get("agent_version")):
+                await _maybe_auto_update(dev["id"], org, dev)
+    return {"mode": mode, "default": _auto_update_default(),
+            "effective": _org_auto_update_enabled(org)}
+
+
 @app.post("/api/devices/{device_id}/update-agent")
 async def update_agent_device(device_id: str, user: dict = Depends(auth.current_user)):
     """Tell an online agent to download and apply the latest installer in place."""
@@ -922,7 +1023,7 @@ async def update_agents_org(org_id: str, user: dict = Depends(auth.current_user)
     auth.require_org(user, org_id)
     msg = _update_message(org_id)
     all_online = [d for d in db.list_devices(org_id) if manager.is_online(d["id"])]
-    targets = [d["id"] for d in all_online if (d.get("agent_version") or "") != SERVER_VERSION]
+    targets = [d["id"] for d in all_online if _agent_outdated(d.get("agent_version"))]
     skipped = len(all_online) - len(targets)
     started = 0
     for did in targets:
@@ -1762,6 +1863,9 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
             subs = [s["cidr"] for s in db.list_subnets(device_id)]
             await ws.send_json({"type": "set_role", "role": "node", "subnets": subs})
         log.info("Agent connected: %s (org %s)", first.get("hostname"), org["name"])
+        # Auto-update policy: if this org keeps agents up to date and the one that
+        # just connected is on an older build, push an in-place self-update now.
+        await _maybe_auto_update(device_id, org, db.get_device(device_id))
 
         while True:
             msg = await ws.receive()
@@ -2242,7 +2346,8 @@ async def do_setup(request: Request):
 SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
-    "RMM_REQUIRE_APPROVAL", "RMM_REQUIRE_DEVICE_SECRET", "RMM_ALERT_RECIPIENTS",
+    "RMM_REQUIRE_APPROVAL", "RMM_REQUIRE_DEVICE_SECRET", "RMM_AUTO_UPDATE_AGENTS",
+    "RMM_ALERT_RECIPIENTS",
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS",
     "MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_REDIRECT_URI",
 ]
