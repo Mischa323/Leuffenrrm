@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Device screenshot** — A "Screenshot" button (next to Remote control on a device's Actions tab) grabs a single still of the device's current screen so you can quickly check whether someone's using it, without starting a full remote session. It reuses the existing secure screen channel — no agent update needed — and shows a timestamp with a Refresh button; the person at the device still briefly sees the "remote session" banner.
 - **History chart tooltips** — Hovering the CPU / Memory / Disk history charts on a device now shows the exact percentage and timestamp at that point, with a guide line and marker dot.
 - **Invite delivery choice** — When inviting a user you now pick how the invite is sent: **email + link**, **email only**, or **link only**. The invite dialog shows the shareable link with a copy button (and falls back to it automatically if email delivery isn't configured or fails).
 - **Email verification on signup** — Invitees confirm their email with a 6-digit code when setting up their account. If the server has no mail delivery configured the step is skipped gracefully and the account is flagged unverified. Unverified accounts are marked in Settings → Users & roles.
@@ -19,6 +20,7 @@
 - **Agent MSI download pointed at the wrong repo.** `RMM_MSI_URL` / `RMM_GH_REPO` defaulted to the server repo (stale v1.1.x agent) instead of `leuffen-rmm-agent` (current v2.x with the secure-connection code). Defaults now point at the agent repo.
 
 ### Changed
+- **Delete device moved to a "Danger zone".** The Remove action was sitting in the device Actions grid right next to Lock / Restart, where it was easy to hit by accident. It's now a clearly-labelled red button in a "Danger zone" section at the bottom of the Actions tab, and it opens a confirmation dialog that names the device and warns the removal can't be undone before anything is deleted.
 - **Branded emails** — All outgoing email (invites, the email-verification code, alert/resolved notifications, and test emails) now uses a single dashboard-styled template: dark card, the Leuffen RMM logo and wordmark, a primary action button on invites, a coloured status header on alerts, and an "Open dashboard" footer link. The wordmark and footer follow your configured server name.
 - **Vendored agent synced to v2.2.13** — the agent bundled in the server image (served via `agent.zip`) now matches the canonical agent: cert pinning, per-device secret, login/lock-screen capture, the Ctrl+Alt+Del SAS fix, and the winreg-based software scan.
 
