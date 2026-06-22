@@ -1260,17 +1260,18 @@ function renderOverview(d) {
   // GPU usage ring — only when the agent reported a GPU reading.
   const gpuCard = (m.gpu_percent != null) ? `
       <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">GPU${m.gpu_mem_percent != null ? ` <span class="mono" style="opacity:.7">VRAM ${Math.round(m.gpu_mem_percent)}%</span>` : ""}</div><div class="v">${Math.round(m.gpu_percent)}<small>%</small></div></div>${ringChart(m.gpu_percent, (m.gpu_percent >= 85) ? "var(--bad)" : "var(--accent)")}</div></div>` : "";
-  // Temperatures strip — only when a sensor was readable (often N/A on Windows).
-  const tempChip = (label, c) => c == null ? "" : `<span style="display:inline-flex;align-items:center;gap:6px;font-size:14px"><span style="color:${tempColor(c)};display:inline-flex">${ICON.thermo.replace("<svg", '<svg style="width:15px;height:15px"')}</span><span class="muted">${label}</span> <b style="color:${tempColor(c)}">${Math.round(c)}°C</b></span>`;
-  const hasTemp = (m.cpu_temp != null || m.gpu_temp != null);
-  const tempCard = hasTemp ? `
-      <div class="sg wide"><div class="l">Temperatures</div><div style="display:flex;gap:28px;margin-top:10px;flex-wrap:wrap">${tempChip("CPU", m.cpu_temp)}${tempChip("GPU", m.gpu_temp)}</div></div>` : "";
+  // Temperature ring cards — styled like the usage cards, one per readable sensor
+  // (often N/A on Windows). The ring uses °C as a 0-100 gauge, coloured by heat.
+  const tempCard = (label, c) => c == null ? "" : `
+      <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">${label}</div><div class="v">${Math.round(c)}<small>°C</small></div></div>${ringChart(c, tempColor(c))}</div></div>`;
+  const cpuTempCard = tempCard("CPU temp", m.cpu_temp);
+  const gpuTempCard = tempCard("GPU temp", m.gpu_temp);
   const cards = d.online ? `
     <div class="stat-grid">
       <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">CPU</div><div class="v">${Math.round(m.cpu_percent || 0)}<small>%</small></div></div>${ringChart(m.cpu_percent, (m.cpu_percent >= 75) ? "var(--bad)" : "var(--accent)")}</div></div>
       <div class="sg"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">Memory</div><div class="v">${Math.round(m.mem_percent || 0)}<small>%</small></div></div>${ringChart(m.mem_percent, "var(--good)")}</div></div>
-      <div class="sg ${multi ? "clickable" : ""}" id="disk-card"${multi ? ' title="Show all drives"' : ""}><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">Disk ${diskLabel !== "Disk" ? `<span class="mono" style="opacity:.7">${escapeHtml(diskLabel)}</span>` : ""} ${multi ? `<span style="opacity:.6">${ICON.chevD.replace("<svg", '<svg style="width:11px;height:11px;vertical-align:middle"')}</span>` : ""}</div><div class="v">${Math.round(diskPct || 0)}<small>%</small></div></div>${ringChart(diskPct, (diskPct >= 90) ? "var(--bad)" : "var(--warn)")}</div></div>${gpuCard}
-      <div class="sg"><div class="l">Uptime</div><div class="v" style="font-size:15px;margin-top:8px">${d.uptimeStr}</div></div>${tempCard}
+      <div class="sg ${multi ? "clickable" : ""}" id="disk-card"${multi ? ' title="Show all drives"' : ""}><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="l">Disk ${diskLabel !== "Disk" ? `<span class="mono" style="opacity:.7">${escapeHtml(diskLabel)}</span>` : ""} ${multi ? `<span style="opacity:.6">${ICON.chevD.replace("<svg", '<svg style="width:11px;height:11px;vertical-align:middle"')}</span>` : ""}</div><div class="v">${Math.round(diskPct || 0)}<small>%</small></div></div>${ringChart(diskPct, (diskPct >= 90) ? "var(--bad)" : "var(--warn)")}</div></div>${gpuCard}${cpuTempCard}${gpuTempCard}
+      <div class="sg"><div class="l">Uptime</div><div class="v" style="font-size:15px;margin-top:8px">${d.uptimeStr}</div></div>
     </div>
     <div id="disk-detail" class="hidden tile" style="margin-bottom:18px">${diskRows(disks)}</div>` : `<div class="tile" style="margin-bottom:20px;text-align:center;color:var(--text-dim)">Device offline · last seen ${relTime(d.last_seen)}</div>`;
   const rows = [
@@ -1291,7 +1292,8 @@ function renderOverview(d) {
         <span class="pol-name">${escapeHtml(p.name)}</span><span class="pol-val muted">${escapeHtml(p.value || "")}</span>
         ${p.supported ? `<span class="badge ok">active</span>` : `<span class="badge na" title="Not supported on this device's OS">not supported</span>`}</div>`).join("") + `</div>`;
   }
-  $("dtab-overview").innerHTML = cards + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
+  const hvHtml = hypervSection(d.hyperv);
+  $("dtab-overview").innerHTML = cards + hvHtml + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
   const dc = $("disk-card");
   if (dc && multi) dc.onclick = () => $("disk-detail").classList.toggle("hidden");
   $("hist-range").querySelectorAll("button").forEach((b) => b.onclick = () => {
@@ -1311,10 +1313,23 @@ async function loadHistory(id, range) {
   let html = histRow("CPU", pick("cpu_percent"), "var(--accent)", times) +
              histRow("Memory", pick("mem_percent"), "var(--good)", times) +
              histRow("Disk", pick("disk_percent"), "var(--warn)", times);
-  if (has("gpu_percent")) html += histRow("GPU", pick("gpu_percent"), "#a78bfa", times);
-  if (has("cpu_temp")) html += histRow("CPU temp", pick("cpu_temp"), "#fb923c", times, "°C");
-  if (has("gpu_temp")) html += histRow("GPU temp", pick("gpu_temp"), "#f87171", times, "°C");
+  // GPU + temperature graphs are collapsed by default behind a fold-out.
+  let extra = "";
+  if (has("gpu_percent")) extra += histRow("GPU", pick("gpu_percent"), "#a78bfa", times);
+  if (has("cpu_temp")) extra += histRow("CPU temp", pick("cpu_temp"), "#fb923c", times, "°C");
+  if (has("gpu_temp")) extra += histRow("GPU temp", pick("gpu_temp"), "#f87171", times, "°C");
+  if (extra) {
+    html += `<button class="hist-more" id="hist-more-btn" type="button"><span class="chev">${ICON.chevD}</span> <span class="lbl">Show GPU &amp; temperatures</span></button>
+      <div id="hist-more-wrap" class="hidden">${extra}</div>`;
+  }
   host.innerHTML = html;
+  const btn = $("hist-more-btn");
+  if (btn) btn.onclick = () => {
+    const wrap = $("hist-more-wrap");
+    const open = wrap.classList.toggle("hidden") === false;
+    btn.classList.toggle("open", open);
+    btn.querySelector(".lbl").textContent = open ? "Hide GPU & temperatures" : "Show GPU & temperatures";
+  };
   wireAreaTips();
 }
 function histRow(label, data, color, times, unit) {
@@ -1369,6 +1384,32 @@ function wireAreaTips() {
     wrap.addEventListener("mousemove", move);
     wrap.addEventListener("mouseleave", hide);
   });
+}
+function vmStateBadge(state) {
+  const s = (state || "").toLowerCase();
+  if (s === "running") return `<span class="badge ok">running</span>`;
+  if (s === "off") return `<span class="badge na">off</span>`;
+  if (s === "paused" || s === "saved") return `<span class="badge warn">${escapeHtml(state)}</span>`;
+  return `<span class="badge info">${escapeHtml(state || "unknown")}</span>`;
+}
+function hypervSection(hv) {
+  if (!hv || !hv.present) return "";
+  const label = `<div class="sec-label">Hyper-V <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· ${hv.total} VM${hv.total === 1 ? "" : "s"}, ${hv.running} running</span></div>`;
+  if (!hv.total) return label + `<div class="tile" style="margin-bottom:18px;color:var(--text-dim);font-size:12.5px">Hyper-V role present · no virtual machines</div>`;
+  const rows = (hv.vms || []).map((vm) => {
+    const running = (vm.state || "").toLowerCase() === "running";
+    const mem = running && vm.mem_demand
+      ? `${fmtBytes(vm.mem_demand)} <span class="muted">/ ${fmtBytes(vm.mem_assigned)}</span>`
+      : (vm.mem_assigned ? `<span class="muted">${fmtBytes(vm.mem_assigned)} assigned</span>` : "");
+    const meta = [vm.vcpu ? `${vm.vcpu} vCPU` : "", running && vm.uptime ? `up ${fmtUptime(vm.uptime)}` : ""].filter(Boolean).join(" · ");
+    return `<div class="pol-row" style="align-items:center">
+      <span class="pol-ic">${ICON.server}</span>
+      <span class="pol-name" style="flex:1;min-width:0"><b>${escapeHtml(vm.name || "—")}</b>${meta ? ` <span class="muted" style="font-weight:400">· ${meta}</span>` : ""}</span>
+      ${running ? `<span class="pol-val muted" style="text-align:right">${Math.round(vm.cpu || 0)}% CPU</span>` : ""}
+      ${mem ? `<span class="pol-val" style="text-align:right;font-size:12px">${mem}</span>` : ""}
+      ${vmStateBadge(vm.state)}</div>`;
+  }).join("");
+  return label + `<div class="pol-list" style="margin-bottom:18px">${rows}</div>`;
 }
 function diskRows(disks) {
   if (!disks.length) return `<div class="muted" style="font-size:12.5px">No drive details reported yet.</div>`;
