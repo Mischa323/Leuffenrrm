@@ -406,6 +406,11 @@ table.grid tbody tr:hover td { background: var(--surface-hover); }
 .hist-more .chev { display: inline-flex; transition: transform .15s; }
 .hist-more .chev svg { width: 14px; height: 14px; }
 .hist-more.open .chev { transform: rotate(180deg); }
+.hv-fold { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; transition: color .12s; }
+.hv-fold:hover { color: var(--text); }
+.hv-fold .chev { display: inline-flex; margin-left: auto; color: var(--text-faint); transition: transform .15s; }
+.hv-fold .chev svg { width: 14px; height: 14px; }
+.hv-fold.open .chev { transform: rotate(180deg); }
 .area { width: 100%; height: 56px; display: block; }
 .area-wrap { position: relative; cursor: crosshair; }
 .area-guide { position: absolute; top: 0; bottom: 0; width: 1px; opacity: .45; pointer-events: none; display: none; transform: translateX(-.5px); }

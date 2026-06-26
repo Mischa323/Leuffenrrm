@@ -1299,6 +1299,11 @@ function renderOverview(d) {
   $("dtab-overview").innerHTML = cards + hvHtml + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
   const dc = $("disk-card");
   if (dc && multi) dc.onclick = () => $("disk-detail").classList.toggle("hidden");
+  const hvBtn = $("hv-fold");
+  if (hvBtn) hvBtn.onclick = () => {
+    const open = $("hv-wrap").classList.toggle("hidden") === false;
+    hvBtn.classList.toggle("open", open);
+  };
   $("hist-range").querySelectorAll("button").forEach((b) => b.onclick = () => {
     $("hist-range").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
     loadHistory(d.id, b.dataset.r);
@@ -1397,8 +1402,8 @@ function vmStateBadge(state) {
 }
 function hypervSection(hv) {
   if (!hv || !hv.present) return "";
-  const label = `<div class="sec-label">Hyper-V <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· ${hv.total} VM${hv.total === 1 ? "" : "s"}, ${hv.running} running</span></div>`;
-  if (!hv.total) return label + `<div class="tile" style="margin-bottom:18px;color:var(--text-dim);font-size:12.5px">Hyper-V role present · no virtual machines</div>`;
+  const summary = `<span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· ${hv.total} VM${hv.total === 1 ? "" : "s"}, ${hv.running} running</span>`;
+  if (!hv.total) return `<div class="sec-label">Hyper-V <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· role present, no virtual machines</span></div>`;
   const rows = (hv.vms || []).map((vm) => {
     const running = (vm.state || "").toLowerCase() === "running";
     const mem = running && vm.mem_demand
@@ -1412,7 +1417,10 @@ function hypervSection(hv) {
       ${mem ? `<span class="pol-val" style="text-align:right;font-size:12px">${mem}</span>` : ""}
       ${vmStateBadge(vm.state)}</div>`;
   }).join("");
-  return label + `<div class="pol-list" style="margin-bottom:18px">${rows}</div>`;
+  // Collapsed by default; the section header acts as the fold-out toggle,
+  // mirroring the "Show GPU & temperatures" history fold-out.
+  return `<button class="sec-label hv-fold" id="hv-fold" type="button">Hyper-V ${summary}<span class="chev">${ICON.chevD}</span></button>
+    <div id="hv-wrap" class="hidden"><div class="pol-list" style="margin-bottom:18px">${rows}</div></div>`;
 }
 function diskRows(disks) {
   if (!disks.length) return `<div class="muted" style="font-size:12.5px">No drive details reported yet.</div>`;
