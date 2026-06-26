@@ -1303,6 +1303,7 @@ function renderOverview(d) {
   if (hvBtn) hvBtn.onclick = () => {
     const open = $("hv-wrap").classList.toggle("hidden") === false;
     hvBtn.classList.toggle("open", open);
+    hvBtn.querySelector(".lbl").textContent = open ? "Hide virtual machines" : "Show virtual machines";
   };
   $("hist-range").querySelectorAll("button").forEach((b) => b.onclick = () => {
     $("hist-range").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
@@ -1417,10 +1418,11 @@ function hypervSection(hv) {
       ${mem ? `<span class="pol-val" style="text-align:right;font-size:12px">${mem}</span>` : ""}
       ${vmStateBadge(vm.state)}</div>`;
   }).join("");
-  // Collapsed by default; the section header acts as the fold-out toggle,
-  // mirroring the "Show GPU & temperatures" history fold-out.
-  return `<button class="sec-label hv-fold" id="hv-fold" type="button">Hyper-V ${summary}<span class="chev">${ICON.chevD}</span></button>
-    <div id="hv-wrap" class="hidden"><div class="pol-list" style="margin-bottom:18px">${rows}</div></div>`;
+  // Section header keeps the at-a-glance summary; the per-VM list folds out
+  // behind a pill button that mirrors the "Show GPU & temperatures" fold-out.
+  return `<div class="sec-label">Hyper-V ${summary}</div>
+    <button class="hist-more" id="hv-fold" type="button"><span class="chev">${ICON.chevD}</span> <span class="lbl">Show virtual machines</span></button>
+    <div id="hv-wrap" class="hidden"><div class="pol-list" style="margin:8px 0 18px">${rows}</div></div>`;
 }
 function diskRows(disks) {
   if (!disks.length) return `<div class="muted" style="font-size:12.5px">No drive details reported yet.</div>`;

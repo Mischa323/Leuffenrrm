@@ -440,10 +440,15 @@ def _device_for_user(device_id: str, user: dict) -> dict:
     return dev
 
 
-def _decorate(dev: dict) -> dict:
+def _decorate(dev: dict, full: bool = False) -> dict:
     dev["online"] = manager.is_online(dev["id"])
-    # Compact Hyper-V summary for the device list (drop the full per-VM blob).
+    # The detail view (full=True) keeps the per-VM list the DB layer already
+    # parsed into dev["hyperv"]; list views get only a compact summary so the
+    # full per-VM blob isn't shipped for every device.
     hv = dev.pop("hyperv_json", None)
+    if full:
+        return dev
+    dev.pop("hyperv", None)
     if hv:
         import json as _json
         try:
@@ -723,7 +728,7 @@ def list_devices(org_id: str, group_id: str | None = None,
 
 @app.get("/api/devices/{device_id}")
 def get_device(device_id: str, user: dict = Depends(auth.current_user)):
-    dev = _decorate(_device_for_user(device_id, user))
+    dev = _decorate(_device_for_user(device_id, user), full=True)
     dev["policies"] = _effective_policies(dev)
     return dev
 
