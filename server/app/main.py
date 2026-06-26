@@ -442,6 +442,17 @@ def _device_for_user(device_id: str, user: dict) -> dict:
 
 def _decorate(dev: dict) -> dict:
     dev["online"] = manager.is_online(dev["id"])
+    # Compact Hyper-V summary for the device list (drop the full per-VM blob).
+    hv = dev.pop("hyperv_json", None)
+    if hv:
+        import json as _json
+        try:
+            data = _json.loads(hv)
+            if data and data.get("present"):
+                dev["hyperv"] = {"present": True, "total": data.get("total", 0),
+                                 "running": data.get("running", 0)}
+        except (ValueError, TypeError):
+            pass
     return dev
 
 
