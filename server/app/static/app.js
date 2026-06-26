@@ -618,9 +618,12 @@ function renderDevices() {
       : d.compliant ? `<span class="badge ok">${ICON.check} Compliant</span>`
       : `<span class="badge bad">${ICON.alert} Non-compliant</span>`;
     const sub = d.online ? "up " + fmtUptime(m.uptime) : "last seen " + relTime(d.last_seen);
+    const hv = (d.hyperv && d.hyperv.present)
+      ? ` <span class="badge info" title="Hyper-V host${d.hyperv.total ? ` · ${d.hyperv.running}/${d.hyperv.total} VMs running` : ""}" style="font-weight:500;vertical-align:middle">${ICON.server.replace("<svg", '<svg style="width:11px;height:11px;vertical-align:-1px;margin-right:3px"')}Hyper-V${d.hyperv.total ? ` ${d.hyperv.total}` : ""}</span>`
+      : "";
     const tr = el("tr");
     tr.innerHTML = `
-      <td><div class="host"><div class="os-ico">${osIcon(d.os)}</div><div><div class="h-name">${d.hostname}</div><div class="h-sub">${d.os || "—"} · ${d.ip || "—"}</div></div></div></td>
+      <td><div class="host"><div class="os-ico">${osIcon(d.os)}</div><div><div class="h-name">${d.hostname}${hv}</div><div class="h-sub">${d.os || "—"} · ${d.ip || "—"}</div></div></div></td>
       <td>${statusPill(d.online)}<div class="h-sub" style="margin-top:3px">${sub}</div></td>
       <td>${d.online ? meter(m.cpu_percent) : meter(null)}</td>
       <td>${d.online ? meter(m.mem_percent) : meter(null)}</td>
