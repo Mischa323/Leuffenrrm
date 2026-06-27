@@ -478,6 +478,9 @@ table.grid.mini .dot-led { margin-right: 7px; }
 .snmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
 .snmp-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
 .snmp-grid .inp { width: 100%; }
+/* Paired cells stretch to equal height; push the control to the bottom so the
+   inputs line up even when one caption wraps (e.g. "Name (optional)"). */
+.snmp-grid label > .inp { margin-top: auto; }
 @media (max-width: 600px) { .snmp-grid { grid-template-columns: 1fr; } }
 .snmp-readings { margin-top: 10px; padding-left: 42px; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 5px 18px; }
 .snmp-kv { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding-bottom: 3px; border-bottom: 1px dotted var(--border-soft); }
