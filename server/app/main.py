@@ -1924,6 +1924,144 @@ def network_hosts(org_id: str, user: dict = Depends(auth.current_user)):
 
 
 # --------------------------------------------------------------------------- #
+# SNMP monitoring (v1/v2c) — targets polled by a node
+# --------------------------------------------------------------------------- #
+SNMP_PRESETS = {
+    "system": {"label": "System — uptime, name, description", "oids": [
+        {"oid": "1.3.6.1.2.1.1.5.0", "label": "Name"},
+        {"oid": "1.3.6.1.2.1.1.1.0", "label": "Description"},
+        {"oid": "1.3.6.1.2.1.1.3.0", "label": "Uptime"},
+        {"oid": "1.3.6.1.2.1.1.6.0", "label": "Location"},
+        {"oid": "1.3.6.1.2.1.1.4.0", "label": "Contact"},
+    ]},
+    "printer": {"label": "Printer — page count (Printer-MIB)", "oids": [
+        {"oid": "1.3.6.1.2.1.43.10.2.1.4.1.1", "label": "Page count"},
+        {"oid": "1.3.6.1.2.1.43.11.1.1.9.1.1", "label": "Toner level"},
+    ]},
+    "ups": {"label": "UPS — battery (UPS-MIB)", "oids": [
+        {"oid": "1.3.6.1.2.1.33.1.2.4.0", "label": "Battery charge %"},
+        {"oid": "1.3.6.1.2.1.33.1.2.3.0", "label": "Runtime remaining (min)"},
+        {"oid": "1.3.6.1.2.1.33.1.2.7.0", "label": "Battery temperature"},
+    ]},
+}
+
+
+class SnmpTargetRequest(BaseModel):
+    node_id: str
+    host: str
+    name: str | None = None
+    port: int = 161
+    version: str = "2c"
+    community: str = "public"
+    oids: list[dict] = []
+    interval: int = 300
+    enabled: bool = True
+
+
+def _node_snmp_targets(node_id: str) -> list[dict]:
+    """Enabled targets shaped for the agent to poll."""
+    return [{"id": t["id"], "host": t["host"], "port": t["port"], "version": t["version"],
+             "community": t["community"], "oids": t["oids"], "interval": t["interval"]}
+            for t in db.list_snmp_targets_for_node(node_id, enabled_only=True)]
+
+
+async def _push_snmp_config(node_id: str) -> None:
+    conn = manager.get(node_id)
+    if conn:
+        try:
+            await conn.send({"type": "snmp_config", "targets": _node_snmp_targets(node_id)})
+        except Exception:
+            pass
+
+
+def _snmp_target_for_user(target_id: int, user: dict) -> dict:
+    t = db.get_snmp_target(target_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="SNMP target not found")
+    auth.require_org(user, t["org_id"])
+    return t
+
+
+@app.get("/api/snmp/presets")
+def snmp_presets(user: dict = Depends(auth.current_user)):
+    return SNMP_PRESETS
+
+
+@app.get("/api/orgs/{org_id}/snmp/targets")
+def list_snmp_targets(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    nodes = {n["id"]: n for n in db.list_nodes(org_id)}
+    out = []
+    for t in db.list_snmp_targets(org_id):
+        t["readings"] = db.latest_snmp_readings(t["id"])
+        node = nodes.get(t["node_id"])
+        t["node_hostname"] = (node or {}).get("hostname")
+        t["node_online"] = manager.is_online(t["node_id"])
+        out.append(t)
+    return out
+
+
+@app.post("/api/orgs/{org_id}/snmp/targets")
+async def create_snmp_target(org_id: str, req: SnmpTargetRequest,
+                             user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    node = db.get_device(req.node_id)
+    if not node or node.get("org_id") != org_id:
+        raise HTTPException(status_code=400, detail="Node is not in this organisation")
+    if not node.get("is_node"):
+        raise HTTPException(status_code=400, detail="Device is not a network node")
+    if str(req.version) not in ("1", "2c", "v1", "v2c"):
+        raise HTTPException(status_code=400, detail="version must be 1 or 2c")
+    tid = db.add_snmp_target(org_id, req.node_id, req.host, name=req.name, port=req.port,
+                             version=str(req.version).lstrip("v"), community=req.community,
+                             oids=req.oids, interval=max(int(req.interval), 30),
+                             enabled=req.enabled)
+    await _push_snmp_config(req.node_id)
+    return {"id": tid}
+
+
+@app.patch("/api/snmp/targets/{target_id}")
+async def update_snmp_target(target_id: int, request: Request,
+                             user: dict = Depends(auth.current_user)):
+    t = _snmp_target_for_user(target_id, user)
+    data = await request.json()
+    if "interval" in data:
+        data["interval"] = max(int(data["interval"]), 30)
+    db.update_snmp_target(target_id, data)
+    await _push_snmp_config(t["node_id"])
+    return {"ok": True}
+
+
+@app.delete("/api/snmp/targets/{target_id}")
+async def delete_snmp_target(target_id: int, user: dict = Depends(auth.current_user)):
+    t = _snmp_target_for_user(target_id, user)
+    db.delete_snmp_target(target_id)
+    await _push_snmp_config(t["node_id"])
+    return {"ok": True}
+
+
+@app.post("/api/snmp/targets/{target_id}/poll")
+async def poll_snmp_target(target_id: int, user: dict = Depends(auth.current_user)):
+    t = _snmp_target_for_user(target_id, user)
+    conn = manager.get(t["node_id"])
+    if not conn:
+        raise HTTPException(status_code=409, detail="Node offline")
+    await conn.send({"type": "snmp_poll", "target_id": target_id})
+    return {"status": "poll requested"}
+
+
+@app.get("/api/snmp/targets/{target_id}/readings")
+def snmp_target_readings(target_id: int, user: dict = Depends(auth.current_user),
+                         oid: str | None = None, range: str = "24h"):
+    _snmp_target_for_user(target_id, user)
+    out = {"latest": db.latest_snmp_readings(target_id)}
+    if oid:
+        since = time.time() - _METRIC_RANGES.get(range, 24 * 3600)
+        out["series"] = db.snmp_reading_series(target_id, oid, since)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Agent WebSocket
 # --------------------------------------------------------------------------- #
 @app.websocket("/api/agents/ws")
@@ -1983,7 +2121,8 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
         await ws.send_json(_agent_policy_msg(db.get_device(device_id)))
         if db.get_device(device_id).get("is_node"):
             subs = [s["cidr"] for s in db.list_subnets(device_id)]
-            await ws.send_json({"type": "set_role", "role": "node", "subnets": subs})
+            await ws.send_json({"type": "set_role", "role": "node", "subnets": subs,
+                                "snmp_targets": _node_snmp_targets(device_id)})
         log.info("Agent connected: %s (org %s)", first.get("hostname"), org["name"])
         # Auto-update policy: if this org keeps agents up to date and the one that
         # just connected is on an older build, push an in-place self-update now.
@@ -2031,6 +2170,9 @@ async def _handle_agent_msg(device_id: str, org_id: str, data: dict) -> None:
                              {"type": "error", "error": data.get("error", "screen capture failed")})
     elif mtype == "scan_result":
         db.upsert_network_hosts(org_id, device_id, data.get("hosts", []))
+    elif mtype == "snmp_result":
+        db.save_snmp_result(data.get("target_id"), data.get("ok", False),
+                            data.get("error"), data.get("readings", []))
     elif mtype == "register":
         db.upsert_device(org_id, data)
 

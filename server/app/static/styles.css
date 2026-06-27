@@ -473,6 +473,12 @@ table.grid.mini .dot-led { margin-right: 7px; }
 .file-bar .inp, .file-bar input[type="text"] { flex: 1; min-width: 0; background: var(--surface-2); border: 1px solid var(--border);
   border-radius: var(--r-sm); color: var(--text); font-size: 13px; padding: 7px 11px; outline: none; }
 .file-bar .inp:focus { border-color: var(--accent); }
+.inp { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--text); font: inherit; font-size: 13px; padding: 7px 11px; outline: none; }
+.inp:focus { border-color: var(--accent); }
+.snmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.snmp-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
+.snmp-grid .inp { width: 100%; }
+@media (max-width: 600px) { .snmp-grid { grid-template-columns: 1fr; } }
 .file-bar .file-path { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text-dim); font-size: 12.5px; padding: 4px 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); }
 .file-table td { cursor: default; }

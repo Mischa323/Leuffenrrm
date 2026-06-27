@@ -139,6 +139,41 @@ CREATE TABLE IF NOT EXISTS network_hosts (
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
 
+-- SNMP monitoring targets, polled by a node over UDP/161 (v1/v2c).
+CREATE TABLE IF NOT EXISTS snmp_targets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id       TEXT NOT NULL,
+    node_id      TEXT NOT NULL,
+    name         TEXT,
+    host         TEXT NOT NULL,
+    port         INTEGER NOT NULL DEFAULT 161,
+    version      TEXT NOT NULL DEFAULT '2c',
+    community    TEXT NOT NULL DEFAULT 'public',
+    oids         TEXT,                       -- JSON: [{oid, label}]
+    interval     INTEGER NOT NULL DEFAULT 300,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    last_poll    REAL,
+    last_ok      INTEGER,
+    last_error   TEXT,
+    created_at   REAL,
+    FOREIGN KEY (node_id) REFERENCES devices(id) ON DELETE CASCADE,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+
+-- Time-series of SNMP readings (one row per OID per poll).
+CREATE TABLE IF NOT EXISTS snmp_readings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id    INTEGER NOT NULL,
+    ts           REAL NOT NULL,
+    oid          TEXT NOT NULL,
+    label        TEXT,
+    value_num    REAL,
+    value_text   TEXT,
+    type         TEXT,
+    FOREIGN KEY (target_id) REFERENCES snmp_targets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_snmp_readings_target_ts ON snmp_readings(target_id, ts);
+
 CREATE TABLE IF NOT EXISTS alert_state (
     device_id    TEXT NOT NULL,
     rule         TEXT NOT NULL,
@@ -1861,6 +1896,124 @@ def upsert_network_hosts(org_id: str, node_id: str, hosts: list[dict]) -> None:
 def list_network_hosts(org_id: str) -> list[dict]:
     return [dict(r) for r in get_conn().execute(
         "SELECT * FROM network_hosts WHERE org_id=? ORDER BY ip", (org_id,)).fetchall()]
+
+
+# --------------------------------------------------------------------------- #
+# SNMP monitoring
+# --------------------------------------------------------------------------- #
+SNMP_READING_RETENTION = 30 * 24 * 3600   # keep ~30 days of readings
+
+
+def _snmp_row(r) -> dict:
+    d = dict(r)
+    try:
+        d["oids"] = json.loads(d["oids"]) if d.get("oids") else []
+    except (ValueError, TypeError):
+        d["oids"] = []
+    return d
+
+
+def add_snmp_target(org_id: str, node_id: str, host: str, *, name: str | None = None,
+                    port: int = 161, version: str = "2c", community: str = "public",
+                    oids: list | None = None, interval: int = 300,
+                    enabled: bool = True) -> int:
+    with write() as conn:
+        cur = conn.execute(
+            """INSERT INTO snmp_targets
+               (org_id, node_id, name, host, port, version, community, oids, interval,
+                enabled, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (org_id, node_id, name, host, int(port), str(version), community,
+             json.dumps(oids or []), int(interval), 1 if enabled else 0, time.time()))
+        return cur.lastrowid
+
+
+def get_snmp_target(target_id: int) -> dict | None:
+    row = get_conn().execute("SELECT * FROM snmp_targets WHERE id=?", (target_id,)).fetchone()
+    return _snmp_row(row) if row else None
+
+
+def list_snmp_targets(org_id: str) -> list[dict]:
+    return [_snmp_row(r) for r in get_conn().execute(
+        "SELECT * FROM snmp_targets WHERE org_id=? ORDER BY name, host", (org_id,)).fetchall()]
+
+
+def list_snmp_targets_for_node(node_id: str, enabled_only: bool = True) -> list[dict]:
+    q = "SELECT * FROM snmp_targets WHERE node_id=?"
+    if enabled_only:
+        q += " AND enabled=1"
+    return [_snmp_row(r) for r in get_conn().execute(q, (node_id,)).fetchall()]
+
+
+_SNMP_FIELDS = {"name", "host", "port", "version", "community", "oids", "interval", "enabled"}
+
+
+def update_snmp_target(target_id: int, fields: dict) -> None:
+    sets, vals = [], []
+    for k, v in fields.items():
+        if k not in _SNMP_FIELDS:
+            continue
+        if k == "oids":
+            v = json.dumps(v or [])
+        elif k == "enabled":
+            v = 1 if v else 0
+        elif k in ("port", "interval"):
+            v = int(v)
+        sets.append(f"{k}=?")
+        vals.append(v)
+    if not sets:
+        return
+    vals.append(target_id)
+    with write() as conn:
+        conn.execute(f"UPDATE snmp_targets SET {', '.join(sets)} WHERE id=?", vals)
+
+
+def delete_snmp_target(target_id: int) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM snmp_targets WHERE id=?", (target_id,))
+
+
+def save_snmp_result(target_id: int, ok: bool, error: str | None,
+                     readings: list[dict]) -> None:
+    """Record a poll result: target status + one reading row per OID, pruning old."""
+    now = time.time()
+    with write() as conn:
+        if not conn.execute("SELECT 1 FROM snmp_targets WHERE id=?", (target_id,)).fetchone():
+            return
+        conn.execute("UPDATE snmp_targets SET last_poll=?, last_ok=?, last_error=? WHERE id=?",
+                     (now, 1 if ok else 0, error, target_id))
+        for r in readings or []:
+            num = r.get("num")
+            if num is None and isinstance(r.get("value"), (int, float)) and not isinstance(r.get("value"), bool):
+                num = r.get("value")
+            val = r.get("value")
+            conn.execute(
+                """INSERT INTO snmp_readings (target_id, ts, oid, label, value_num, value_text, type)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (target_id, now, r.get("oid"), r.get("label"),
+                 float(num) if isinstance(num, (int, float)) else None,
+                 None if val is None else str(val), r.get("type")))
+        conn.execute("DELETE FROM snmp_readings WHERE target_id=? AND ts < ?",
+                     (target_id, now - SNMP_READING_RETENTION))
+
+
+def latest_snmp_readings(target_id: int) -> list[dict]:
+    """Most recent reading per OID for a target."""
+    rows = get_conn().execute(
+        """SELECT r.* FROM snmp_readings r
+           JOIN (SELECT oid, MAX(ts) AS mts FROM snmp_readings WHERE target_id=? GROUP BY oid) m
+             ON r.oid = m.oid AND r.ts = m.mts
+           WHERE r.target_id=? ORDER BY r.label, r.oid""",
+        (target_id, target_id)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def snmp_reading_series(target_id: int, oid: str, since: float) -> list[dict]:
+    rows = get_conn().execute(
+        """SELECT ts, value_num FROM snmp_readings
+           WHERE target_id=? AND oid=? AND ts>=? AND value_num IS NOT NULL ORDER BY ts""",
+        (target_id, oid, since)).fetchall()
+    return [{"ts": r["ts"], "v": r["value_num"]} for r in rows]
 
 
 # --------------------------------------------------------------------------- #
