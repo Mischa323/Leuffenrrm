@@ -720,7 +720,7 @@ async function renderDownloads() {
         </div>
       </div></div>
     <div class="dl-block"><div class="lab">${ICON.thermo} Windows CPU temperature (advanced)</div>
-      <div class="h-sub" style="margin:4px 0 10px">Reading the CPU die temperature on Windows needs LibreHardwareMonitor's <b>WinRing0</b> kernel driver, which is on Microsoft's vulnerable-driver blocklist — Defender flags/removes it, and Memory Integrity (HVCI) blocks it from loading. <b>Off by default</b> so the agent stays clean; enable it only on machines where you accept that tradeoff. GPU temperature and Linux CPU temperature are unaffected.</div>
+      <div class="h-sub" style="margin:4px 0 10px"><b>Off by default</b> so the agent stays clean. Windows CPU die temperature needs LibreHardwareMonitor's <b>WinRing0</b> driver, which Defender flags as a vulnerable driver (and Memory Integrity / HVCI blocks). Enable it only where you accept that — GPU and Linux CPU temperatures are unaffected.</div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div class="h-sub" id="ctd-hint"></div>
         <div class="seg" id="ctd-seg">
