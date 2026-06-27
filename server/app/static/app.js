@@ -694,6 +694,8 @@ async function renderDownloads() {
   try { rel = await api(`/api/agent-release`); } catch {}
   let au = { mode: "inherit", default: false, effective: false };
   try { au = await api(`/api/orgs/${state.org}/auto-update`); } catch {}
+  let ctd = { mode: "inherit", default: false, effective: false };
+  try { ctd = await api(`/api/orgs/${state.org}/cpu-temp-driver`); } catch {}
   const relLabel = rel.available
     ? `<span class="badge ok" style="margin-left:8px">${escapeHtml(rel.name || rel.tag || "latest")}</span>${rel.size ? ` <span class="h-sub">${(rel.size / 1048576).toFixed(1)} MB${rel.published_at ? " · " + new Date(rel.published_at).toLocaleDateString() : ""}</span>` : ""}`
     : `<span class="badge na" style="margin-left:8px">no build published yet</span>`;
@@ -715,6 +717,16 @@ async function renderDownloads() {
           <button data-au="inherit">Default</button>
           <button data-au="on">On</button>
           <button data-au="off">Off</button>
+        </div>
+      </div></div>
+    <div class="dl-block"><div class="lab">${ICON.thermo} Windows CPU temperature (advanced)</div>
+      <div class="h-sub" style="margin:4px 0 10px">Reading the CPU die temperature on Windows needs LibreHardwareMonitor's <b>WinRing0</b> kernel driver, which is on Microsoft's vulnerable-driver blocklist — Defender flags/removes it, and Memory Integrity (HVCI) blocks it from loading. <b>Off by default</b> so the agent stays clean; enable it only on machines where you accept that tradeoff. GPU temperature and Linux CPU temperature are unaffected.</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div class="h-sub" id="ctd-hint"></div>
+        <div class="seg" id="ctd-seg">
+          <button data-ctd="inherit">Default</button>
+          <button data-ctd="on">On</button>
+          <button data-ctd="off">Off</button>
         </div>
       </div></div>
     <div class="dl-block"><div class="lab">${ICON.link} Shareable MSI download link</div>
@@ -749,6 +761,19 @@ async function renderDownloads() {
         const r = await api(`/api/orgs/${state.org}/auto-update`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: x.dataset.au }) });
         paint(r.mode); $("au-hint").textContent = auHint(r);
         toast(r.mode === "inherit" ? "Auto-update: using global default" : `Auto-update ${r.mode} for this organisation`);
+      } catch (e) { toast(e.message); }
+    });
+  }
+  const ctdHint = (x) => `Currently ${x.effective ? "enabled — loads the driver where Windows allows it" : "off — Windows CPU temp shows N/A"} · global default is ${x.default ? "On" : "Off"}`;
+  const ctdSeg = $("ctd-seg");
+  if (ctdSeg) {
+    const paint = (mode) => ctdSeg.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x.dataset.ctd === mode));
+    paint(ctd.mode); $("ctd-hint").textContent = ctdHint(ctd);
+    ctdSeg.querySelectorAll("button").forEach((x) => x.onclick = async () => {
+      try {
+        const r = await api(`/api/orgs/${state.org}/cpu-temp-driver`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: x.dataset.ctd }) });
+        paint(r.mode); $("ctd-hint").textContent = ctdHint(r);
+        toast(r.mode === "inherit" ? "CPU-temp driver: using global default" : `CPU-temp driver ${r.mode} for this organisation`);
       } catch (e) { toast(e.message); }
     });
   }
