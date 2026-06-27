@@ -704,31 +704,29 @@ function snmpValue(r) {
 }
 function snmpCard(t) {
   const readings = (t.readings || []);
-  const rows = readings.length
-    ? readings.map((r) => `<tr><td>${escapeHtml(r.label || r.oid)}</td><td class="mono">${snmpValue(r)}</td><td class="h-sub">${r.type || ""}</td></tr>`).join("")
-    : `<tr><td colspan="3" class="h-sub">No readings yet${t.last_error ? " · " + escapeHtml(t.last_error) : ""}.</td></tr>`;
-  return `<div class="tile" style="margin-bottom:14px" data-tid="${t.id}">
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-      <div style="font-weight:650;font-size:14px">${escapeHtml(t.name || t.host)}</div>
-      ${snmpStatus(t)}
-      <span class="h-sub mono">${escapeHtml(t.host)}:${t.port} · v${t.version} · every ${t.interval}s</span>
-      ${t.enabled ? "" : `<span class="badge na">disabled</span>`}
-      <div class="spacer" style="flex:1"></div>
-      <span class="h-sub">${ICON.server.replace("<svg", '<svg style="width:12px;height:12px;vertical-align:-1px;margin-right:3px"')}${escapeHtml(t.node_hostname || "node")}</span>
-    </div>
-    <table class="grid" style="margin-bottom:10px"><thead><tr><th>Metric</th><th>Value</th><th>Type</th></tr></thead><tbody>${rows}</tbody></table>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
+  const meta = `${escapeHtml(t.host)}:${t.port} · SNMP v${t.version} · every ${t.interval}s · ${escapeHtml(t.node_hostname || "node")}${t.last_poll ? " · polled " + relTime(t.last_poll) : ""}`;
+  const body = readings.length
+    ? `<div class="snmp-readings">${readings.map((r) => `<div class="snmp-kv"><span class="h-sub">${escapeHtml(r.label || r.oid)}</span><span class="mono">${snmpValue(r)}</span></div>`).join("")}</div>`
+    : `<div class="h-sub" style="margin-top:8px;padding-left:42px">No readings yet${t.last_error ? " · " + escapeHtml(t.last_error) : ""}.</div>`;
+  return `<div class="tile" style="margin-bottom:10px" data-tid="${t.id}">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="os-ico">${ICON.server}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(t.name || t.host)} ${snmpStatus(t)} ${t.enabled ? "" : `<span class="badge na">paused</span>`}</div>
+        <div class="h-sub">${meta}</div>
+      </div>
       <button class="btn ghost sm snmp-poll" data-tid="${t.id}">${ICON.refresh} Poll now</button>
-      <button class="btn ghost sm snmp-edit" data-tid="${t.id}">${ICON.pencil} Edit</button>
-      <button class="btn ghost sm snmp-del" data-tid="${t.id}">${ICON.trash} Delete</button>
-      <span class="h-sub" style="margin-left:auto;align-self:center">${t.last_poll ? "polled " + relTime(t.last_poll) : ""}</span>
-    </div></div>`;
+      <button class="btn ghost sm snmp-edit" data-tid="${t.id}">${ICON.pencil}</button>
+      <button class="btn ghost sm snmp-del" data-tid="${t.id}">${ICON.trash}</button>
+    </div>
+    ${body}</div>`;
 }
 function renderSNMP() {
   state.snmpEditing = false;
   const body = $("snmp-body"); if (!body) return;
   const nodes = state.cache.nodes || [];
   const targets = state.cache.snmp || [];
+  if ($("snmp-sub")) $("snmp-sub").textContent = `${targets.length} target${targets.length === 1 ? "" : "s"}`;
   const addBtn = $("snmp-add");
   if (addBtn) addBtn.onclick = () => openSnmpForm(null);
   if (!nodes.length) {
@@ -769,12 +767,26 @@ async function openSnmpForm(t) {
   const nodes = state.cache.nodes || [];
   if (!state.snmpPresets) { try { state.snmpPresets = await api(`/api/snmp/presets`); } catch { state.snmpPresets = {}; } }
   const presets = state.snmpPresets || {};
+  // Refresh discovered hosts so the picker reflects the latest node scans.
+  let hosts = state.cache.hosts || [];
+  try { hosts = await api(`/api/orgs/${state.org}/network/hosts`); state.cache.hosts = hosts; } catch {}
+  hosts = hosts.slice().sort((a, b) => {
+    const k = (s) => (s.ip || "").split(".").map((n) => +n || 0);
+    const ka = k(a), kb = k(b);
+    for (let i = 0; i < 4; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+    return 0;
+  });
+  const hostOpts = hosts.length
+    ? `<option value="">— pick a scanned device (optional) —</option>` + hosts.map((h) =>
+        `<option value="${escapeHtml(h.ip)}" data-node="${escapeHtml(h.node_id || "")}" data-name="${escapeHtml(h.hostname || "")}">${escapeHtml(h.ip)}${h.hostname ? " · " + escapeHtml(h.hostname) : ""}${h.manufacturer ? " (" + escapeHtml(h.manufacturer) + ")" : ""}${h.online ? "" : " · offline"}</option>`).join("")
+    : `<option value="">— no scanned devices yet —</option>`;
   const nodeOpts = nodes.map((n) => `<option value="${n.id}" ${t && t.node_id === n.id ? "selected" : ""}>${escapeHtml(n.hostname)}</option>`).join("");
   const presetOpts = `<option value="">Load a preset…</option>` + Object.entries(presets).map(([k, p]) => `<option value="${k}">${escapeHtml(p.label)}</option>`).join("");
   const v = (x, d) => (t && t[x] != null ? t[x] : d);
   body.innerHTML = `<div class="tile" style="max-width:620px">
     <div style="font-weight:650;font-size:14px;margin-bottom:12px">${t ? "Edit SNMP target" : "New SNMP target"}</div>
     <div class="snmp-grid">
+      <label style="grid-column:1/-1">Scanned device <span class="h-sub">— pick one a node discovered; fills host &amp; node</span><select class="inp" id="sf-scanned">${hostOpts}</select></label>
       <label>Polled by node<select class="inp" id="sf-node">${nodeOpts}</select></label>
       <label>Name <span class="h-sub">(optional)</span><input class="inp" id="sf-name" value="${t ? escapeHtml(t.name || "") : ""}" placeholder="Core switch"></label>
       <label>Host / IP<input class="inp" id="sf-host" value="${t ? escapeHtml(t.host) : ""}" placeholder="10.0.0.1"></label>
@@ -790,6 +802,15 @@ async function openSnmpForm(t) {
       <button class="btn" id="sf-save">${ICON.save} ${t ? "Save changes" : "Add target"}</button>
       <button class="btn ghost" id="sf-cancel">Cancel</button>
     </div></div>`;
+  const scanned = $("sf-scanned");
+  if (scanned) scanned.onchange = (e) => {
+    const opt = e.target.selectedOptions[0];
+    if (!opt || !opt.value) return;
+    $("sf-host").value = opt.value;
+    if (!$("sf-name").value.trim() && opt.dataset.name) $("sf-name").value = opt.dataset.name;
+    const nd = opt.dataset.node, ns = $("sf-node");
+    if (nd && [...ns.options].some((o) => o.value === nd)) ns.value = nd;
+  };
   $("sf-preset").onchange = (e) => {
     const p = presets[e.target.value];
     if (!p) return;
