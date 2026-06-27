@@ -324,7 +324,7 @@ function cycleOrg() {
   showOrg(next.id, next.name); toast("Switched to " + next.name);
 }
 async function refreshOrgCaches() {
-  const [devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending] = await Promise.all([
+  const [devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp] = await Promise.all([
     api(`/api/orgs/${state.org}/devices`),
     api(`/api/orgs/${state.org}/network/hosts`).catch(() => []),
     api(`/api/orgs/${state.org}/nodes`).catch(() => []),
@@ -334,8 +334,9 @@ async function refreshOrgCaches() {
     api(`/api/orgs/${state.org}/monitors`).catch(() => []),
     api(`/api/orgs/${state.org}/monitor-rules`).catch(() => []),
     api(`/api/orgs/${state.org}/pending`).catch(() => []),
+    api(`/api/orgs/${state.org}/snmp/targets`).catch(() => []),
   ]);
-  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending };
+  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp };
 }
 function buildNav() {
   $("nav-devices-count").textContent = state.cache.devices.length;
@@ -344,6 +345,7 @@ function buildNav() {
   $("nav-nodes-count").textContent = state.cache.nodes.length;
   $("nav-scripts-count").textContent = state.cache.scripts.length;
   $("nav-monitors-count").textContent = state.cache.monitors.length + state.cache.monitorRules.length;
+  if ($("nav-snmp-count")) $("nav-snmp-count").textContent = (state.cache.snmp || []).length;
 }
 function buildGroups() {
   const groups = state.cache.groups, devs = state.cache.devices;
@@ -361,13 +363,14 @@ function buildGroups() {
 function selectTab(tab) {
   state.tab = tab;
   document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  ["devices", "approvals", "network", "nodes", "scripts", "monitors", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  ["devices", "approvals", "network", "nodes", "snmp", "scripts", "monitors", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
   clearRefresh();
   saveView();
   if (tab === "devices") renderDevices();
   else if (tab === "approvals") renderApprovals();
   else if (tab === "network") renderNetwork();
   else if (tab === "nodes") renderNodes();
+  else if (tab === "snmp") renderSNMP();
   else if (tab === "scripts") renderScripts();
   else if (tab === "monitors") renderMonitorsTab();
   else if (tab === "downloads") renderDownloads();
@@ -384,6 +387,7 @@ async function refreshTab(tab) {
     else if (tab === "approvals") { state.cache.pending = await api(`/api/orgs/${state.org}/pending`); buildNav(); renderApprovals(); }
     else if (tab === "network") { state.cache.hosts = await api(`/api/orgs/${state.org}/network/hosts`); buildNav(); renderNetwork(); }
     else if (tab === "nodes") { state.cache.nodes = await api(`/api/orgs/${state.org}/nodes`); buildNav(); renderNodes(); }
+    else if (tab === "snmp") { if (state.snmpEditing) return; state.cache.snmp = await api(`/api/orgs/${state.org}/snmp/targets`); buildNav(); renderSNMP(); }
     else if (tab === "monitors") { state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); buildNav(); renderMonitorsTab(); }
     else if (tab === "scripts") { state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`); buildNav(); renderScripts(); }
   } catch {}
@@ -398,7 +402,7 @@ async function restoreView() {
   if (m) {
     const org = (state.me.orgs || []).find((o) => o.id === m[1]);
     if (org) {
-      const tabs = ["devices", "approvals", "network", "nodes", "scripts", "monitors", "downloads"];
+      const tabs = ["devices", "approvals", "network", "nodes", "snmp", "scripts", "monitors", "downloads"];
       state.tab = tabs.includes(m[2]) ? m[2] : "devices";
       await showOrg(org.id, org.name);
       return;
@@ -683,6 +687,133 @@ function renderNodes() {
     c.querySelector(".scan").onclick = async () => { try { await api(`/api/devices/${n.id}/scan`, { method: "POST" }); toast("Network scan started on " + n.hostname); } catch (e) { toast(e.message); } };
     wrap.appendChild(c);
   }
+}
+
+/* ---------- SNMP monitoring ---------- */
+function snmpStatus(t) {
+  if (!t.node_online) return `<span class="badge na">node offline</span>`;
+  if (!t.last_poll) return `<span class="badge na">never polled</span>`;
+  if (t.last_ok) return `<span class="badge ok">OK</span>`;
+  return `<span class="badge bad" title="${escapeHtml(t.last_error || "")}">error</span>`;
+}
+function snmpValue(r) {
+  if (r.type === "TimeTicks" && r.value_num != null) return fmtUptime(r.value_num / 100);
+  if (r.value_text != null && r.value_text !== "") return escapeHtml(r.value_text);
+  if (r.value_num != null) return String(r.value_num);
+  return "—";
+}
+function snmpCard(t) {
+  const readings = (t.readings || []);
+  const rows = readings.length
+    ? readings.map((r) => `<tr><td>${escapeHtml(r.label || r.oid)}</td><td class="mono">${snmpValue(r)}</td><td class="h-sub">${r.type || ""}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="h-sub">No readings yet${t.last_error ? " · " + escapeHtml(t.last_error) : ""}.</td></tr>`;
+  return `<div class="tile" style="margin-bottom:14px" data-tid="${t.id}">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <div style="font-weight:650;font-size:14px">${escapeHtml(t.name || t.host)}</div>
+      ${snmpStatus(t)}
+      <span class="h-sub mono">${escapeHtml(t.host)}:${t.port} · v${t.version} · every ${t.interval}s</span>
+      ${t.enabled ? "" : `<span class="badge na">disabled</span>`}
+      <div class="spacer" style="flex:1"></div>
+      <span class="h-sub">${ICON.server.replace("<svg", '<svg style="width:12px;height:12px;vertical-align:-1px;margin-right:3px"')}${escapeHtml(t.node_hostname || "node")}</span>
+    </div>
+    <table class="grid" style="margin-bottom:10px"><thead><tr><th>Metric</th><th>Value</th><th>Type</th></tr></thead><tbody>${rows}</tbody></table>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn ghost sm snmp-poll" data-tid="${t.id}">${ICON.refresh} Poll now</button>
+      <button class="btn ghost sm snmp-edit" data-tid="${t.id}">${ICON.pencil} Edit</button>
+      <button class="btn ghost sm snmp-del" data-tid="${t.id}">${ICON.trash} Delete</button>
+      <span class="h-sub" style="margin-left:auto;align-self:center">${t.last_poll ? "polled " + relTime(t.last_poll) : ""}</span>
+    </div></div>`;
+}
+function renderSNMP() {
+  state.snmpEditing = false;
+  const body = $("snmp-body"); if (!body) return;
+  const nodes = state.cache.nodes || [];
+  const targets = state.cache.snmp || [];
+  const addBtn = $("snmp-add");
+  if (addBtn) addBtn.onclick = () => openSnmpForm(null);
+  if (!nodes.length) {
+    body.innerHTML = `<div class="empty"><div class="big">${ICON.server}</div>No network nodes yet.<br><span class="muted">Promote a device to a node (open a device → Actions → Promote) before adding SNMP targets.</span></div>`;
+    return;
+  }
+  body.innerHTML = targets.length
+    ? targets.map(snmpCard).join("")
+    : `<div class="empty"><div class="big">${ICON.server}</div>No SNMP targets yet.<br><span class="muted">Click “Add target” to monitor a switch, printer, UPS, or any SNMP device.</span></div>`;
+  body.querySelectorAll(".snmp-poll").forEach((b) => b.onclick = async () => {
+    try { await api(`/api/snmp/targets/${b.dataset.tid}/poll`, { method: "POST" }); toast("Poll requested — readings update shortly"); }
+    catch (e) { toast(e.message); }
+  });
+  body.querySelectorAll(".snmp-edit").forEach((b) => b.onclick = () => openSnmpForm(targets.find((x) => String(x.id) === b.dataset.tid)));
+  body.querySelectorAll(".snmp-del").forEach((b) => b.onclick = async () => {
+    const t = targets.find((x) => String(x.id) === b.dataset.tid);
+    if (!confirm(`Delete SNMP target ${t.name || t.host}?`)) return;
+    try { await api(`/api/snmp/targets/${b.dataset.tid}`, { method: "DELETE" }); toast("Target deleted"); refreshTab("snmp"); }
+    catch (e) { toast(e.message); }
+  });
+}
+function snmpOidsToText(oids) { return (oids || []).map((o) => o.label ? `${o.oid} = ${o.label}` : o.oid).join("\n"); }
+function snmpParseOids(text) {
+  const out = [];
+  for (let line of (text || "").split("\n")) {
+    line = line.trim();
+    if (!line) continue;
+    let oid = line, label = null;
+    const m = line.match(/^([0-9.]+)\s*(?:[=,]\s*(.*))?$/);
+    if (m) { oid = m[1]; label = (m[2] || "").trim() || null; }
+    out.push({ oid, label });
+  }
+  return out;
+}
+async function openSnmpForm(t) {
+  state.snmpEditing = true;
+  const body = $("snmp-body"); if (!body) return;
+  const nodes = state.cache.nodes || [];
+  if (!state.snmpPresets) { try { state.snmpPresets = await api(`/api/snmp/presets`); } catch { state.snmpPresets = {}; } }
+  const presets = state.snmpPresets || {};
+  const nodeOpts = nodes.map((n) => `<option value="${n.id}" ${t && t.node_id === n.id ? "selected" : ""}>${escapeHtml(n.hostname)}</option>`).join("");
+  const presetOpts = `<option value="">Load a preset…</option>` + Object.entries(presets).map(([k, p]) => `<option value="${k}">${escapeHtml(p.label)}</option>`).join("");
+  const v = (x, d) => (t && t[x] != null ? t[x] : d);
+  body.innerHTML = `<div class="tile" style="max-width:620px">
+    <div style="font-weight:650;font-size:14px;margin-bottom:12px">${t ? "Edit SNMP target" : "New SNMP target"}</div>
+    <div class="snmp-grid">
+      <label>Polled by node<select class="inp" id="sf-node">${nodeOpts}</select></label>
+      <label>Name <span class="h-sub">(optional)</span><input class="inp" id="sf-name" value="${t ? escapeHtml(t.name || "") : ""}" placeholder="Core switch"></label>
+      <label>Host / IP<input class="inp" id="sf-host" value="${t ? escapeHtml(t.host) : ""}" placeholder="10.0.0.1"></label>
+      <label>Port<input class="inp" id="sf-port" type="number" value="${v("port", 161)}"></label>
+      <label>Version<select class="inp" id="sf-version"><option value="2c" ${v("version", "2c") === "2c" ? "selected" : ""}>v2c</option><option value="1" ${v("version", "2c") === "1" ? "selected" : ""}>v1</option></select></label>
+      <label>Community<input class="inp" id="sf-community" value="${t ? escapeHtml(t.community || "public") : "public"}"></label>
+      <label>Interval (seconds)<input class="inp" id="sf-interval" type="number" value="${v("interval", 300)}"></label>
+      <label>Preset<select class="inp" id="sf-preset">${presetOpts}</select></label>
+    </div>
+    <label style="display:block;margin-top:10px">OIDs <span class="h-sub">— one per line, optionally <code>OID = Label</code></span>
+      <textarea class="inp" id="sf-oids" rows="6" style="width:100%;font-family:var(--font-mono);font-size:12px" placeholder="1.3.6.1.2.1.1.3.0 = Uptime">${t ? escapeHtml(snmpOidsToText(t.oids)) : ""}</textarea></label>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn" id="sf-save">${ICON.save} ${t ? "Save changes" : "Add target"}</button>
+      <button class="btn ghost" id="sf-cancel">Cancel</button>
+    </div></div>`;
+  $("sf-preset").onchange = (e) => {
+    const p = presets[e.target.value];
+    if (!p) return;
+    const cur = $("sf-oids").value.trim();
+    $("sf-oids").value = (cur ? cur + "\n" : "") + snmpOidsToText(p.oids);
+    e.target.value = "";
+  };
+  $("sf-cancel").onclick = () => { state.snmpEditing = false; renderSNMP(); };
+  $("sf-save").onclick = async () => {
+    const payload = {
+      node_id: $("sf-node").value, name: $("sf-name").value.trim() || null,
+      host: $("sf-host").value.trim(), port: +$("sf-port").value || 161,
+      version: $("sf-version").value, community: $("sf-community").value.trim() || "public",
+      interval: +$("sf-interval").value || 300, oids: snmpParseOids($("sf-oids").value),
+    };
+    if (!payload.host) return toast("Host is required");
+    if (!payload.oids.length) return toast("Add at least one OID");
+    try {
+      if (t) await api(`/api/snmp/targets/${t.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      else await api(`/api/orgs/${state.org}/snmp/targets`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      toast(t ? "Target updated" : "Target added");
+      state.snmpEditing = false; refreshTab("snmp");
+    } catch (e) { toast(e.message); }
+  };
 }
 
 async function renderDownloads() {
