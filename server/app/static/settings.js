@@ -266,6 +266,8 @@ function render() {
         `${toggle("requireApproval", "Require approval for new devices", "New agents wait in the Approvals queue until you approve them, instead of appearing automatically.", (cfg.RMM_REQUIRE_APPROVAL ?? "1") === "1")}`, "agents-approval")}
       ${block("Updates", "",
         `${toggle("autoUpdate", "Automatically update agents", "When on, an agent that connects on an older build is upgraded to the latest version in place (and a periodic sweep catches always-on devices). This is the default for every organisation; each org can override it under its Downloads tab.", (cfg.RMM_AUTO_UPDATE_AGENTS ?? "0") === "1")}`, "agents-autoupdate")}
+      ${block("Windows CPU temperature (advanced)", "",
+        `${toggle("cpuTempDriver", "Read the Windows CPU die temperature", "Loads LibreHardwareMonitor's WinRing0 kernel driver to report the CPU temperature on Windows. Off by default — WinRing0 is on Microsoft's vulnerable-driver blocklist (Defender removes it; Memory Integrity/HVCI blocks it). This is the default for every organisation; each org can override it under its Downloads tab. GPU and Linux CPU temperatures don't use it.", (cfg.RMM_CPU_TEMP_DRIVER ?? "0") === "1")}`, "agents-cputemp")}
       <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Heartbeat interval</div><div class="cd">Agents report every ~30s by default (set <code>RMM_INTERVAL</code> on the agent). Update agents in place from a device's <b>Agent</b> panel, or all at once from <b>Downloads</b>.</div></div></div>
       <div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Danger zone</div><div class="cd">Removing an agent (from a device's Actions) stops monitoring and revokes its key. Re-enrol with a fresh installer from Downloads.</div></div></div>
     </section>
@@ -876,6 +878,7 @@ function onSave(which) {
   if (which === "security-devsecret") return saveKeys({ RMM_REQUIRE_DEVICE_SECRET: document.querySelector('[data-toggle="requireDeviceSecret"]').classList.contains("on") ? "1" : "0" }, "Device-secret policy saved");
   if (which === "agents-approval") return saveKeys({ RMM_REQUIRE_APPROVAL: document.querySelector('[data-toggle="requireApproval"]').classList.contains("on") ? "1" : "0" }, "Enrolment policy saved");
   if (which === "agents-autoupdate") return saveKeys({ RMM_AUTO_UPDATE_AGENTS: document.querySelector('[data-toggle="autoUpdate"]').classList.contains("on") ? "1" : "0" }, "Auto-update policy saved");
+  if (which === "agents-cputemp") return saveKeys({ RMM_CPU_TEMP_DRIVER: document.querySelector('[data-toggle="cpuTempDriver"]').classList.contains("on") ? "1" : "0" }, "CPU-temp driver policy saved");
 }
 
 async function init() {
