@@ -1042,6 +1042,60 @@ async def set_org_auto_update(org_id: str, request: Request,
             "effective": _org_auto_update_enabled(org)}
 
 
+# --------------------------------------------------------------------------- #
+# Windows CPU-temp driver opt-in (global default + per-org override).
+# The CPU-die sensor needs LibreHardwareMonitor's WinRing0 kernel driver, which
+# Defender removes (vulnerable-driver blocklist). Off by default so the agent
+# ships clean; operators enable it per org where they accept that tradeoff.
+# --------------------------------------------------------------------------- #
+def _cpu_temp_driver_default() -> bool:
+    return os.environ.get("RMM_CPU_TEMP_DRIVER", "0").lower() in ("1", "true", "yes")
+
+
+def _org_cpu_temp_driver_enabled(org: dict | None) -> bool:
+    mode = (org or {}).get("cpu_temp_driver") or "inherit"
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    return _cpu_temp_driver_default()
+
+
+@app.get("/api/orgs/{org_id}/cpu-temp-driver")
+def get_org_cpu_temp_driver(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    org = db.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    return {"mode": org.get("cpu_temp_driver") or "inherit",
+            "default": _cpu_temp_driver_default(),
+            "effective": _org_cpu_temp_driver_enabled(org)}
+
+
+@app.post("/api/orgs/{org_id}/cpu-temp-driver")
+async def set_org_cpu_temp_driver(org_id: str, request: Request,
+                                  user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    if not db.get_org(org_id):
+        raise HTTPException(status_code=404, detail="Org not found")
+    data = await request.json()
+    mode = str(data.get("mode", "inherit"))
+    if mode not in ("inherit", "on", "off"):
+        raise HTTPException(status_code=400, detail="mode must be inherit|on|off")
+    db.set_org_cpu_temp_driver(org_id, mode)
+    # Push the new policy to this org's online agents right away.
+    for dev in db.list_devices(org_id):
+        conn = manager.get(dev["id"])
+        if conn:
+            try:
+                await conn.send(_agent_policy_msg(db.get_device(dev["id"])))
+            except Exception:
+                pass
+    org = db.get_org(org_id)
+    return {"mode": mode, "default": _cpu_temp_driver_default(),
+            "effective": _org_cpu_temp_driver_enabled(org)}
+
+
 @app.post("/api/devices/{device_id}/update-agent")
 async def update_agent_device(device_id: str, user: dict = Depends(auth.current_user)):
     """Tell an online agent to download and apply the latest installer in place."""
@@ -1588,6 +1642,21 @@ def _device_wol_enabled(dev: dict | None) -> bool:
     return any(r["template_id"] == "wol" for r in db.list_effective_monitor_rules(dev))
 
 
+def _device_cpu_temp_driver_enabled(dev: dict | None) -> bool:
+    """Effective CPU-temp driver opt-in for a device, resolved via its org.
+    Benign on non-Windows agents (the flag only gates the Windows LHM path)."""
+    if not dev:
+        return False
+    return _org_cpu_temp_driver_enabled(db.get_org(dev.get("org_id")))
+
+
+def _agent_policy_msg(dev: dict | None) -> dict:
+    """The admin-controlled policy pushed to an agent (WoL + CPU-temp opt-in)."""
+    return {"type": "agent_policy",
+            "enable_wol": _device_wol_enabled(dev),
+            "enable_cpu_temp_driver": _device_cpu_temp_driver_enabled(dev)}
+
+
 def _effective_policies(dev: dict) -> list[dict]:
     """All policy/monitor rules that apply to a device, with OS-support status,
     for the device drawer."""
@@ -1604,13 +1673,13 @@ def _effective_policies(dev: dict) -> list[dict]:
 
 
 async def _push_wol_policy() -> None:
-    """Re-push the Wake-on-LAN policy to every online agent (after a rule change)."""
+    """Re-push the device policy to every online agent (after a rule change)."""
     for did in list(manager.online_ids()):
         dev = db.get_device(did)
         conn = manager.get(did)
         if dev and conn:
             try:
-                await conn.send({"type": "agent_policy", "enable_wol": _device_wol_enabled(dev)})
+                await conn.send(_agent_policy_msg(dev))
             except Exception:
                 pass
 
@@ -1911,8 +1980,7 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
             await ws.send_json({"type": "device_secret", "secret": _issue})
         # Push admin-controlled device policy (Wake-on-LAN), per the policies that
         # target this device and whether its OS supports it.
-        await ws.send_json({"type": "agent_policy",
-                            "enable_wol": _device_wol_enabled(db.get_device(device_id))})
+        await ws.send_json(_agent_policy_msg(db.get_device(device_id)))
         if db.get_device(device_id).get("is_node"):
             subs = [s["cidr"] for s in db.list_subnets(device_id)]
             await ws.send_json({"type": "set_role", "role": "node", "subnets": subs})

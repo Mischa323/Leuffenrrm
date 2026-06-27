@@ -1233,6 +1233,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "auto_update" not in ocols:
         # Per-org agent auto-update override: 'inherit' (use global default) | 'on' | 'off'.
         conn.execute("ALTER TABLE organizations ADD COLUMN auto_update TEXT NOT NULL DEFAULT 'inherit'")
+    if "cpu_temp_driver" not in ocols:
+        # Per-org opt-in for the Windows CPU-die sensor (LibreHardwareMonitor /
+        # WinRing0 kernel driver): 'inherit' (use global default) | 'on' | 'off'.
+        conn.execute("ALTER TABLE organizations ADD COLUMN cpu_temp_driver TEXT NOT NULL DEFAULT 'inherit'")
 
 
 def get_conn() -> sqlite3.Connection:
@@ -1302,6 +1306,14 @@ def set_org_auto_update(org_id: str, mode: str) -> None:
         raise ValueError("mode must be inherit|on|off")
     with write() as conn:
         conn.execute("UPDATE organizations SET auto_update=? WHERE id=?", (mode, org_id))
+
+
+def set_org_cpu_temp_driver(org_id: str, mode: str) -> None:
+    """Set an org's Windows CPU-temp driver opt-in: 'inherit' | 'on' | 'off'."""
+    if mode not in ("inherit", "on", "off"):
+        raise ValueError("mode must be inherit|on|off")
+    with write() as conn:
+        conn.execute("UPDATE organizations SET cpu_temp_driver=? WHERE id=?", (mode, org_id))
 
 
 def rotate_org_key(org_id: str) -> str:
