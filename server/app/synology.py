@@ -145,7 +145,8 @@ def build_spk(*, agent_dir: str, pkg_dir: str, version: str,
         _add(tf, "INFO", info.encode("ascii", "replace"), 0o644, now)
         _add(tf, "package.tgz", payload_bytes, 0o644, now)
         _adddir(tf, "scripts", now)
-        for name in ("start-stop-status", "postinst", "preuninst", "postuninst"):
+        for name in ("start-stop-status", "postinst", "preuninst", "postuninst",
+                     "preupgrade", "postupgrade"):
             _add(tf, f"scripts/{name}", text(f"scripts/{name}"), 0o755, now)
         _adddir(tf, "conf", now)
         _add(tf, "conf/privilege", text("conf/privilege"), 0o644, now)
