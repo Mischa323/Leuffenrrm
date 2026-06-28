@@ -24,6 +24,7 @@ const ICON = {
   thermo: I('<path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0Z"/>'),
   server: I('<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>'),
   nas: I('<rect x="6" y="3" width="12" height="18" rx="2"/><path d="M9 7h6M9 11h6"/><path d="M15 16.5h.01"/>'),
+  cloud: I('<path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.3 9.5 4 4 0 0 0 7 19Z"/>'),
   check: I('<path d="M20 6 9 17l-5-5"/>'),
   alert: I('<path d="M10.3 3.3 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.3a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/>'),
   power: I('<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>'),
