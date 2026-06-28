@@ -11,6 +11,9 @@ on:
     paths:
       - "server/**"
       - "agent/**"
+      # Baked into the image (COPY packaging /packaging) and used to assemble the
+      # Synology .spk on demand, so a packaging-only change must rebuild the image.
+      - "packaging/**"
       - "VERSION"
       - "docker-compose.yml"
       - ".github/workflows/server-image.yml"
