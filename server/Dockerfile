@@ -11,6 +11,9 @@ COPY server/run.py ./run.py
 COPY VERSION ./VERSION
 COPY CHANGELOG.md ./CHANGELOG.md
 COPY agent /agent
+# Synology SPK packaging assets (INFO/scripts/conf); the server assembles the
+# .spk on demand from these + the slim agent in /agent.
+COPY packaging /packaging
 
 # Version: the repo VERSION file is the default; a build arg (e.g. a git tag)
 # overrides it. The app reads /app/VERSION so Settings shows the deployed build.

@@ -227,6 +227,24 @@ Manual: download `…/api/orgs/<org>/agent.zip`, then `python agent.py` (the bun
 `psutil` and `websockets`; screen control additionally uses `mss`, `Pillow`,
 `pynput` (installed from `agent/requirements.txt`, imported only when used).
 
+### Synology NAS (Package Center)
+
+Monitor a Synology NAS like any other device — no manual setup. The **Downloads**
+tab shows a **Package Center source URL** for the organisation. In DSM:
+
+1. **Package Center → Settings → Package Sources → Add** — paste the URL
+   (`https://YOUR_SERVER/syno/<org>/<token>`) and give it a name.
+2. Back in Package Center, open the new source and install **Leuffen RMM**.
+
+The NAS then appears in the device list reporting CPU, memory, storage, uptime,
+system temperature, model and DSM version, plus volume/disk health — and supports
+remote shell, scripts, the file browser and reboot/shutdown. The `.spk` is a
+pure-stdlib `noarch` package the server assembles on demand with the connection
+settings baked in (DSM's official **Python3** package is auto-installed as a
+dependency — nothing else to pre-install). Version bumps appear in Package Center
+as an available upgrade. A global admin can hide the source / refuse new installs
+from **Settings → Agents → Synology NAS** (`RMM_SYNOLOGY_SOURCE`).
+
 ### Agent in Docker (Linux hosts)
 
 ```bash
