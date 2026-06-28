@@ -140,7 +140,9 @@ def build_spk(*, agent_dir: str, pkg_dir: str, version: str,
 
     spk = io.BytesIO()
     with tarfile.open(fileobj=spk, mode="w", format=tarfile.USTAR_FORMAT) as tf:
-        _add(tf, "INFO", info.encode("utf-8"), 0o644, now)
+        # INFO must be ASCII — DSM's package parser rejects non-ASCII bytes (e.g. a
+        # stray em-dash) as "Invalid file format".
+        _add(tf, "INFO", info.encode("ascii", "replace"), 0o644, now)
         _add(tf, "package.tgz", payload_bytes, 0o644, now)
         _adddir(tf, "scripts", now)
         for name in ("start-stop-status", "postinst", "preuninst", "postuninst"):
@@ -159,7 +161,7 @@ def catalog(*, pub: str, org_id: str, token: str, version: str) -> dict:
         "package": "LeuffenRMM",
         "version": version,
         "dname": "Leuffen RMM",
-        "desc": "Leuffen RMM monitoring agent — reports NAS health (CPU, memory, "
+        "desc": "Leuffen RMM monitoring agent - reports NAS health (CPU, memory, "
                 "storage, temperature, volume status) to your RMM server and enables "
                 "remote management.",
         "link": f"{base}/leuffen-rmm.spk",
