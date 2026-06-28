@@ -240,8 +240,9 @@ The NAS then appears in the device list reporting CPU, memory, storage, uptime,
 system temperature, model and DSM version, plus volume/disk health — and supports
 remote shell, scripts, the file browser and reboot/shutdown. The `.spk` is a
 pure-stdlib `noarch` package the server assembles on demand with the connection
-settings baked in (DSM's official **Python3** package is auto-installed as a
-dependency — nothing else to pre-install). Version bumps appear in Package Center
+settings baked in. The only requirement on the NAS is an installed **Python 3**
+package (official Python3.9, or a SynoCommunity Python3.10+ — install one from
+Package Center if you don't already have it). Version bumps appear in Package Center
 as an available upgrade. A global admin can hide the source / refuse new installs
 from **Settings → Agents → Synology NAS** (`RMM_SYNOLOGY_SOURCE`).
 
