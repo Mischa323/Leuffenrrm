@@ -125,6 +125,19 @@ def build_spk(*, agent_dir: str, pkg_dir: str, version: str,
                           "insecure_tls": bool(insecure)}).encode()
         _add(tf, "rmm_config.json", cfg, 0o600, now)
         extract_bytes += len(cfg)
+        # DSM app UI (dsmuidir="ui"): config + a redirect page to the agent's
+        # status/log port, plus app icons so it appears in the DSM launcher.
+        for rel in ("ui/config", "ui/index.html"):
+            p = os.path.join(pkg_dir, rel)
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    data = f.read()
+                _add(tf, rel, data, 0o644, now)
+                extract_bytes += len(data)
+        for size in (16, 24, 32, 48, 64, 72, 256):
+            png = icon_png(size)
+            _add(tf, f"ui/images/icon_{size}.png", png, 0o644, now)
+            extract_bytes += len(png)
     payload_bytes = payload.getvalue()
 
     with open(os.path.join(pkg_dir, "INFO"), encoding="utf-8") as f:
