@@ -145,6 +145,10 @@ def catalog(*, pub: str, org_id: str, token: str, version: str) -> dict:
         "qinst": True, "qstart": True, "qupgrade": True,
         "maintainer": "Leuffen", "maintainer_url": pub,
         "distributor": "Leuffen RMM", "distributor_url": pub,
-        "deppkgs": "Python3", "beta": False, "model": [], "changelog": "",
+        # No deppkgs: there is no DSM package literally named "Python3" (the real
+        # ones are Python3.9 / SynoCommunity Python3.10+), so declaring it makes
+        # Package Center fail with "packages are missing in the package server".
+        # The agent discovers any installed Python 3 at runtime instead.
+        "beta": False, "model": [], "changelog": "",
     }
     return {"packages": [pkg]}
