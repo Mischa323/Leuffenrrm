@@ -848,6 +848,8 @@ async function renderDownloads() {
   try { au = await api(`/api/orgs/${state.org}/auto-update`); } catch {}
   let ctd = { mode: "inherit", default: false, effective: false };
   try { ctd = await api(`/api/orgs/${state.org}/cpu-temp-driver`); } catch {}
+  let syno = { url: "", enabled: true };
+  try { syno = await api(`/api/orgs/${state.org}/synology-source`); } catch {}
   const relLabel = rel.available
     ? `<span class="badge ok" style="margin-left:8px">${escapeHtml(rel.name || rel.tag || "latest")}</span>${rel.size ? ` <span class="h-sub">${(rel.size / 1048576).toFixed(1)} MB${rel.published_at ? " · " + new Date(rel.published_at).toLocaleDateString() : ""}</span>` : ""}`
     : `<span class="badge na" style="margin-left:8px">no build published yet</span>`;
@@ -895,8 +897,12 @@ async function renderDownloads() {
       </div>
       <div id="dl-link-result" style="margin-top:10px"></div>
       <div id="dl-link-list" style="margin-top:10px"></div></div>
+    <div class="dl-block"><div class="lab">${ICON.nas} Synology NAS — Package Center source</div>
+      <div class="h-sub" style="margin:4px 0 10px">Monitor a Synology NAS like any other device. In DSM open <b>Package Center → Settings → Package Sources → Add</b>, paste the URL below, then install <b>Leuffen RMM</b> from the new source. It auto-connects to this organisation — no key to type, and it auto-installs Synology's Python3 if needed.${syno.enabled ? "" : ` <b style="color:var(--bad)">The source is currently disabled in Settings → Agents.</b>`}</div>
+      <div class="code"><button class="btn ghost sm" id="syno-copy" data-c="${escapeAttr(syno.url)}">${ICON.copy} Copy</button>${escapeHtml(syno.url)}</div></div>
     <div class="dl-block"><div class="lab">${ICON.key} Active enrolment keys</div>
       <div id="token-list"></div></div>`;
+  { const sc = $("syno-copy"); if (sc) sc.onclick = () => { navigator.clipboard?.writeText(sc.dataset.c); toast("Copied"); }; }
   $("update-all").onclick = async () => {
     if (!confirm("Push the latest agent to all online devices in this organisation?")) return;
     const b = $("update-all"); b.disabled = true; const old = b.innerHTML; b.innerHTML = "Sending…";

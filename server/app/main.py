@@ -134,6 +134,20 @@ def _serve_html(filename: str) -> HTMLResponse:
         html = html.replace(f'{ext}"', f'{ext}?v={v}"')
     return HTMLResponse(html)
 AGENT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "agent")
+
+
+def _syno_pkg_dir() -> str:
+    """Synology SPK packaging assets (INFO/scripts/conf), baked at /packaging in
+    the image, else the repo tree for source runs."""
+    here = os.path.dirname(__file__)
+    for path in ("/packaging/synology",
+                 os.path.join(here, "..", "..", "packaging", "synology")):
+        if os.path.isdir(path):
+            return path
+    return os.path.join(here, "..", "..", "packaging", "synology")
+
+
+SYNO_PKG_DIR = _syno_pkg_dir()
 OFFLINE_AFTER = float(os.environ.get("RMM_OFFLINE_AFTER", "120"))
 METRIC_RETENTION = float(os.environ.get("RMM_METRIC_RETENTION", str(30 * 24 * 3600)))
 ALERT_INTERVAL = float(os.environ.get("RMM_ALERT_INTERVAL", "60"))
@@ -156,6 +170,14 @@ def agent_insecure_tls() -> bool:
 def require_approval() -> bool:
     """Whether brand-new devices land in the approval queue (default: yes)."""
     return os.environ.get("RMM_REQUIRE_APPROVAL", "1").lower() in ("1", "true", "yes")
+
+
+def _synology_source_enabled() -> bool:
+    """Whether the Synology Package Center source is offered (default: on).
+
+    Admin toggle (Settings → Agents). When off, the package-source catalog returns
+    no packages and the .spk download is refused."""
+    return os.environ.get("RMM_SYNOLOGY_SOURCE", "1").lower() in ("1", "true", "yes")
 
 
 
@@ -1094,6 +1116,24 @@ async def set_org_cpu_temp_driver(org_id: str, request: Request,
     org = db.get_org(org_id)
     return {"mode": mode, "default": _cpu_temp_driver_default(),
             "effective": _org_cpu_temp_driver_enabled(org)}
+
+
+@app.get("/api/orgs/{org_id}/synology-source")
+def get_synology_source(org_id: str, user: dict = Depends(auth.current_user)):
+    """Stable Package Center source URL for this org (pasted into a NAS).
+
+    Backed by a long-lived download token persisted per org so the URL stays the
+    same across visits; regenerated only if missing or expired."""
+    auth.require_org(user, org_id)
+    if not db.get_org(org_id):
+        raise HTTPException(status_code=404, detail="Org not found")
+    skey = f"syno_source:{org_id}"
+    token = db.get_setting(skey)
+    if not token or not db.download_token_valid(org_id, token, count=False):
+        token = db.create_download_token(org_id, label="synology-source", ttl_days=3650)["token"]
+        db.set_setting(skey, token)
+    return {"url": f"{public_url()}/syno/{org_id}/{token}",
+            "enabled": _synology_source_enabled()}
 
 
 @app.post("/api/devices/{device_id}/update-agent")
@@ -2445,6 +2485,66 @@ def agent_zip(org_id: str, token: str | None = Query(None),
                     headers={"Content-Disposition": "attachment; filename=leuffen-rmm-agent.zip"})
 
 
+# --------------------------------------------------------------------------- #
+# Synology NAS — package built on the fly + served via a Package Center source
+# --------------------------------------------------------------------------- #
+# The admin pastes "{public_url}/syno/{org}/{token}" into Package Center →
+# Settings → Package Sources. Package Center polls that catalog; the .spk is
+# assembled (see synology.build_spk) from the vendored slim agent (AGENT_DIR) and
+# the packaging assets (SYNO_PKG_DIR) with the enrolment config baked in, exactly
+# like agent.zip. No SPK is committed or released — it's generated per download,
+# so an AGENT_VERSION bump surfaces in Package Center as an available upgrade.
+from . import synology
+
+
+def _syno_authorized(org_id: str, token: str, *, count: bool = False) -> dict | None:
+    """Resolve the org if ``token`` is a valid source/download token for it.
+
+    ``count`` only increments the download counter on an actual .spk fetch (not on
+    catalog/icon polling)."""
+    org = db.get_org(org_id)
+    if not org:
+        return None
+    if db.download_token_valid(org_id, token, count=count) or db.token_valid_for(org_id, token):
+        return org
+    return None
+
+
+@app.api_route("/syno/{org_id}/{token}", methods=["GET", "POST"])
+async def synology_catalog(org_id: str, token: str):
+    """Synology Package Center source catalog (SynoCommunity-compatible JSON)."""
+    if _syno_authorized(org_id, token) is None:
+        raise HTTPException(status_code=404, detail="Unknown package source")
+    if not _synology_source_enabled():
+        return JSONResponse({"packages": []})
+    return JSONResponse(synology.catalog(pub=public_url(), org_id=org_id, token=token,
+                                         version=_resolve_agent_version()))
+
+
+@app.get("/syno/{org_id}/{token}/leuffen-rmm.spk")
+def synology_spk(org_id: str, token: str):
+    if _syno_authorized(org_id, token, count=True) is None:
+        raise HTTPException(status_code=404, detail="Unknown package source")
+    if not _synology_source_enabled():
+        raise HTTPException(status_code=403, detail="Synology package source is disabled")
+    # Each download bakes a fresh one-time enrolment key (mirrors agent.zip).
+    key = db.create_enroll_token(org_id, label="synology", kind="internal")["token"]
+    data = synology.build_spk(agent_dir=AGENT_DIR, pkg_dir=SYNO_PKG_DIR,
+                              version=_resolve_agent_version(), server_url=public_url(),
+                              api_key=key, insecure=agent_insecure_tls())
+    return Response(data, media_type="application/octet-stream",
+                    headers={"Content-Disposition": "attachment; filename=leuffen-rmm.spk",
+                             "Cache-Control": "no-store"})
+
+
+@app.get("/syno/{org_id}/{token}/icon.png")
+def synology_icon(org_id: str, token: str, size: int = 72):
+    if _syno_authorized(org_id, token) is None:
+        raise HTTPException(status_code=404, detail="Unknown package source")
+    return Response(synology.icon_png(256 if size >= 128 else 72), media_type="image/png",
+                    headers={"Cache-Control": "max-age=3600"})
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -2618,7 +2718,7 @@ SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
     "RMM_REQUIRE_APPROVAL", "RMM_REQUIRE_DEVICE_SECRET", "RMM_AUTO_UPDATE_AGENTS",
-    "RMM_CPU_TEMP_DRIVER", "RMM_ALERT_RECIPIENTS",
+    "RMM_CPU_TEMP_DRIVER", "RMM_SYNOLOGY_SOURCE", "RMM_ALERT_RECIPIENTS",
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS",
     "MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_REDIRECT_URI",
 ]

@@ -1458,8 +1458,12 @@ def list_download_tokens(org_id: str) -> list[dict]:
         (org_id,)).fetchall()]
 
 
-def download_token_valid(org_id: str, token: str) -> bool:
-    """True if the download token belongs to this org and has not expired."""
+def download_token_valid(org_id: str, token: str, count: bool = True) -> bool:
+    """True if the download token belongs to this org and has not expired.
+
+    ``count`` bumps the use counter on an actual download; pass ``count=False`` for
+    read-only validation (e.g. Synology package-source catalog/icon polling, which
+    would otherwise inflate the count on every Package Center refresh)."""
     row = get_conn().execute(
         "SELECT org_id, expires_at FROM enroll_tokens "
         "WHERE token_hash=? AND kind='download'",
@@ -1468,9 +1472,10 @@ def download_token_valid(org_id: str, token: str) -> bool:
         return False
     if row["expires_at"] and _now() > row["expires_at"]:
         return False
-    with write() as conn:
-        conn.execute("UPDATE enroll_tokens SET use_count=use_count+1 WHERE token_hash=?",
-                     (_sha256_hex(token),))
+    if count:
+        with write() as conn:
+            conn.execute("UPDATE enroll_tokens SET use_count=use_count+1 WHERE token_hash=?",
+                         (_sha256_hex(token),))
     return True
 
 
