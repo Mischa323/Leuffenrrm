@@ -2490,11 +2490,96 @@ def agent_zip(org_id: str, token: str | None = Query(None),
 # --------------------------------------------------------------------------- #
 # The admin pastes "{public_url}/syno/{org}/{token}" into Package Center →
 # Settings → Package Sources. Package Center polls that catalog; the .spk is
-# assembled (see synology.build_spk) from the vendored slim agent (AGENT_DIR) and
-# the packaging assets (SYNO_PKG_DIR) with the enrolment config baked in, exactly
-# like agent.zip. No SPK is committed or released — it's generated per download,
-# so an AGENT_VERSION bump surfaces in Package Center as an available upgrade.
+# assembled (see synology.build_spk) from the slim agent + packaging assets with
+# the enrolment config baked in, exactly like agent.zip.
+#
+# The agent source is fetched live from the agent repo (like the Windows MSI is
+# proxied from its release) and cached, so a change pushed to the agent repo
+# reaches NASes WITHOUT redeploying the server. Falls back to the copy bundled in
+# the image (AGENT_DIR / SYNO_PKG_DIR) if GitHub is unreachable. Controlled by
+# RMM_SYNOLOGY_AGENT_REF (default "main"; a tag like "v2.2.22" pins a release;
+# "bundled" forces the in-image copy).
 from . import synology
+
+# (agent_dir, pkg_dir, version) for SPK assembly, cached for a few minutes.
+_SYNO_SRC_CACHE: dict = {"t": 0.0, "root": None, "agent_dir": None,
+                         "pkg_dir": None, "version": None}
+_SYNO_SRC_TTL = float(os.environ.get("RMM_SYNOLOGY_SRC_TTL", "600"))
+
+
+def _parse_agent_version(path: str) -> str | None:
+    import re
+    try:
+        with open(path, encoding="utf-8") as f:
+            m = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', f.read())
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def _fetch_agent_tree(ref: str) -> str:
+    """Download + extract the agent repo at ``ref`` into a fresh temp dir; returns
+    that dir (cleaned up by the caller when it's replaced)."""
+    import io
+    import tarfile
+    import tempfile
+    import httpx
+    headers = {"Accept": "application/vnd.github+json"}
+    tok = os.environ.get("RMM_GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    with httpx.Client(follow_redirects=True, timeout=60) as cl:
+        r = cl.get(f"https://api.github.com/repos/{GH_REPO}/tarball/{ref}", headers=headers)
+    r.raise_for_status()
+    root = tempfile.mkdtemp(prefix="leuffen-syno-")
+    with tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz") as tf:
+        try:
+            tf.extractall(root, filter="data")   # py3.12+: block path traversal
+        except TypeError:
+            tf.extractall(root)
+    return root
+
+
+def _synology_build_inputs() -> tuple[str, str, str]:
+    """Resolve (agent_dir, pkg_dir, version) for building the .spk — the live agent
+    repo when reachable, else the bundled copy."""
+    import shutil
+    now = time.time()
+    c = _SYNO_SRC_CACHE
+    if c["agent_dir"] and now - c["t"] < _SYNO_SRC_TTL and os.path.isdir(c["agent_dir"]):
+        return c["agent_dir"], c["pkg_dir"], c["version"]
+    ref = os.environ.get("RMM_SYNOLOGY_AGENT_REF", "main").strip()
+    if ref and ref.lower() != "bundled":
+        root = None
+        try:
+            root = _fetch_agent_tree(ref)
+            # GitHub wraps everything in a single top-level dir.
+            subs = [os.path.join(root, e) for e in os.listdir(root)
+                    if os.path.isdir(os.path.join(root, e))]
+            tree = subs[0] if len(subs) == 1 else root
+            a = os.path.join(tree, "agent")
+            p = os.path.join(tree, "packaging", "synology")
+            if os.path.isfile(os.path.join(a, "syno_agent.py")) and os.path.isfile(os.path.join(p, "INFO")):
+                ver = _parse_agent_version(os.path.join(a, "inventory.py")) or _resolve_agent_version()
+                old_root = c.get("root")
+                c.update(t=now, root=root, agent_dir=a, pkg_dir=p, version=ver)
+                if old_root and old_root != root:
+                    shutil.rmtree(old_root, ignore_errors=True)
+                return a, p, ver
+            shutil.rmtree(root, ignore_errors=True)
+            log.warning("synology: agent ref %s missing DSM agent; using bundled copy", ref)
+        except Exception as exc:
+            if root:
+                shutil.rmtree(root, ignore_errors=True)
+            log.warning("synology: live agent fetch (%s) failed: %s; using bundled copy", ref, exc)
+    # Bundled fallback (cache briefly so an outage doesn't retry every request).
+    c.update(t=now, root=None, agent_dir=AGENT_DIR, pkg_dir=SYNO_PKG_DIR,
+             version=_resolve_agent_version())
+    return c["agent_dir"], c["pkg_dir"], c["version"]
+
+
+def _synology_version() -> str:
+    return _synology_build_inputs()[2]
 
 
 def _syno_authorized(org_id: str, token: str, *, count: bool = False) -> dict | None:
@@ -2518,7 +2603,7 @@ async def synology_catalog(org_id: str, token: str):
     if not _synology_source_enabled():
         return JSONResponse({"packages": []})
     return JSONResponse(synology.catalog(pub=public_url(), org_id=org_id, token=token,
-                                         version=_resolve_agent_version()))
+                                         version=_synology_version()))
 
 
 @app.get("/syno/{org_id}/{token}/leuffen-rmm.spk")
@@ -2529,8 +2614,9 @@ def synology_spk(org_id: str, token: str):
         raise HTTPException(status_code=403, detail="Synology package source is disabled")
     # Each download bakes a fresh one-time enrolment key (mirrors agent.zip).
     key = db.create_enroll_token(org_id, label="synology", kind="internal")["token"]
-    data = synology.build_spk(agent_dir=AGENT_DIR, pkg_dir=SYNO_PKG_DIR,
-                              version=_resolve_agent_version(), server_url=public_url(),
+    agent_dir, pkg_dir, version = _synology_build_inputs()
+    data = synology.build_spk(agent_dir=agent_dir, pkg_dir=pkg_dir,
+                              version=version, server_url=public_url(),
                               api_key=key, insecure=agent_insecure_tls())
     return Response(data, media_type="application/octet-stream",
                     headers={"Content-Disposition": "attachment; filename=leuffen-rmm.spk",

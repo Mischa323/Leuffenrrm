@@ -242,8 +242,12 @@ remote shell, scripts, the file browser and reboot/shutdown. The `.spk` is a
 pure-stdlib `noarch` package the server assembles on demand with the connection
 settings baked in. The only requirement on the NAS is an installed **Python 3**
 package (official Python3.9, or a SynoCommunity Python3.10+ — install one from
-Package Center if you don't already have it). Version bumps appear in Package Center
-as an available upgrade. A global admin can hide the source / refuse new installs
+Package Center if you don't already have it). The agent source is **fetched live
+from the agent repo** (like the Windows MSI is proxied from its release) and
+cached, so agent changes reach NASes without redeploying the server; it falls back
+to the copy bundled in the image if GitHub is unreachable. Set
+`RMM_SYNOLOGY_AGENT_REF` to pin a release tag (e.g. `v2.2.22`) or to `bundled` to
+use only the in-image copy. Version bumps appear in Package Center as an upgrade. A global admin can hide the source / refuse new installs
 from **Settings → Agents → Synology NAS** (`RMM_SYNOLOGY_SOURCE`).
 
 ### Agent in Docker (Linux hosts)
