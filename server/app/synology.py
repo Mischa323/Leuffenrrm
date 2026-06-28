@@ -90,28 +90,49 @@ def _add(tf: tarfile.TarFile, name: str, data: bytes, mode: int, mtime: int) -> 
     tf.addfile(ti, io.BytesIO(data))
 
 
+def _adddir(tf: tarfile.TarFile, name: str, mtime: int) -> None:
+    ti = tarfile.TarInfo(name.rstrip("/") + "/")
+    ti.type = tarfile.DIRTYPE
+    ti.mode = 0o755
+    ti.mtime = mtime
+    ti.uid = ti.gid = 0
+    ti.uname = ti.gname = "root"
+    tf.addfile(ti)
+
+
 def build_spk(*, agent_dir: str, pkg_dir: str, version: str,
               server_url: str, api_key: str, insecure: bool) -> bytes:
     """Assemble a noarch Synology .spk in memory with config baked in.
 
     SPK = an uncompressed tar of INFO + package.tgz (gzip tar of the agent) +
-    scripts + conf + icons. Scripts are normalised to LF + mode 0755 so a Windows
-    checkout's CRLF never breaks the DSM shebang."""
+    scripts + conf + icons. ``INFO`` carries the md5 ``checksum`` of package.tgz
+    and ``extractsize`` — synopkg validates these at install time (a missing
+    checksum is rejected as "Invalid file format"). Scripts are normalised to LF
+    + mode 0755 so a Windows checkout's CRLF never breaks the DSM shebang."""
+    import hashlib
     now = int(time.time())
 
     # Inner payload (extracted to the package target dir on the NAS).
+    extract_bytes = 0
     payload = io.BytesIO()
     with tarfile.open(fileobj=payload, mode="w:gz", format=tarfile.USTAR_FORMAT) as tf:
         for fn in AGENT_FILES:
             with open(os.path.join(agent_dir, fn), "rb") as f:
-                _add(tf, fn, f.read(), 0o644, now)
+                data = f.read()
+            _add(tf, fn, data, 0o644, now)
+            extract_bytes += len(data)
         cfg = json.dumps({"server_url": server_url, "api_key": api_key,
                           "insecure_tls": bool(insecure)}).encode()
         _add(tf, "rmm_config.json", cfg, 0o600, now)
+        extract_bytes += len(cfg)
     payload_bytes = payload.getvalue()
 
     with open(os.path.join(pkg_dir, "INFO"), encoding="utf-8") as f:
-        info = f.read().replace("__VERSION__", version)
+        info = f.read().replace("__VERSION__", version).rstrip("\n") + "\n"
+    if "checksum=" not in info:
+        info += f'checksum="{hashlib.md5(payload_bytes).hexdigest()}"\n'
+    if "extractsize=" not in info:
+        info += f'extractsize="{(extract_bytes + 1023) // 1024}"\n'
 
     def text(rel):
         with open(os.path.join(pkg_dir, rel), encoding="utf-8") as f:
@@ -121,8 +142,10 @@ def build_spk(*, agent_dir: str, pkg_dir: str, version: str,
     with tarfile.open(fileobj=spk, mode="w", format=tarfile.USTAR_FORMAT) as tf:
         _add(tf, "INFO", info.encode("utf-8"), 0o644, now)
         _add(tf, "package.tgz", payload_bytes, 0o644, now)
+        _adddir(tf, "scripts", now)
         for name in ("start-stop-status", "postinst", "preuninst", "postuninst"):
             _add(tf, f"scripts/{name}", text(f"scripts/{name}"), 0o755, now)
+        _adddir(tf, "conf", now)
         _add(tf, "conf/privilege", text("conf/privilege"), 0o644, now)
         _add(tf, "PACKAGE_ICON.PNG", icon_png(72), 0o644, now)
         _add(tf, "PACKAGE_ICON_256.PNG", icon_png(256), 0o644, now)
