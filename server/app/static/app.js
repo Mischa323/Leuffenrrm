@@ -1479,7 +1479,8 @@ function renderOverview(d) {
         ${p.supported ? `<span class="badge ok">active</span>` : `<span class="badge na" title="Not supported on this device's OS">not supported</span>`}</div>`).join("") + `</div>`;
   }
   const hvHtml = hypervSection(d.hyperv);
-  $("dtab-overview").innerHTML = cards + hvHtml + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
+  const bkHtml = backupsSection(d.backups);
+  $("dtab-overview").innerHTML = cards + hvHtml + bkHtml + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
   const dc = $("disk-card");
   if (dc && multi) dc.onclick = () => $("disk-detail").classList.toggle("hidden");
   const hvBtn = $("hv-fold");
@@ -1487,6 +1488,12 @@ function renderOverview(d) {
     const open = $("hv-wrap").classList.toggle("hidden") === false;
     hvBtn.classList.toggle("open", open);
     hvBtn.querySelector(".lbl").textContent = open ? "Hide virtual machines" : "Show virtual machines";
+  };
+  const bkBtn = $("bk-fold");
+  if (bkBtn) bkBtn.onclick = () => {
+    const open = $("bk-wrap").classList.toggle("hidden") === false;
+    bkBtn.classList.toggle("open", open);
+    bkBtn.querySelector(".lbl").textContent = open ? "Hide backup tasks" : "Show backup tasks";
   };
   $("hist-range").querySelectorAll("button").forEach((b) => b.onclick = () => {
     $("hist-range").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
@@ -1606,6 +1613,52 @@ function hypervSection(hv) {
   return `<div class="sec-label">Hyper-V ${summary}</div>
     <button class="hist-more" id="hv-fold" type="button"><span class="chev">${ICON.chevD}</span> <span class="lbl">Show virtual machines</span></button>
     <div id="hv-wrap" class="hidden"><div class="pol-list" style="margin:8px 0 18px">${rows}</div></div>`;
+}
+// --- Active Backup (Synology NAS) -------------------------------------------
+function backupStatusBadge(t) {
+  if (t.running) return `<span class="badge">running</span>`;
+  if (!t.versions) return `<span class="badge bad">never run</span>`;
+  const age = Date.now() / 1000 - (t.last_backup || 0);
+  const tone = age < 2 * 86400 ? "ok" : (age < 8 * 86400 ? "warn" : "bad");
+  return `<span class="badge ${tone}" title="Last successful backup">${t.last_backup ? relTime(t.last_backup) : "—"}</span>`;
+}
+function backupTaskRow(t) {
+  const meta = [t.type,
+    t.devices != null ? `${t.devices} device${t.devices === 1 ? "" : "s"}` : "",
+    t.versions != null ? `${t.versions} version${t.versions === 1 ? "" : "s"}` : "",
+    (!t.scheduled && t.versions) ? "manual" : ""].filter(Boolean).join(" · ");
+  return `<div class="pol-row" style="align-items:center">
+    <span class="pol-ic">${ICON.shield}</span>
+    <span class="pol-name" style="flex:1;min-width:0"><b>${escapeHtml(t.name || "—")}</b><span class="muted" style="font-weight:400"> · ${escapeHtml(meta)}</span></span>
+    ${backupStatusBadge(t)}</div>`;
+}
+// Microsoft 365 / Google: status enum is provisional — 3 has been "healthy" in
+// the field; show OK for that, otherwise the raw code (refined in alerting).
+function saasTaskRow(t) {
+  const ok = t.status === 3;
+  const badge = `<span class="badge ${ok ? "ok" : "na"}">${ok ? "OK" : "status " + (t.status == null ? "?" : t.status)}</span>`;
+  return `<div class="pol-row" style="align-items:center">
+    <span class="pol-ic">${ICON.cloud || ICON.globe}</span>
+    <span class="pol-name" style="flex:1;min-width:0"><b>${escapeHtml(t.name || "—")}</b></span>${badge}</div>`;
+}
+function backupsSection(bk) {
+  if (!bk) return "";
+  const groups = [
+    ["business", "Computers & servers", backupTaskRow],
+    ["microsoft365", "Microsoft 365", saasTaskRow],
+    ["google", "Google Workspace", saasTaskRow],
+  ];
+  let total = 0, body = "";
+  groups.forEach(([key, label, rowfn]) => {
+    const tasks = (bk[key] && bk[key].tasks) || [];
+    if (!tasks.length) return;
+    total += tasks.length;
+    body += `<div class="sec-label" style="margin:10px 0 4px;font-size:11px">${label} <span class="muted">(${tasks.length})</span></div>` + tasks.map(rowfn).join("");
+  });
+  if (!total) return "";
+  return `<div class="sec-label">Backups <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· ${total} task${total === 1 ? "" : "s"}</span></div>
+    <button class="hist-more" id="bk-fold" type="button"><span class="chev">${ICON.chevD}</span> <span class="lbl">Show backup tasks</span></button>
+    <div id="bk-wrap" class="hidden"><div class="pol-list" style="margin:8px 0 18px">${body}</div></div>`;
 }
 function diskRows(disks) {
   if (!disks.length) return `<div class="muted" style="font-size:12.5px">No drive details reported yet.</div>`;

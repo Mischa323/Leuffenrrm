@@ -464,15 +464,17 @@ def _device_for_user(device_id: str, user: dict) -> dict:
 
 def _decorate(dev: dict, full: bool = False) -> dict:
     dev["online"] = manager.is_online(dev["id"])
-    # The detail view (full=True) keeps the per-VM list the DB layer already
-    # parsed into dev["hyperv"]; list views get only a compact summary so the
-    # full per-VM blob isn't shipped for every device.
+    # The detail view (full=True) keeps the per-VM / per-task lists the DB layer
+    # already parsed into dev["hyperv"] / dev["backups"]; list views get only a
+    # compact summary so the full blobs aren't shipped for every device.
     hv = dev.pop("hyperv_json", None)
+    bk = dev.pop("backups_json", None)
     if full:
         return dev
     dev.pop("hyperv", None)
+    dev.pop("backups", None)
+    import json as _json
     if hv:
-        import json as _json
         try:
             data = _json.loads(hv)
             if data and data.get("present"):
@@ -480,7 +482,23 @@ def _decorate(dev: dict, full: bool = False) -> dict:
                                  "running": data.get("running", 0)}
         except (ValueError, TypeError):
             pass
+    if bk:
+        try:
+            summary = _backups_summary(_json.loads(bk))
+            if summary:
+                dev["backups"] = summary
+        except (ValueError, TypeError):
+            pass
     return dev
+
+
+def _backups_summary(data: dict | None) -> dict | None:
+    """Compact Active Backup summary for device lists: total task count."""
+    if not data:
+        return None
+    n = sum(len((data.get(k) or {}).get("tasks") or [])
+            for k in ("business", "microsoft365", "google"))
+    return {"present": True, "tasks": n} if n else None
 
 
 # --------------------------------------------------------------------------- #
@@ -2201,6 +2219,8 @@ async def _handle_agent_msg(device_id: str, org_id: str, data: dict) -> None:
             db.set_device_disks(device_id, m.get("disks"))
         if m.get("hyperv"):
             db.set_device_hyperv(device_id, m.get("hyperv"))
+        if m.get("backups"):
+            db.set_device_backups(device_id, m.get("backups"))
     elif mtype == "ack":
         manager.resolve(data.get("rid", ""), data.get("payload", data))
     elif mtype == "shell_output":
