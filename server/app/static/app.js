@@ -898,7 +898,7 @@ async function renderDownloads() {
       <div id="dl-link-result" style="margin-top:10px"></div>
       <div id="dl-link-list" style="margin-top:10px"></div></div>
     <div class="dl-block"><div class="lab">${ICON.nas} Synology NAS — Package Center source</div>
-      <div class="h-sub" style="margin:4px 0 10px">Monitor a Synology NAS like any other device. In DSM open <b>Package Center → Settings → Package Sources → Add</b>, paste the URL below, then install <b>Leuffen RMM</b> from the new source. It auto-connects to this organisation — no key to type, and it auto-installs Synology's Python3 if needed.${syno.enabled ? "" : ` <b style="color:var(--bad)">The source is currently disabled in Settings → Agents.</b>`}</div>
+      <div class="h-sub" style="margin:4px 0 10px">Monitor a Synology NAS like any other device. In DSM open <b>Package Center → Settings → Package Sources → Add</b>, paste the URL below, then install <b>Leuffen RMM</b> from the new source. It auto-connects to this organisation — no key to type. The NAS just needs a <b>Python 3</b> package installed (most do; otherwise install one from Package Center first).${syno.enabled ? "" : ` <b style="color:var(--bad)">The source is currently disabled in Settings → Agents.</b>`}</div>
       <div class="code"><button class="btn ghost sm" id="syno-copy" data-c="${escapeAttr(syno.url)}">${ICON.copy} Copy</button>${escapeHtml(syno.url)}</div></div>
     <div class="dl-block"><div class="lab">${ICON.key} Active enrolment keys</div>
       <div id="token-list"></div></div>`;
