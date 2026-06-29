@@ -1480,8 +1480,7 @@ function renderOverview(d) {
   }
   const hvHtml = hypervSection(d.hyperv);
   const bkHtml = backupsSection(d.backups);
-  const fmHtml = fullMgmtPanel(d);
-  $("dtab-overview").innerHTML = cards + hvHtml + bkHtml + fmHtml + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
+  $("dtab-overview").innerHTML = cards + hvHtml + bkHtml + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
   const dc = $("disk-card");
   if (dc && multi) dc.onclick = () => $("disk-detail").classList.toggle("hidden");
   const hvBtn = $("hv-fold");
@@ -1496,13 +1495,6 @@ function renderOverview(d) {
     bkBtn.classList.toggle("open", open);
     bkBtn.querySelector(".lbl").textContent = open ? "Hide backup tasks" : "Show backup tasks";
   };
-  const fmBtn = $("fm-fold");
-  if (fmBtn) fmBtn.onclick = () => {
-    const open = $("fm-wrap").classList.toggle("hidden") === false;
-    fmBtn.classList.toggle("open", open);
-    fmBtn.querySelector(".lbl").textContent = open ? "Hide setup steps" : "Enable Active Backup & reboot";
-  };
-  { const fc = $("fm-copy"); if (fc) fc.onclick = () => { navigator.clipboard?.writeText(fc.dataset.c); toast("Copied"); }; }
   $("hist-range").querySelectorAll("button").forEach((b) => b.onclick = () => {
     $("hist-range").querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
     loadHistory(d.id, b.dataset.r);
@@ -1667,31 +1659,6 @@ function backupsSection(bk) {
   return `<div class="sec-label">Backups <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· ${total} task${total === 1 ? "" : "s"}</span></div>
     <button class="hist-more" id="bk-fold" type="button"><span class="chev">${ICON.chevD}</span> <span class="lbl">Show backup tasks</span></button>
     <div id="bk-wrap" class="hidden"><div class="pol-list" style="margin:8px 0 18px">${body}</div></div>`;
-}
-// --- Synology: one-time root grant ("full management") ----------------------
-// DSM 7 reserves root for Synology-signed packages, so the agent runs
-// unprivileged until the admin grants its package user NOPASSWD sudo once.
-// There's no way to automate this (platform limit) — surface the exact command.
-function isSynology(d) { return /synology|dsm/i.test((d.os || "") + " " + (d.os_kind || "")); }
-function fullMgmtPanel(d) {
-  if (!isSynology(d)) return "";
-  const cmd = `U=$(ps -eo user,args | awk '/[s]yno_agent.py/{print $1; exit}'); echo "$U ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/leuffen-rmm && chmod 440 /etc/sudoers.d/leuffen-rmm && synopkg restart LeuffenRMM`;
-  return `<div class="sec-label">Full management</div>
-    <button class="hist-more" id="fm-fold" type="button"><span class="chev">${ICON.chevD}</span> <span class="lbl">Enable Active Backup &amp; reboot</span></button>
-    <div id="fm-wrap" class="hidden"><div class="tile" style="margin:8px 0 18px;font-size:12.5px;line-height:1.65">
-      <p style="margin:0 0 8px">DSM 7 reserves root for Synology-signed packages, so the agent runs unprivileged (core metrics only) until you grant it once. This one-time step enables <b>Active Backup monitoring</b>, <b>remote reboot / shutdown</b> and <b>root shell</b>.</p>
-      <ol style="margin:0 0 10px 18px;padding:0">
-        <li>On the NAS: <b>Control Panel → Task Scheduler → Create → Scheduled Task → User-defined script</b>.</li>
-        <li>Set <b>User: root</b>; give it any name.</li>
-        <li>Under <b>Task Settings → Run command</b>, paste the line below.</li>
-        <li><b>Save</b>, select the task, then click <b>Run</b>. You can delete it afterwards.</li>
-      </ol>
-      <div style="display:flex;gap:8px;align-items:flex-start">
-        <code class="mono" style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-all;background:var(--surface-3);padding:8px 10px;border-radius:6px">${escapeHtml(cmd)}</code>
-        <button class="btn ghost sm" id="fm-copy" data-c="${escapeAttr(cmd)}">${ICON.copy} Copy</button>
-      </div>
-      <div class="muted" style="margin-top:8px">The NAS reconnects with full management within a minute. To revoke: delete <code class="mono">/etc/sudoers.d/leuffen-rmm</code> and restart the package.</div>
-    </div></div>`;
 }
 function diskRows(disks) {
   if (!disks.length) return `<div class="muted" style="font-size:12.5px">No drive details reported yet.</div>`;
