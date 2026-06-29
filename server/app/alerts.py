@@ -115,21 +115,37 @@ def _evaluate_backups(dev: dict, recipients: list[str], now: float) -> None:
     host = _esc(dev.get("hostname") or dev.get("id") or "device")
     stale_secs = BACKUP_STALE_HOURS * 3600
 
-    # Active Backup for Business (computers & servers): stale when a scheduled
-    # task that has run before has no successful backup within the window.
+    # Active Backup for Business (computers & servers). Two independent checks:
+    #  (a) FAILED — the most recent run finished with a non-success status
+    #      (last_status 3 = completed). Applies to any task (manual or scheduled);
+    #      a recent failure is the most important signal.
+    #  (b) STALE — a *scheduled* task has had no activity within the window (its
+    #      schedule implies it should be running regularly). Manual tasks have no
+    #      schedule, so "stale" is undefined for them and would just be noise.
     for t in (bk.get("business") or {}).get("tasks") or []:
-        if not isinstance(t, dict) or not t.get("versions") or not t.get("scheduled"):
-            continue  # never run, or manual/unscheduled — don't nag
+        if not isinstance(t, dict) or not t.get("versions"):
+            continue  # never run — nothing to assess
         name = t.get("name") or "task"
         last = t.get("last_backup") or 0
-        raised = (now - last) > stale_secs
-        _apply(dev, f"backup_stale:{name}", raised, recipients,
+        running = bool(t.get("running"))
+        status = t.get("last_status")
+        failed = (not running) and status is not None and status != 3
+        _apply(dev, f"backup_failed:{name}", failed, recipients,
+               f"{dev.get('hostname')}: backup FAILED — {name}",
+               f"Active Backup task <b>{_esc(name)}</b> on <b>{host}</b>: the last run did not "
+               f"complete successfully (status {status}, {_fmt_ago(last)}).",
+               True, "warning",
+               {"id": None, "name": f"Backup failed: {name}", "metric": "backup_failed",
+                "detail": f"status {status} ({_fmt_ago(last)})"})
+        # Stale only when scheduled and not already flagged as failed/running.
+        stale = bool(t.get("scheduled")) and not running and not failed and (now - last) > stale_secs
+        _apply(dev, f"backup_stale:{name}", stale, recipients,
                f"{dev.get('hostname')}: backup stale — {name}",
-               f"Active Backup task <b>{_esc(name)}</b> on <b>{host}</b> has no successful "
-               f"backup in over {BACKUP_STALE_HOURS:.0f}h (last success {_fmt_ago(last)}).",
+               f"Active Backup task <b>{_esc(name)}</b> on <b>{host}</b> has had no backup "
+               f"activity in over {BACKUP_STALE_HOURS:.0f}h (last {_fmt_ago(last)}).",
                True, "warning",
                {"id": None, "name": f"Backup stale: {name}", "metric": "backup_stale",
-                "detail": f"Last success {_fmt_ago(last)}"})
+                "detail": f"Last activity {_fmt_ago(last)}"})
 
     # M365 / Google Workspace: status-based, opt-in (enum still provisional).
     if not BACKUP_SAAS_ALERTS:
