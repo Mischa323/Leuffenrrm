@@ -125,15 +125,19 @@ def build_spk(*, agent_dir: str, pkg_dir: str, version: str,
                           "insecure_tls": bool(insecure)}).encode()
         _add(tf, "rmm_config.json", cfg, 0o600, now)
         extract_bytes += len(cfg)
-        # DSM app UI (dsmuidir="ui"): config + a redirect page to the agent's
-        # status/log port, plus app icons so it appears in the DSM launcher.
-        for rel in ("ui/config", "ui/index.html"):
-            p = os.path.join(pkg_dir, rel)
-            if os.path.isfile(p):
-                with open(p, "rb") as f:
-                    data = f.read()
-                _add(tf, rel, data, 0o644, now)
-                extract_bytes += len(data)
+        # DSM app UI (dsmuidir="ui"): bundle the whole ui/ tree (config, the SDS
+        # app JS, index.html) so the package shows as a DSM desktop app, plus
+        # generated app icons.
+        ui_root = os.path.join(pkg_dir, "ui")
+        if os.path.isdir(ui_root):
+            for root, _dirs, files in os.walk(ui_root):
+                for fn in sorted(files):
+                    full = os.path.join(root, fn)
+                    rel = "ui/" + os.path.relpath(full, ui_root).replace("\\", "/")
+                    with open(full, "rb") as f:
+                        data = f.read()
+                    _add(tf, rel, data, 0o644, now)
+                    extract_bytes += len(data)
         for size in (16, 24, 32, 48, 64, 72, 256):
             png = icon_png(size)
             _add(tf, f"ui/images/icon_{size}.png", png, 0o644, now)
