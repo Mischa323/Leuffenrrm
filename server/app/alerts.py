@@ -12,9 +12,11 @@ Email goes out via :mod:`graph`.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
+from html import escape as _esc
 
 from . import database as db, mailer
 from .manager import manager
@@ -26,6 +28,22 @@ def _default_recipients() -> list[str]:
 log = logging.getLogger("rmm.alerts")
 
 EMAIL_COOLDOWN = 3600  # seconds between repeat emails for a still-raised rule
+
+# Synology Active Backup health (not rule-driven — evaluated whenever a device
+# reports backup data). "Stale" = a scheduled task that has run before but has no
+# successful backup within the window; recency is a reliable signal. The SaaS
+# (M365 / Google) status enum is still provisional in the field, so status-based
+# SaaS alerting is opt-in to avoid false-positive emails until it's confirmed.
+BACKUP_STALE_HOURS = float(os.environ.get("RMM_BACKUP_STALE_HOURS", "48"))
+BACKUP_SAAS_ALERTS = os.environ.get("RMM_BACKUP_SAAS_ALERTS", "0").lower() not in ("", "0", "false", "no", "off")
+BACKUP_SAAS_OK_STATUS = 3  # observed "healthy" code; anything else is flagged when SaaS alerts are on
+
+
+def _fmt_ago(ts: float | None) -> str:
+    if not ts:
+        return "never"
+    h = max(0.0, (time.time() - ts) / 3600)
+    return f"{h:.0f}h ago" if h < 48 else f"{h / 24:.0f}d ago"
 
 
 def _avg_recent(metrics: list[dict], field: str, minutes: float) -> float | None:
@@ -39,9 +57,15 @@ def evaluate_once() -> None:
     online = manager.online_ids()
     for dev in db.all_devices():
         rules = db.list_effective_monitor_rules(dev)
-        if not rules:
+        has_backups = bool(dev.get("backups_json"))
+        if not rules and not has_backups:
             continue
         recipients = db.alert_config(dev["org_id"]).get("recipients") or _default_recipients()
+        # Backup health is not rule-driven — evaluate it for any device reporting it.
+        if has_backups:
+            _evaluate_backups(dev, recipients, now)
+        if not rules:
+            continue
         metrics = db.get_metrics(dev["id"], limit=200)
         latest = metrics[-1] if metrics else None
         for rule in rules:
@@ -74,6 +98,56 @@ def evaluate_once() -> None:
                    f"{rule['metric']} averaged {avg:.0f}{unit} over {dur:.0f} min "
                    f"(threshold {rule['threshold']:.0f}{unit})." if avg is not None else "",
                    notify, severity, meta)
+
+
+def _evaluate_backups(dev: dict, recipients: list[str], now: float) -> None:
+    """Raise/clear alerts from a device's Synology Active Backup snapshot.
+
+    Reuses the same state machine as monitor rules (cooldown, raise/clear emails,
+    incident on clear) via :func:`_apply`, with synthetic rule keys per task and a
+    ``None`` rule id."""
+    try:
+        bk = json.loads(dev.get("backups_json") or "")
+    except (ValueError, TypeError):
+        return
+    if not isinstance(bk, dict):
+        return
+    host = _esc(dev.get("hostname") or dev.get("id") or "device")
+    stale_secs = BACKUP_STALE_HOURS * 3600
+
+    # Active Backup for Business (computers & servers): stale when a scheduled
+    # task that has run before has no successful backup within the window.
+    for t in (bk.get("business") or {}).get("tasks") or []:
+        if not isinstance(t, dict) or not t.get("versions") or not t.get("scheduled"):
+            continue  # never run, or manual/unscheduled — don't nag
+        name = t.get("name") or "task"
+        last = t.get("last_backup") or 0
+        raised = (now - last) > stale_secs
+        _apply(dev, f"backup_stale:{name}", raised, recipients,
+               f"{dev.get('hostname')}: backup stale — {name}",
+               f"Active Backup task <b>{_esc(name)}</b> on <b>{host}</b> has no successful "
+               f"backup in over {BACKUP_STALE_HOURS:.0f}h (last success {_fmt_ago(last)}).",
+               True, "warning",
+               {"id": None, "name": f"Backup stale: {name}", "metric": "backup_stale",
+                "detail": f"Last success {_fmt_ago(last)}"})
+
+    # M365 / Google Workspace: status-based, opt-in (enum still provisional).
+    if not BACKUP_SAAS_ALERTS:
+        return
+    for grp, label in (("microsoft365", "Microsoft 365"), ("google", "Google Workspace")):
+        for t in (bk.get(grp) or {}).get("tasks") or []:
+            if not isinstance(t, dict):
+                continue
+            name = t.get("name") or "task"
+            status = t.get("status")
+            raised = status is not None and status != BACKUP_SAAS_OK_STATUS
+            _apply(dev, f"backup_saas:{grp}:{name}", raised, recipients,
+                   f"{dev.get('hostname')}: {label} backup issue — {name}",
+                   f"{label} Active Backup task <b>{_esc(name)}</b> on <b>{host}</b> reports "
+                   f"status {status} (expected healthy).",
+                   True, "warning",
+                   {"id": None, "name": f"{label} backup: {name}", "metric": "backup_failed",
+                    "detail": f"status {status}"})
 
 
 def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
