@@ -1618,9 +1618,14 @@ function hypervSection(hv) {
 function backupStatusBadge(t) {
   if (t.running) return `<span class="badge">running</span>`;
   if (!t.versions) return `<span class="badge bad">never run</span>`;
+  // last_status = result of the most recent run (3 = completed/success). A recent
+  // *failure* must not look healthy just because it ran recently.
+  if (t.last_status != null && t.last_status !== 3)
+    return `<span class="badge bad" title="Last run status ${t.last_status} · ${t.last_backup ? relTime(t.last_backup) : "—"}">failed</span>`;
   const age = Date.now() / 1000 - (t.last_backup || 0);
   const tone = age < 2 * 86400 ? "ok" : (age < 8 * 86400 ? "warn" : "bad");
-  return `<span class="badge ${tone}" title="Last successful backup">${t.last_backup ? relTime(t.last_backup) : "—"}</span>`;
+  const stat = t.last_status == null ? "?" : t.last_status;
+  return `<span class="badge ${tone}" title="Last successful backup (status ${stat})">${t.last_backup ? relTime(t.last_backup) : "—"}</span>`;
 }
 function backupTaskRow(t) {
   const meta = [t.type,
