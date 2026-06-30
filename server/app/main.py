@@ -794,6 +794,8 @@ def _alert_detail(a: dict) -> str:
         return f"No heartbeat for {int(a.get('threshold') or 0)}s"
     if metric == "wol":
         return "Wake-on-LAN policy"
+    if (metric or "").startswith("service:"):
+        return f"Service '{metric.split(':', 1)[1]}' not running"
     return (f"{(metric or '').replace('_percent', '')} ≥ {float(a.get('threshold') or 0):.0f}% "
             f"for {float(a.get('duration_minutes') or 0):.0f} min")
 
@@ -1674,6 +1676,11 @@ MONITOR_TEMPLATES = [
      "description": "Alert when a device hasn't sent a heartbeat for a while.",
      "metric": "offline", "unit": "s", "default_threshold": 120, "default_duration_minutes": None,
      "default_severity": "critical", "os_support": None},
+    {"id": "service", "name": "Service not running", "category": "Availability", "kind": "monitor",
+     "description": "Alert when a specific service stops running. Pick the service directly from a "
+                    "device's Services list (Windows Services / Linux & Synology systemd).",
+     "metric": "service", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
+     "default_severity": "warning", "os_support": None},
     {"id": "wol", "name": "Wake-on-LAN", "category": "Power", "kind": "policy",
      "description": "Configure agents' NICs for Wake-on-LAN and disable Fast Startup so they can be "
                     "woken. Windows only.",
@@ -1722,11 +1729,16 @@ def _effective_policies(dev: dict) -> list[dict]:
     for r in db.list_effective_monitor_rules(dev):
         tmpl = _template(r["template_id"]) or {}
         unit = tmpl.get("unit") or ("s" if r["metric"] == "offline" else "%")
+        if r["template_id"] == "wol":
+            value = "Windows only"
+        elif (r["metric"] or "").startswith("service:"):
+            value = f"{r['metric'].split(':', 1)[1]} must be running"
+        else:
+            value = f"{r['metric']} ≥ {r['threshold']:.0f}{unit}"
         out.append({"name": r["name"], "template_id": r["template_id"],
                     "kind": tmpl.get("kind", "monitor"), "severity": r.get("severity"),
                     "supported": _os_supported(r["template_id"], dev.get("os_kind")),
-                    "value": ("Windows only" if r["template_id"] == "wol"
-                              else f"{r['metric']} ≥ {r['threshold']:.0f}{unit}")})
+                    "value": value})
     return out
 
 
@@ -1760,8 +1772,19 @@ def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:
     threshold = req.threshold if req.threshold is not None else tmpl["default_threshold"]
     duration = (req.duration_minutes if req.duration_minutes is not None
                 else tmpl["default_duration_minutes"])
+    metric = tmpl["metric"]
     name = (req.name or tmpl["name"]).strip() or tmpl["name"]
-    return db.create_monitor_rule(org_id, tmpl["id"], name, tmpl["metric"], threshold, duration,
+    # The 'service' template watches one named service per device — the name is
+    # carried in the metric as "service:<name>", and such rules must be device-scoped.
+    if tmpl["id"] == "service":
+        svc = (req.service or "").strip()
+        if not svc:
+            raise HTTPException(status_code=400, detail="A service name is required")
+        if req.target_type != "device" or not req.target_id:
+            raise HTTPException(status_code=400, detail="Service monitors must target a device")
+        metric = f"service:{svc}"
+        name = (req.name or f"Service: {svc}").strip() or f"Service: {svc}"
+    return db.create_monitor_rule(org_id, tmpl["id"], name, metric, threshold, duration,
                                   req.target_type, req.target_id, req.notify_email, severity)
 
 
@@ -2221,6 +2244,8 @@ async def _handle_agent_msg(device_id: str, org_id: str, data: dict) -> None:
             db.set_device_hyperv(device_id, m.get("hyperv"))
         if m.get("backups"):
             db.set_device_backups(device_id, m.get("backups"))
+        if m.get("services"):
+            db.set_device_services(device_id, m.get("services"))
     elif mtype == "ack":
         manager.resolve(data.get("rid", ""), data.get("payload", data))
     elif mtype == "shell_output":
