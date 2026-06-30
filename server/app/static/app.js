@@ -1637,14 +1637,22 @@ function backupTaskRow(t) {
     <span class="pol-name" style="flex:1;min-width:0"><b>${escapeHtml(t.name || "—")}</b><span class="muted" style="font-weight:400"> · ${escapeHtml(meta)}</span></span>
     ${backupStatusBadge(t)}</div>`;
 }
-// Microsoft 365 / Google: status enum is provisional — 3 has been "healthy" in
-// the field; show OK for that, otherwise the raw code (refined in alerting).
+// Microsoft 365 / Google: the APIs don't expose per-run pass/fail (only the
+// restore portal), so show coverage — how many accounts/sites/groups are
+// protected — and leave failure alerting to Synology's own notifications.
 function saasTaskRow(t) {
-  const ok = t.status === 3;
-  const badge = `<span class="badge ${ok ? "ok" : "na"}">${ok ? "OK" : "status " + (t.status == null ? "?" : t.status)}</span>`;
+  const parts = [];
+  if (t.protected != null) parts.push(`${t.protected} account${t.protected === 1 ? "" : "s"}`);
+  if (t.sites) parts.push(`${t.sites} site${t.sites === 1 ? "" : "s"}`);
+  if (t.groups) parts.push(`${t.groups} group${t.groups === 1 ? "" : "s"}`);
+  const meta = parts.join(" · ");
+  const excl = t.excluded ? `<span class="muted" style="font-weight:400"> · ${t.excluded} excluded</span>` : "";
+  const right = meta
+    ? `<span class="badge ok" title="Accounts/sites/groups protected. Per-run success/failure is reported by Synology's own Active Backup notifications.">protected</span>`
+    : `<span class="badge na">configured</span>`;
   return `<div class="pol-row" style="align-items:center">
     <span class="pol-ic">${ICON.cloud || ICON.globe}</span>
-    <span class="pol-name" style="flex:1;min-width:0"><b>${escapeHtml(t.name || "—")}</b></span>${badge}</div>`;
+    <span class="pol-name" style="flex:1;min-width:0"><b>${escapeHtml(t.name || "—")}</b>${meta ? `<span class="muted" style="font-weight:400"> · ${escapeHtml(meta)}</span>` : ""}${excl}</span>${right}</div>`;
 }
 function backupsSection(bk) {
   if (!bk) return "";
