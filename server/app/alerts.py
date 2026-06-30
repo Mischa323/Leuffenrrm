@@ -52,6 +52,22 @@ def _avg_recent(metrics: list[dict], field: str, minutes: float) -> float | None
     return sum(vals) / len(vals) if vals else None
 
 
+def _service_state(dev: dict, name: str) -> str | None:
+    """Reported status of a named service on a device (lowercased), or None when
+    it's not in the device's last service report."""
+    try:
+        svcs = json.loads(dev.get("services_json") or "")
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(svcs, list):
+        return None
+    lname = name.lower()
+    for s in svcs:
+        if isinstance(s, dict) and (s.get("name") or "").lower() == lname:
+            return (s.get("status") or "").lower() or None
+    return None
+
+
 def evaluate_once() -> None:
     now = time.time()
     online = manager.online_ids()
@@ -83,6 +99,23 @@ def evaluate_once() -> None:
                        f"{dev['hostname']}: {rule['name']}",
                        f"No heartbeat from <b>{dev['hostname']}</b> for over "
                        f"{int(rule['threshold'])}s.", notify, severity, meta)
+                continue
+            if rule["metric"].startswith("service:"):
+                # Alert when the named service isn't running on this device. Only
+                # evaluate while the device is online (a stale list from an offline
+                # device shouldn't flap; the offline monitor covers that case).
+                if dev["id"] not in online:
+                    continue
+                svc_name = rule["metric"].split(":", 1)[1]
+                state = _service_state(dev, svc_name)
+                raised = state is not None and state != "running"
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": f"Service '{svc_name}' is {state or 'unknown'}"}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       f"Service <b>{_esc(svc_name)}</b> on <b>{_esc(dev['hostname'])}</b> "
+                       f"is <b>{_esc(state or 'not reported')}</b> (expected running).",
+                       notify, severity, meta)
                 continue
             if not latest:
                 continue

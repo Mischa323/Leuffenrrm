@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS devices (
     disks_json    TEXT,
     hyperv_json   TEXT,
     backups_json  TEXT,
+    services_json TEXT,
     is_node       INTEGER NOT NULL DEFAULT 0,
     inventory_json TEXT,
     compliant     INTEGER,
@@ -1199,6 +1200,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN hyperv_json TEXT")
     if "backups_json" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN backups_json TEXT")
+    if "services_json" not in dcols:
+        conn.execute("ALTER TABLE devices ADD COLUMN services_json TEXT")
     if "gpu" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN gpu TEXT")
     if "software_json" not in dcols:
@@ -1723,6 +1726,16 @@ def set_device_backups(device_id: str, backups: dict | None) -> None:
                      (json.dumps(backups), device_id))
 
 
+def set_device_services(device_id: str, services: list | None) -> None:
+    """Store the latest service list (name/display/status) for the service monitor.
+    Sent only periodically by the agent, so ignore empty refreshes."""
+    if not services:
+        return
+    with write() as conn:
+        conn.execute("UPDATE devices SET services_json=? WHERE id=?",
+                     (json.dumps(services), device_id))
+
+
 def set_node(device_id: str, is_node: bool) -> None:
     with write() as conn:
         conn.execute("UPDATE devices SET is_node=? WHERE id=?",
@@ -1798,6 +1811,11 @@ def get_device(device_id: str) -> dict | None:
             d["backups"] = json.loads(d["backups_json"])
         except (ValueError, TypeError):
             d["backups"] = None
+    if d.get("services_json"):
+        try:
+            d["services"] = json.loads(d["services_json"])
+        except (ValueError, TypeError):
+            d["services"] = None
     # Attach configured subnets so the device drawer can list them for a node.
     if d.get("is_node"):
         d["subnets"] = list_subnets(device_id)

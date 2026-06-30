@@ -98,6 +98,7 @@ class MonitorRuleRequest(BaseModel):
     target_id: str | None = None
     notify_email: bool = True
     severity: str | None = None             # defaults to the template's suggestion
+    service: str | None = None              # for the 'service' template: the service name to watch
 
 
 class InviteRequest(BaseModel):

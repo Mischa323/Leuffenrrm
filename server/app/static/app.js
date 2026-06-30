@@ -1203,7 +1203,9 @@ function ruleValueText(r) {
 }
 function renderMonitorGallery() {
   const gallery = $("mon-gallery");
-  gallery.innerHTML = (state.templates || []).map((t) => {
+  // "service" is created from a device's Services list (it needs a service name),
+  // so it's not offered as a generic gallery template.
+  gallery.innerHTML = (state.templates || []).filter((t) => t.id !== "service").map((t) => {
     const detail = t.kind === "policy"
       ? (t.os_support ? "Applies to: " + t.os_support.map((o) => o === "windows_server" ? "Windows Server" : "Windows").join(", ") : "All devices")
       : "Default: " + (t.metric === "offline" ? t.default_threshold + "s unseen" : t.default_threshold + (t.unit || "%") + " for " + t.default_duration_minutes + " min");
@@ -1480,7 +1482,9 @@ function renderOverview(d) {
   }
   const hvHtml = hypervSection(d.hyperv);
   const bkHtml = backupsSection(d.backups);
-  $("dtab-overview").innerHTML = cards + hvHtml + bkHtml + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
+  const svcHtml = servicesSection(d);
+  $("dtab-overview").innerHTML = cards + hvHtml + bkHtml + svcHtml + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
+  wireServices(d);
   const dc = $("disk-card");
   if (dc && multi) dc.onclick = () => $("disk-detail").classList.toggle("hidden");
   const hvBtn = $("hv-fold");
@@ -1672,6 +1676,83 @@ function backupsSection(bk) {
   return `<div class="sec-label">Backups <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· ${total} task${total === 1 ? "" : "s"}</span></div>
     <button class="hist-more" id="bk-fold" type="button"><span class="chev">${ICON.chevD}</span> <span class="lbl">Show backup tasks</span></button>
     <div id="bk-wrap" class="hidden"><div class="pol-list" style="margin:8px 0 18px">${body}</div></div>`;
+}
+// --- Services (per-device service monitor) ----------------------------------
+// Lists the device's services with state; each can be monitored directly (creates
+// a device-scoped "service:<name>" rule that alerts when the service stops).
+function servicesSection(d) {
+  const svcs = d.services || [];
+  if (!svcs.length) return "";
+  const running = svcs.filter((s) => (s.status || "") === "running").length;
+  return `<div class="sec-label">Services <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· ${running}/${svcs.length} running</span></div>
+    <button class="hist-more" id="svc-fold" type="button"><span class="chev">${ICON.chevD}</span> <span class="lbl">Show services</span></button>
+    <div id="svc-wrap" class="hidden">
+      <input id="svc-search" class="inp" placeholder="Search services…" style="margin:8px 0;width:100%">
+      <div id="svc-list" class="pol-list" style="margin:0 0 18px"></div>
+    </div>`;
+}
+function svcRow(s, ruleId) {
+  const up = (s.status || "") === "running";
+  const dot = `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${up ? "var(--good)" : "var(--bad)"}"></span>`;
+  const sub = [s.name, s.status].filter(Boolean).join(" · ");
+  const btn = ruleId
+    ? `<button class="btn sm svc-mon" data-rule="${escapeAttr(ruleId)}" data-name="${escapeAttr(s.name || "")}">Monitoring ✓</button>`
+    : `<button class="btn sm subtle svc-mon" data-name="${escapeAttr(s.name || "")}">Monitor</button>`;
+  return `<div class="pol-row" style="align-items:center">
+    <span class="pol-ic">${dot}</span>
+    <span class="pol-name" style="flex:1;min-width:0"><b>${escapeHtml(s.display || s.name || "—")}</b><span class="muted" style="font-weight:400"> · ${escapeHtml(sub)}</span></span>
+    ${btn}</div>`;
+}
+async function wireServices(d) {
+  const fold = $("svc-fold"); if (!fold) return;
+  const svcs = d.services || [];
+  let monitored = {};  // service name (lower) -> rule id
+  async function loadRules() {
+    monitored = {};
+    try {
+      const rules = await api(`/api/orgs/${d.org_id}/monitor-rules`);
+      (rules || []).forEach((r) => {
+        if (r.template_id === "service" && r.target_type === "device" && r.target_id === d.id
+            && (r.metric || "").startsWith("service:"))
+          monitored[r.metric.slice(8).toLowerCase()] = r.id;
+      });
+    } catch (e) { /* leave empty */ }
+  }
+  function draw() {
+    const q = ($("svc-search").value || "").toLowerCase().trim();
+    const shown = svcs.filter((s) => !q
+      || (s.display || "").toLowerCase().includes(q) || (s.name || "").toLowerCase().includes(q));
+    const cap = 200;
+    $("svc-list").innerHTML =
+      (shown.length ? shown.slice(0, cap).map((s) => svcRow(s, monitored[(s.name || "").toLowerCase()])).join("")
+                    : `<div class="muted" style="font-size:12px;padding:6px 0">No matching services.</div>`)
+      + (shown.length > cap ? `<div class="muted" style="font-size:12px;padding:6px 0">Showing ${cap} of ${shown.length} — refine your search.</div>` : "");
+    $("svc-list").querySelectorAll(".svc-mon").forEach((b) => b.onclick = () => toggleMon(b));
+  }
+  async function toggleMon(b) {
+    const name = b.dataset.name;
+    b.disabled = true;
+    try {
+      if (b.dataset.rule) {
+        await api(`/api/monitor-rules/${b.dataset.rule}`, { method: "DELETE" });
+        toast(`Stopped monitoring ${name}`);
+      } else {
+        await api(`/api/orgs/${d.org_id}/monitor-rules`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ template_id: "service", service: name, target_type: "device", target_id: d.id }),
+        });
+        toast(`Monitoring ${name}`);
+      }
+      await loadRules(); draw();
+    } catch (e) { toast(e.message); b.disabled = false; }
+  }
+  fold.onclick = async () => {
+    const open = $("svc-wrap").classList.toggle("hidden") === false;
+    fold.classList.toggle("open", open);
+    fold.querySelector(".lbl").textContent = open ? "Hide services" : "Show services";
+    if (open && !fold.dataset.loaded) { fold.dataset.loaded = "1"; await loadRules(); draw(); }
+  };
+  $("svc-search").oninput = draw;
 }
 function diskRows(disks) {
   if (!disks.length) return `<div class="muted" style="font-size:12.5px">No drive details reported yet.</div>`;
