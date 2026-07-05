@@ -935,12 +935,16 @@ async def files_delete(device_id: str, req: Request, user: dict = Depends(auth.c
 async def files_download(device_id: str, path: str = Query(...),
                          user: dict = Depends(auth.current_user)):
     import base64
+    import re as _re
     res = await _agent_file_op(device_id, user, {"type": "file_get", "path": path}, timeout=120)
     try:
         data = base64.b64decode(res.get("data", ""))
     except Exception:
         raise HTTPException(status_code=502, detail="Bad file data from agent")
-    name = res.get("name") or os.path.basename(path.rstrip("\\/")) or "download"
+    name = res.get("name") or os.path.basename(path.replace("\\", "/").rstrip("/")) or "download"
+    # Strip CR/LF/quote/backslash so the agent-supplied name can't malform (or inject
+    # into) the Content-Disposition header.
+    name = _re.sub(r'[\r\n"\\]+', "_", name)[:255] or "download"
     return Response(data, media_type="application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="{name}"',
                              "Cache-Control": "no-store"})
@@ -954,7 +958,10 @@ async def files_upload(device_id: str, path: str = Query(...), file: UploadFile 
     if len(raw) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large (25 MB max)")
     sep = "\\" if ("\\" in path or (len(path) >= 2 and path[1] == ":")) else "/"
-    dest = path.rstrip("\\/") + sep + file.filename
+    # Basename the uploaded filename (normalise both separator styles first, since
+    # the server may be Linux) so a crafted name can't add path components to dest.
+    fname = os.path.basename((file.filename or "upload").replace("\\", "/")) or "upload"
+    dest = path.rstrip("\\/") + sep + fname
     return await _agent_file_op(device_id, user,
                                 {"type": "file_put", "path": dest,
                                  "data": base64.b64encode(raw).decode()}, timeout=120)

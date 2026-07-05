@@ -14,7 +14,7 @@ import logging
 import os
 
 from fastapi import HTTPException, Request
-from itsdangerous import BadSignature, URLSafeSerializer
+from itsdangerous import BadData, URLSafeSerializer
 
 from . import database as db
 
@@ -163,7 +163,7 @@ def make_cookie(email: str) -> str:
 def read_cookie(value: str) -> dict | None:
     try:
         return _serializer.loads(value)
-    except BadSignature:
+    except BadData:  # BadSignature + malformed/undecodable payloads
         return None
 
 
