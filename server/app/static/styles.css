@@ -541,14 +541,26 @@ dl.inv dt:last-of-type, dl.inv dd:last-of-type { border-bottom: 0; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast svg { width: 16px; height: 16px; color: var(--good); }
 
+/* Sidebar hamburger (mobile only) */
+.nav-toggle { display: none; }
+.sidebar-scrim { display: none; }
+
 @media (max-width: 900px) {
   .org-layout { grid-template-columns: 1fr; gap: 16px; }
-  .sidebar { position: static; }
-  /* Sidebar becomes a horizontal, touch-scrollable tab bar above the content. */
-  .nav { flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 4px; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
-  .nav button { flex: 0 0 auto; white-space: nowrap; }
-  .side-label, .groups { display: none; }
+  body.org-mode .nav-toggle { display: grid; }
   .searchbox { display: none; }
+  /* The sidebar slides in from the left as an off-canvas hamburger menu
+     (nav + groups), over a tap-to-dismiss scrim. */
+  .sidebar {
+    position: fixed; top: 0; left: 0; z-index: 62;
+    width: 264px; max-width: 82vw; height: 100vh; height: 100dvh;
+    background: var(--surface); border-right: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-lg); padding: 16px 14px; overflow-y: auto;
+    transform: translateX(-100%); transition: transform .26s cubic-bezier(.22,.61,.36,1);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-scrim.open { display: block; position: fixed; inset: 0; z-index: 61;
+    background: rgba(3,5,9,.5); backdrop-filter: blur(2px); }
 }
 
 /* Phone layout */
