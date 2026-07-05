@@ -81,8 +81,10 @@ async function init() {
   $("cust-save").onclick = saveCustomise;
   $("cust-reset").onclick = () => { custDraft = state.dash.catalog.map((w) => ({ id: w.id, enabled: ["totals", "orgs", "attention", "approvals"].includes(w.id) })); renderCustList(); };
   $("org-switch").onclick = cycleOrg;
-  document.querySelectorAll(".nav button").forEach((b) => b.onclick = () => selectTab(b.dataset.tab));
+  document.querySelectorAll(".nav button").forEach((b) => b.onclick = () => { selectTab(b.dataset.tab); closeSidebar(); });
   document.querySelectorAll(".dtabs button").forEach((b) => b.onclick = () => selectDrawerTab(b.dataset.dtab));
+  $("nav-toggle").onclick = toggleSidebar;
+  $("sidebar-scrim").onclick = closeSidebar;
   $("term-form").onsubmit = onTerm;
   $("approvals-ico").innerHTML = ICON.shieldCheck;
   setupScriptModal();
@@ -149,6 +151,7 @@ async function showGlobal() {
   $("org-view").classList.add("hidden");
   $("org-switch").classList.add("hidden");
   $("crumb-org").classList.add("hidden");
+  document.body.classList.remove("org-mode"); closeSidebar();
   saveView();
   await loadGlobal();
   // Keep the global overview live in the background.
@@ -308,6 +311,7 @@ async function showOrg(orgId, name) {
   state.org = orgId; state.orgName = name || orgId; state.group = null;
   $("global-view").classList.add("hidden");
   $("org-view").classList.remove("hidden");
+  document.body.classList.add("org-mode");   // reveal the mobile hamburger
   $("crumb-org").classList.remove("hidden");
   $("crumb-org-name").textContent = state.orgName;
   const sw = $("org-switch"); sw.classList.remove("hidden");
@@ -350,6 +354,13 @@ function buildNav() {
   if ($("nav-snmp-count")) $("nav-snmp-count").textContent = (state.cache.snmp || []).length;
   if ($("nav-unifi-count")) $("nav-unifi-count").textContent = (state.cache.unifi || []).length;
 }
+/* Mobile hamburger: slide the sidebar (nav + groups) in/out over a scrim. */
+function openSidebar() { $("sidebar").classList.add("open"); $("sidebar-scrim").classList.add("open"); }
+function closeSidebar() {
+  const s = $("sidebar"); if (s) s.classList.remove("open");
+  const sc = $("sidebar-scrim"); if (sc) sc.classList.remove("open");
+}
+function toggleSidebar() { $("sidebar").classList.contains("open") ? closeSidebar() : openSidebar(); }
 function buildGroups() {
   const groups = state.cache.groups, devs = state.cache.devices;
   const wrap = $("groups"); wrap.innerHTML = "";
@@ -357,7 +368,7 @@ function buildGroups() {
     const count = id ? devs.filter((d) => d.group_id === id).length : devs.length;
     const b = el("button", state.group === id ? "active" : "");
     b.innerHTML = `${color ? `<span class="gdot" style="background:${color}"></span>` : ICON.grid.replace("<svg", '<svg style="width:15px;height:15px;opacity:.6"')}${name}<span class="count">${count}</span>`;
-    b.onclick = () => { state.group = id; buildGroups(); if (state.tab === "devices") renderDevices(); };
+    b.onclick = () => { state.group = id; buildGroups(); if (state.tab === "devices") renderDevices(); closeSidebar(); };
     wrap.appendChild(b);
   };
   mk(null, "All devices", null);
