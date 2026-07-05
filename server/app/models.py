@@ -101,6 +101,14 @@ class MonitorRuleRequest(BaseModel):
     service: str | None = None              # for the 'service' template: the service name to watch
 
 
+class UnifiAccountRequest(BaseModel):
+    """Add/update a UniFi Site Manager (cloud) account polled via its API key."""
+    name: str | None = None
+    api_key: str | None = None          # write-only; omit/empty on update = keep existing
+    enabled: bool = True
+    interval: int = 300                 # seconds between polls (min enforced server-side)
+
+
 class InviteRequest(BaseModel):
     email: str
     is_admin: bool = False

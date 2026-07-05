@@ -324,7 +324,7 @@ function cycleOrg() {
   showOrg(next.id, next.name); toast("Switched to " + next.name);
 }
 async function refreshOrgCaches() {
-  const [devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp] = await Promise.all([
+  const [devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp, unifi] = await Promise.all([
     api(`/api/orgs/${state.org}/devices`),
     api(`/api/orgs/${state.org}/network/hosts`).catch(() => []),
     api(`/api/orgs/${state.org}/nodes`).catch(() => []),
@@ -335,8 +335,10 @@ async function refreshOrgCaches() {
     api(`/api/orgs/${state.org}/monitor-rules`).catch(() => []),
     api(`/api/orgs/${state.org}/pending`).catch(() => []),
     api(`/api/orgs/${state.org}/snmp/targets`).catch(() => []),
+    api(`/api/orgs/${state.org}/unifi/accounts`).catch(() => ({ accounts: [], enabled: true })),
   ]);
-  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp };
+  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp, unifi: unifi.accounts || [] };
+  state.unifiEnabled = unifi.enabled;
 }
 function buildNav() {
   $("nav-devices-count").textContent = state.cache.devices.length;
@@ -346,6 +348,7 @@ function buildNav() {
   $("nav-scripts-count").textContent = state.cache.scripts.length;
   $("nav-monitors-count").textContent = state.cache.monitors.length + state.cache.monitorRules.length;
   if ($("nav-snmp-count")) $("nav-snmp-count").textContent = (state.cache.snmp || []).length;
+  if ($("nav-unifi-count")) $("nav-unifi-count").textContent = (state.cache.unifi || []).length;
 }
 function buildGroups() {
   const groups = state.cache.groups, devs = state.cache.devices;
@@ -363,7 +366,7 @@ function buildGroups() {
 function selectTab(tab) {
   state.tab = tab;
   document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  ["devices", "approvals", "network", "nodes", "snmp", "scripts", "monitors", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  ["devices", "approvals", "network", "nodes", "snmp", "unifi", "scripts", "monitors", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
   clearRefresh();
   saveView();
   if (tab === "devices") renderDevices();
@@ -371,6 +374,7 @@ function selectTab(tab) {
   else if (tab === "network") renderNetwork();
   else if (tab === "nodes") renderNodes();
   else if (tab === "snmp") renderSNMP();
+  else if (tab === "unifi") { renderUnifi(); refreshTab("unifi"); }
   else if (tab === "scripts") renderScripts();
   else if (tab === "monitors") renderMonitorsTab();
   else if (tab === "downloads") renderDownloads();
@@ -388,6 +392,7 @@ async function refreshTab(tab) {
     else if (tab === "network") { state.cache.hosts = await api(`/api/orgs/${state.org}/network/hosts`); buildNav(); renderNetwork(); }
     else if (tab === "nodes") { state.cache.nodes = await api(`/api/orgs/${state.org}/nodes`); buildNav(); renderNodes(); }
     else if (tab === "snmp") { if (state.snmpEditing) return; state.cache.snmp = await api(`/api/orgs/${state.org}/snmp/targets`); buildNav(); renderSNMP(); }
+    else if (tab === "unifi") { if (state.unifiEditing) return; const r = await api(`/api/orgs/${state.org}/unifi/accounts`); state.cache.unifi = r.accounts || []; state.unifiEnabled = r.enabled; buildNav(); renderUnifi(); }
     else if (tab === "monitors") { state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); buildNav(); renderMonitorsTab(); }
     else if (tab === "scripts") { state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`); buildNav(); renderScripts(); }
   } catch {}
@@ -402,7 +407,7 @@ async function restoreView() {
   if (m) {
     const org = (state.me.orgs || []).find((o) => o.id === m[1]);
     if (org) {
-      const tabs = ["devices", "approvals", "network", "nodes", "snmp", "scripts", "monitors", "downloads"];
+      const tabs = ["devices", "approvals", "network", "nodes", "snmp", "unifi", "scripts", "monitors", "downloads"];
       state.tab = tabs.includes(m[2]) ? m[2] : "devices";
       await showOrg(org.id, org.name);
       return;
@@ -833,6 +838,161 @@ async function openSnmpForm(t) {
       else await api(`/api/orgs/${state.org}/snmp/targets`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       toast(t ? "Target updated" : "Target added");
       state.snmpEditing = false; refreshTab("snmp");
+    } catch (e) { toast(e.message); }
+  };
+}
+
+/* ---------- UniFi (cloud) network monitoring ---------- */
+function unifiColor(s) { return s === "online" ? "#2ea043" : s === "pending" ? "#d29922" : "#f85149"; }
+function unifiPill(s) {
+  const c = s === "online" ? "ok" : s === "pending" ? "na" : "bad";
+  return `<span class="badge ${c}">${escapeHtml(s || "unknown")}</span>`;
+}
+function unifiAcctStatus(a) {
+  if (!a.last_poll) return `<span class="badge na">not polled yet</span>`;
+  if (a.last_ok) return `<span class="badge ok">connected</span>`;
+  return `<span class="badge bad" title="${escapeHtml(a.last_error || "")}">error</span>`;
+}
+// Tiered SVG network map: Internet → Gateway → Switches → APs (the cloud API has
+// no cabling/uplink data, so tiers are by device role; edges fan from each tier's hub).
+function unifiMap(snap) {
+  const devs = snap.devices || [];
+  const wanDown = (snap.isp || []).some((w) => w.status === "offline");
+  const of = (t) => devs.filter((d) => d.type === t);
+  let tiers = [
+    { label: "Internet", nodes: [{ name: "Internet", sub: "", state: wanDown ? "offline" : "online" }] },
+    { label: "Gateway", nodes: of("gateway") },
+    { label: "Switches", nodes: of("switch") },
+    { label: "Access Points", nodes: of("ap") },
+  ];
+  const other = devs.filter((d) => !["gateway", "switch", "ap"].includes(d.type));
+  if (other.length) tiers.push({ label: "Other", nodes: other });
+  tiers = tiers.filter((t, i) => i === 0 || t.nodes.length);
+  if (devs.length === 0) return "";
+  const COLW = 200, ROWH = 66, NW = 158, NH = 50, PAD = 18, LBLH = 26;
+  const maxRows = Math.max(1, ...tiers.map((t) => t.nodes.length));
+  const w = PAD * 2 + (tiers.length - 1) * COLW + NW;
+  const h = PAD * 2 + LBLH + maxRows * ROWH;
+  const nx = (i) => PAD + i * COLW, ny = (j) => PAD + LBLH + j * ROWH;
+  let edges = "", nodes = "", labels = "";
+  tiers.forEach((t, i) => {
+    labels += `<text x="${nx(i) + NW / 2}" y="${PAD + 12}" text-anchor="middle" class="umap-lbl">${escapeHtml(t.label)}</text>`;
+    if (i > 0) {
+      const px = nx(i - 1) + NW, py = ny(0) + NH / 2;
+      t.nodes.forEach((n, j) => {
+        const x = nx(i), y = ny(j) + NH / 2, mx = (px + x) / 2;
+        edges += `<path d="M${px} ${py} C ${mx} ${py} ${mx} ${y} ${x} ${y}" class="umap-edge"/>`;
+      });
+    }
+    t.nodes.forEach((n, j) => {
+      const x = nx(i), y = ny(j), st = n.state || "offline", col = unifiColor(st);
+      const nm = n.name || "device";
+      const sub = n.sub != null ? n.sub
+        : [n.model, (n.clients != null ? `${n.clients} client${n.clients === 1 ? "" : "s"}` : "")].filter(Boolean).join(" · ");
+      nodes += `<g><rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="8" class="umap-node" style="stroke:${col}"/>`
+        + `<circle cx="${x + 13}" cy="${y + NH / 2}" r="5" fill="${col}"/>`
+        + `<text x="${x + 26}" y="${y + 21}" class="umap-name">${escapeHtml(nm.length > 18 ? nm.slice(0, 17) + "…" : nm)}</text>`
+        + `<text x="${x + 26}" y="${y + 37}" class="umap-sub">${escapeHtml((sub || "").length > 21 ? sub.slice(0, 20) + "…" : (sub || ""))}</text></g>`;
+    });
+  });
+  return `<div class="umap-wrap"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" class="umap">${edges}${labels}${nodes}</svg></div>`;
+}
+function unifiWan(isp) {
+  if (!isp || !isp.length) return "";
+  return `<div class="unifi-wan">` + isp.map((w) => {
+    const bits = [w.latency_ms != null ? `${escapeHtml(String(w.latency_ms))} ms` : null,
+      w.uptime_pct != null ? `${escapeHtml(String(w.uptime_pct))}% up` : null].filter(Boolean).join(" · ");
+    return `<div class="unifi-wan-item">${ICON.globe} <b>${escapeHtml(w.host_name || "Internet")}</b> · `
+      + `${escapeHtml(w.isp || "WAN")} ${unifiPill(w.status)}${bits ? " · " + bits : ""}</div>`;
+  }).join("") + `</div>`;
+}
+function unifiDeviceRows(devs) {
+  if (!devs || !devs.length) return `<div class="h-sub" style="padding:8px 2px">No devices reported.</div>`;
+  const ord = { gateway: 0, switch: 1, ap: 2, other: 3 };
+  const rows = devs.slice().sort((a, b) => (ord[a.type] ?? 9) - (ord[b.type] ?? 9) || (a.name || "").localeCompare(b.name || ""))
+    .map((d) => `<tr><td>${unifiPill(d.state)}</td><td>${escapeHtml(d.name || "—")}</td>`
+      + `<td><span class="badge na">${escapeHtml(d.type)}</span></td><td class="muted">${escapeHtml(d.model || "—")}</td>`
+      + `<td class="mono">${escapeHtml(d.ip || "—")}</td><td class="muted">${escapeHtml(d.version || "—")}</td>`
+      + `<td>${d.clients != null ? d.clients : "—"}</td></tr>`).join("");
+  return `<div style="overflow-x:auto;margin-top:12px"><table class="grid"><thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>IP</th><th>Firmware</th><th>Clients</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function unifiAccountCard(a) {
+  const snap = a.snapshot;
+  const nDev = snap && snap.devices ? snap.devices.length : 0;
+  const meta = `${a.last_poll ? "polled " + relTime(a.last_poll) : "awaiting first poll"}${snap && snap.ok ? ` · ${nDev} device${nDev === 1 ? "" : "s"}` : ""}`;
+  let bodyHtml;
+  if (snap && snap.ok) bodyHtml = unifiWan(snap.isp) + unifiMap(snap) + unifiDeviceRows(snap.devices);
+  else if (a.last_poll && !a.last_ok) bodyHtml = `<div class="h-sub" style="padding:10px 2px">Last poll failed: ${escapeHtml(a.last_error || "unknown error")}. Check the API key and its permissions.</div>`;
+  else bodyHtml = `<div class="h-sub" style="padding:10px 2px">Waiting for the first poll — this can take up to a minute.</div>`;
+  return `<div class="tile" style="margin-bottom:14px" data-aid="${a.id}">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="os-ico">${ICON.wifi}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(a.name || "UniFi")} ${unifiAcctStatus(a)} ${a.enabled ? "" : `<span class="badge na">paused</span>`}</div>
+        <div class="h-sub">${meta}</div>
+      </div>
+      <button class="btn ghost sm unifi-poll" data-aid="${a.id}">${ICON.refresh} Poll now</button>
+      <button class="btn ghost sm unifi-edit" data-aid="${a.id}">${ICON.pencil}</button>
+      <button class="btn ghost sm unifi-del" data-aid="${a.id}">${ICON.trash}</button>
+    </div>
+    ${bodyHtml}</div>`;
+}
+function renderUnifi() {
+  state.unifiEditing = false;
+  const body = $("unifi-body"); if (!body) return;
+  const accts = state.cache.unifi || [];
+  const totalDev = accts.reduce((n, a) => n + (a.snapshot && a.snapshot.devices ? a.snapshot.devices.length : 0), 0);
+  if ($("unifi-sub")) $("unifi-sub").textContent = accts.length
+    ? `${accts.length} account${accts.length === 1 ? "" : "s"} · ${totalDev} device${totalDev === 1 ? "" : "s"}`
+    : "Monitor UniFi gateways, switches & APs via the UniFi API";
+  const addBtn = $("unifi-add"); if (addBtn) addBtn.onclick = () => openUnifiForm(null);
+  if (state.unifiEnabled === false) {
+    body.innerHTML = `<div class="empty"><div class="big">${ICON.wifi}</div>UniFi monitoring is turned off.<br><span class="muted">Enable it in Settings → Integrations.</span></div>`;
+    return;
+  }
+  body.innerHTML = accts.length
+    ? accts.map(unifiAccountCard).join("")
+    : `<div class="empty"><div class="big">${ICON.wifi}</div>No UniFi accounts yet.<br><span class="muted">Add a UniFi API key (unifi.ui.com → your profile → API Keys) to pull in your gateways, switches and APs.</span></div>`;
+  body.querySelectorAll(".unifi-poll").forEach((b) => b.onclick = async () => {
+    try { await api(`/api/unifi/accounts/${b.dataset.aid}/poll`, { method: "POST" }); toast("Poll requested — updating shortly"); }
+    catch (e) { toast(e.message); }
+  });
+  body.querySelectorAll(".unifi-edit").forEach((b) => b.onclick = () => openUnifiForm(accts.find((x) => String(x.id) === b.dataset.aid)));
+  body.querySelectorAll(".unifi-del").forEach((b) => b.onclick = async () => {
+    const a = accts.find((x) => String(x.id) === b.dataset.aid);
+    if (!confirm(`Delete UniFi account ${a.name || a.id}?`)) return;
+    try { await api(`/api/unifi/accounts/${b.dataset.aid}`, { method: "DELETE" }); toast("Account deleted"); refreshTab("unifi"); }
+    catch (e) { toast(e.message); }
+  });
+}
+function openUnifiForm(a) {
+  state.unifiEditing = true;
+  const body = $("unifi-body"); if (!body) return;
+  body.innerHTML = `<div class="tile" style="max-width:560px">
+    <div style="font-weight:650;font-size:14px;margin-bottom:12px">${a ? "Edit UniFi account" : "New UniFi account"}</div>
+    <label style="display:block;margin-bottom:10px">Name <span class="h-sub">(optional)</span>
+      <input class="inp" id="uf-name" value="${a ? escapeHtml(a.name || "") : ""}" placeholder="Head office"></label>
+    <label style="display:block;margin-bottom:10px">API key ${a ? `<span class="h-sub">— leave blank to keep the current key</span>` : `<span class="h-sub">— unifi.ui.com → your profile → API Keys</span>`}
+      <input class="inp" id="uf-key" type="password" autocomplete="off" placeholder="${a && a.key_set ? "•••••••••• (unchanged)" : "paste your UniFi API key"}"></label>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="uf-enabled" ${(!a || a.enabled) ? "checked" : ""}> Enabled</label>
+    <label style="display:block;margin-bottom:10px">Poll interval (seconds)<input class="inp" id="uf-interval" type="number" min="60" value="${a && a.interval ? a.interval : 300}"></label>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn" id="uf-save">${ICON.save} ${a ? "Save changes" : "Add account"}</button>
+      <button class="btn ghost" id="uf-cancel">Cancel</button>
+    </div>
+    <div class="h-sub" style="margin-top:10px">The key is stored on the server and used only to poll the UniFi API — it's never shown again after saving.</div>
+  </div>`;
+  $("uf-cancel").onclick = () => { state.unifiEditing = false; renderUnifi(); };
+  $("uf-save").onclick = async () => {
+    const key = $("uf-key").value.trim();
+    const payload = { name: $("uf-name").value.trim() || null, enabled: $("uf-enabled").checked, interval: +$("uf-interval").value || 300 };
+    if (key) payload.api_key = key;
+    if (!a && !key) return toast("An API key is required");
+    try {
+      if (a) await api(`/api/unifi/accounts/${a.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      else await api(`/api/orgs/${state.org}/unifi/accounts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      toast(a ? "Account updated" : "Account added — polling…");
+      state.unifiEditing = false; refreshTab("unifi");
     } catch (e) { toast(e.message); }
   };
 }

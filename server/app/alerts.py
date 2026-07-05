@@ -239,3 +239,53 @@ def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
                                                      f"<p style='margin:0'>{dev['hostname']} {rule} has returned to normal.</p>",
                                                      "good"),
                                  recipients)
+
+
+# --------------------------------------------------------------------------- #
+# UniFi (cloud) — device-offline + WAN-down. Server-polled, not agent/rule driven.
+# Evaluated right after a poll; keyed by synthetic device ids so it reuses the same
+# _apply state machine (alert_state/incidents carry no FK to real devices).
+# --------------------------------------------------------------------------- #
+def evaluate_unifi_account(acct: dict, snapshot: dict | None) -> None:
+    """Raise/clear alerts for one UniFi account's latest snapshot.
+
+    Skips entirely when the poll failed (``snapshot`` falsy or ``ok`` False) so a
+    transient API/outage doesn't flap every device offline. A UniFi device is a
+    synthetic alert subject ``unifi-<acct>-<mac>``; WAN health is per host.
+    """
+    if not snapshot or not snapshot.get("ok"):
+        return
+    org_id = acct.get("org_id")
+    acct_id = acct.get("id")
+    acct_name = acct.get("name") or "UniFi"
+    recipients = db.alert_config(org_id).get("recipients") or _default_recipients()
+
+    for d in snapshot.get("devices") or []:
+        mac = d.get("mac")
+        if not mac:
+            continue
+        dname = d.get("name") or mac
+        dev = {"id": f"unifi-{acct_id}-{mac}", "hostname": dname, "org_id": org_id}
+        raised = d.get("state") == "offline"
+        model = d.get("model") or d.get("type") or "device"
+        meta = {"id": None, "name": f"UniFi device offline: {dname}",
+                "metric": "unifi_offline", "detail": f"{model} ({mac}) is offline"}
+        _apply(dev, f"unifi_offline:{mac}", raised, recipients,
+               f"{acct_name}: {dname} offline",
+               f"UniFi device <b>{_esc(dname)}</b> (<span>{_esc(str(model))}</span>, "
+               f"{_esc(mac)}) is <b>offline</b>.",
+               True, "warning", meta)
+
+    for w in snapshot.get("isp") or []:
+        hid = w.get("host_id")
+        if not hid:
+            continue
+        hname = w.get("host_name") or hid
+        dev = {"id": f"unifi-{acct_id}-wan-{hid}", "hostname": hname, "org_id": org_id}
+        raised = w.get("status") == "offline"
+        meta = {"id": None, "name": f"WAN down: {hname}", "metric": "unifi_wan_down",
+                "detail": f"WAN/ISP link down on {hname}"}
+        _apply(dev, f"unifi_wan_down:{hid}", raised, recipients,
+               f"{acct_name}: WAN down at {hname}",
+               f"The internet (WAN) link on <b>{_esc(hname)}</b> is <b>down</b>.",
+               True, "critical", meta)

@@ -586,3 +586,15 @@ dl.inv dt:last-of-type, dl.inv dd:last-of-type { border-bottom: 0; }
 .role-pill.member { background: color-mix(in srgb, var(--good) 12%, transparent); color: var(--good); }
 .role-pill.viewer { background: color-mix(in srgb, var(--text-faint) 12%, transparent); color: var(--text-faint); }
 @media (max-width: 700px) { .ag-body { grid-template-columns: 1fr; } .ag-col + .ag-col { border-left: none; border-top: 1px solid var(--border); } }
+
+/* UniFi network map + WAN health */
+.umap-wrap { overflow-x: auto; padding: 8px 0 2px; margin-top: 4px; }
+.umap { display: block; }
+.umap-node { fill: var(--surface-2); stroke-width: 1.6; }
+.umap-edge { fill: none; stroke: var(--border); stroke-width: 1.6; }
+.umap-lbl { fill: var(--text-faint); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.umap-name { fill: var(--text); font-size: 12px; font-weight: 600; }
+.umap-sub { fill: var(--text-dim); font-size: 10.5px; }
+.unifi-wan { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 12px; }
+.unifi-wan-item { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; }
+.unifi-wan-item svg { width: 15px; height: 15px; color: var(--text-dim); flex: none; }

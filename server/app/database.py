@@ -176,6 +176,23 @@ CREATE TABLE IF NOT EXISTS snmp_readings (
 );
 CREATE INDEX IF NOT EXISTS idx_snmp_readings_target_ts ON snmp_readings(target_id, ts);
 
+-- UniFi Site Manager (cloud) accounts, polled server-side via the UniFi API.
+-- snapshot_json holds the latest normalised {hosts, devices, isp, edges} snapshot.
+CREATE TABLE IF NOT EXISTS unifi_accounts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id        TEXT NOT NULL,
+    name          TEXT,
+    api_key       TEXT NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    interval      INTEGER NOT NULL DEFAULT 300,
+    snapshot_json TEXT,
+    last_poll     REAL,
+    last_ok       INTEGER,
+    last_error    TEXT,
+    created_at    REAL,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS alert_state (
     device_id    TEXT NOT NULL,
     rule         TEXT NOT NULL,
@@ -2054,6 +2071,95 @@ def snmp_reading_series(target_id: int, oid: str, since: float) -> list[dict]:
            WHERE target_id=? AND oid=? AND ts>=? AND value_num IS NOT NULL ORDER BY ts""",
         (target_id, oid, since)).fetchall()
     return [{"ts": r["ts"], "v": r["value_num"]} for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# UniFi cloud accounts
+# --------------------------------------------------------------------------- #
+def _unifi_row(r, redact: bool = True) -> dict:
+    d = dict(r)
+    if redact:
+        d["key_set"] = bool(d.get("api_key"))
+        d.pop("api_key", None)
+    try:
+        d["snapshot"] = json.loads(d["snapshot_json"]) if d.get("snapshot_json") else None
+    except (ValueError, TypeError):
+        d["snapshot"] = None
+    d.pop("snapshot_json", None)
+    return d
+
+
+def add_unifi_account(org_id: str, name: str | None, api_key: str, *,
+                      interval: int = 300, enabled: bool = True) -> int:
+    with write() as conn:
+        cur = conn.execute(
+            """INSERT INTO unifi_accounts (org_id, name, api_key, enabled, interval, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (org_id, name, api_key, 1 if enabled else 0, int(interval), time.time()))
+        return cur.lastrowid
+
+
+def get_unifi_account(account_id: int, redact: bool = False) -> dict | None:
+    row = get_conn().execute("SELECT * FROM unifi_accounts WHERE id=?", (account_id,)).fetchone()
+    return _unifi_row(row, redact=redact) if row else None
+
+
+def list_unifi_accounts(org_id: str) -> list[dict]:
+    return [_unifi_row(r, redact=True) for r in get_conn().execute(
+        "SELECT * FROM unifi_accounts WHERE org_id=? ORDER BY name, id", (org_id,)).fetchall()]
+
+
+def list_unifi_accounts_all(enabled_only: bool = True) -> list[dict]:
+    """All accounts with keys, for the server-side poller."""
+    q = "SELECT * FROM unifi_accounts"
+    if enabled_only:
+        q += " WHERE enabled=1"
+    return [_unifi_row(r, redact=False) for r in get_conn().execute(q).fetchall()]
+
+
+_UNIFI_FIELDS = {"name", "enabled", "interval", "api_key"}
+
+
+def update_unifi_account(account_id: int, fields: dict) -> None:
+    sets, vals = [], []
+    for k, v in fields.items():
+        if k not in _UNIFI_FIELDS:
+            continue
+        if k == "api_key" and not (v or "").strip():
+            continue  # empty -> keep existing key
+        if k == "enabled":
+            v = 1 if v else 0
+        elif k == "interval":
+            v = int(v)
+        sets.append(f"{k}=?")
+        vals.append(v)
+    if not sets:
+        return
+    vals.append(account_id)
+    with write() as conn:
+        conn.execute(f"UPDATE unifi_accounts SET {', '.join(sets)} WHERE id=?", vals)
+
+
+def delete_unifi_account(account_id: int) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM unifi_accounts WHERE id=?", (account_id,))
+
+
+def save_unifi_result(account_id: int, ok: bool, error: str | None,
+                      snapshot: dict | None) -> None:
+    """Store a poll result: status + (on success) the normalised snapshot."""
+    now = time.time()
+    with write() as conn:
+        if not conn.execute("SELECT 1 FROM unifi_accounts WHERE id=?", (account_id,)).fetchone():
+            return
+        if snapshot is not None:
+            conn.execute(
+                "UPDATE unifi_accounts SET last_poll=?, last_ok=?, last_error=?, snapshot_json=? WHERE id=?",
+                (now, 1 if ok else 0, error, json.dumps(snapshot), account_id))
+        else:
+            conn.execute(
+                "UPDATE unifi_accounts SET last_poll=?, last_ok=?, last_error=? WHERE id=?",
+                (now, 1 if ok else 0, error, account_id))
 
 
 # --------------------------------------------------------------------------- #
