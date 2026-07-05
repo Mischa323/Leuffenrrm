@@ -21,9 +21,10 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTe
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import alerts, auth, database as db, graph, mailer, totp
+from . import alerts, auth, database as db, graph, mailer, totp, unifi
 from . import wol as wol_local
 from .manager import manager
+from .models import UnifiAccountRequest
 from .models import (AccessGroupMemberRequest, AccessGroupOrgRequest, AccessGroupPermRequest,
                      AccessGroupRequest, GroupRequest, InviteRequest, MonitorRequest,
                      MonitorRuleRequest, MoveDeviceRequest, MoveOrgRequest, OrgRequest,
@@ -180,6 +181,17 @@ def _synology_source_enabled() -> bool:
     return os.environ.get("RMM_SYNOLOGY_SOURCE", "1").lower() in ("1", "true", "yes")
 
 
+UNIFI_INTERVAL = float(os.environ.get("RMM_UNIFI_INTERVAL", "30"))  # poll-loop tick (s)
+
+
+def _unifi_enabled() -> bool:
+    """Whether UniFi cloud polling is active (default: on). Admin toggle."""
+    val = db.get_setting("RMM_UNIFI")
+    if val is None:
+        val = os.environ.get("RMM_UNIFI", "1")
+    return str(val).lower() in ("1", "true", "yes")
+
+
 
 app = FastAPI(title="Leuffen RMM", version=SERVER_VERSION)
 
@@ -197,6 +209,7 @@ async def _startup() -> None:
     asyncio.create_task(_prune_loop())
     asyncio.create_task(_schedule_loop())
     asyncio.create_task(_auto_update_loop())
+    asyncio.create_task(_unifi_loop())
 
 
 def _resolve_setup_state() -> None:
@@ -262,6 +275,42 @@ async def _alert_loop() -> None:
             alerts.evaluate_once()
         except Exception as exc:  # pragma: no cover
             log.warning("alert loop error: %s", exc)
+
+
+async def _poll_unifi_account(acct: dict) -> None:
+    """Poll one UniFi account (blocking httpx off the event loop), store the
+    snapshot, and evaluate device-offline / WAN-down alerts."""
+    loop = asyncio.get_event_loop()
+    try:
+        snap = await loop.run_in_executor(None, unifi.collect, acct["api_key"])
+    except Exception as exc:  # pragma: no cover - defensive
+        db.save_unifi_result(acct["id"], False, str(exc), None)
+        return
+    db.save_unifi_result(acct["id"], bool(snap.get("ok")), snap.get("error"),
+                         snap if snap.get("ok") else None)
+    try:
+        alerts.evaluate_unifi_account(acct, snap)
+    except Exception as exc:  # pragma: no cover
+        log.warning("unifi alert eval failed for account %s: %s", acct.get("id"), exc)
+
+
+async def _unifi_loop() -> None:
+    """Poll each enabled UniFi account at its own interval (server-side, no node)."""
+    last: dict = {}
+    while True:
+        await asyncio.sleep(UNIFI_INTERVAL)
+        if not _unifi_enabled():
+            continue
+        now = time.time()
+        try:
+            accounts = db.list_unifi_accounts_all(enabled_only=True)
+        except Exception:  # pragma: no cover
+            continue
+        for acct in accounts:
+            interval = max(int(acct.get("interval") or 300), 60)
+            if now - last.get(acct["id"], 0.0) >= interval:
+                last[acct["id"]] = now
+                asyncio.create_task(_poll_unifi_account(acct))
 
 
 async def _prune_loop() -> None:
@@ -2143,6 +2192,76 @@ def snmp_target_readings(target_id: int, user: dict = Depends(auth.current_user)
 
 
 # --------------------------------------------------------------------------- #
+# UniFi (cloud) accounts — server-polled via the UniFi Site Manager API
+# --------------------------------------------------------------------------- #
+def _unifi_account_for_user(account_id: int, user: dict) -> dict:
+    a = db.get_unifi_account(account_id, redact=False)
+    if not a:
+        raise HTTPException(status_code=404, detail="UniFi account not found")
+    auth.require_org(user, a["org_id"])
+    return a
+
+
+@app.get("/api/orgs/{org_id}/unifi/accounts")
+def list_unifi_accounts(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return {"enabled": _unifi_enabled(), "accounts": db.list_unifi_accounts(org_id)}
+
+
+@app.post("/api/orgs/{org_id}/unifi/accounts")
+async def create_unifi_account(org_id: str, req: UnifiAccountRequest,
+                               user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    key = (req.api_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="An API key is required")
+    loop = asyncio.get_event_loop()
+    ok, msg = await loop.run_in_executor(None, unifi.test_key, key)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"API key rejected: {msg}")
+    aid = db.add_unifi_account(org_id, (req.name or "UniFi").strip() or "UniFi", key,
+                               interval=max(int(req.interval), 60), enabled=req.enabled)
+    acct = db.get_unifi_account(aid, redact=False)
+    if acct:
+        asyncio.create_task(_poll_unifi_account(acct))  # first poll in the background
+    return {"id": aid}
+
+
+@app.patch("/api/unifi/accounts/{account_id}")
+async def update_unifi_account(account_id: int, request: Request,
+                               user: dict = Depends(auth.current_user)):
+    _unifi_account_for_user(account_id, user)
+    data = await request.json()
+    if "interval" in data:
+        data["interval"] = max(int(data["interval"]), 60)
+    new_key = (data.get("api_key") or "").strip()
+    if new_key:
+        loop = asyncio.get_event_loop()
+        ok, msg = await loop.run_in_executor(None, unifi.test_key, new_key)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"API key rejected: {msg}")
+    db.update_unifi_account(account_id, data)
+    acct = db.get_unifi_account(account_id, redact=False)
+    if acct and acct.get("enabled"):
+        asyncio.create_task(_poll_unifi_account(acct))
+    return {"ok": True}
+
+
+@app.delete("/api/unifi/accounts/{account_id}")
+def delete_unifi_account(account_id: int, user: dict = Depends(auth.current_user)):
+    _unifi_account_for_user(account_id, user)
+    db.delete_unifi_account(account_id)
+    return {"ok": True}
+
+
+@app.post("/api/unifi/accounts/{account_id}/poll")
+async def poll_unifi_account(account_id: int, user: dict = Depends(auth.current_user)):
+    acct = _unifi_account_for_user(account_id, user)
+    asyncio.create_task(_poll_unifi_account(acct))
+    return {"status": "poll requested"}
+
+
+# --------------------------------------------------------------------------- #
 # Agent WebSocket
 # --------------------------------------------------------------------------- #
 @app.websocket("/api/agents/ws")
@@ -2849,7 +2968,7 @@ SETTINGS_KEYS = [
     "RMM_PUBLIC_URL", "RMM_TLS_MODE", "RMM_AUTH_MODE", "GRAPH_SENDER",
     "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
     "RMM_REQUIRE_APPROVAL", "RMM_REQUIRE_DEVICE_SECRET", "RMM_AUTO_UPDATE_AGENTS",
-    "RMM_CPU_TEMP_DRIVER", "RMM_SYNOLOGY_SOURCE", "RMM_ALERT_RECIPIENTS",
+    "RMM_CPU_TEMP_DRIVER", "RMM_SYNOLOGY_SOURCE", "RMM_UNIFI", "RMM_ALERT_RECIPIENTS",
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS",
     "MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_REDIRECT_URI",
 ]

@@ -270,6 +270,8 @@ function render() {
         `${toggle("cpuTempDriver", "Read the Windows CPU die temperature", "Loads LibreHardwareMonitor's WinRing0 kernel driver to report the CPU temperature on Windows. Off by default — WinRing0 is on Microsoft's vulnerable-driver blocklist (Defender removes it; Memory Integrity/HVCI blocks it). This is the default for every organisation; each org can override it under its Downloads tab. GPU and Linux CPU temperatures don't use it.", (cfg.RMM_CPU_TEMP_DRIVER ?? "0") === "1")}`, "agents-cputemp")}
       ${block("Synology NAS", "",
         `${toggle("synologySource", "Offer the Synology Package Center source", "When on, each organisation's Downloads tab shows a package-source URL to paste into a Synology NAS (Package Center → Settings → Package Sources). The NAS then installs the Leuffen RMM agent and appears like any other device. Turn off to hide the source and refuse new .spk downloads.", (cfg.RMM_SYNOLOGY_SOURCE ?? "1") === "1")}`, "agents-synology")}
+      ${block("UniFi network", "",
+        `${toggle("unifiEnabled", "Monitor UniFi via the UniFi API", "When on, the server polls each configured UniFi Site Manager account (see the UniFi tab) for gateways, switches, APs and WAN health, and emails alerts on device-offline / WAN-down. Turn off to pause all UniFi polling.", (cfg.RMM_UNIFI ?? "1") === "1")}`, "agents-unifi")}
       <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Heartbeat interval</div><div class="cd">Agents report every ~30s by default (set <code>RMM_INTERVAL</code> on the agent). Update agents in place from a device's <b>Agent</b> panel, or all at once from <b>Downloads</b>.</div></div></div>
       <div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Danger zone</div><div class="cd">Removing an agent (from a device's Actions) stops monitoring and revokes its key. Re-enrol with a fresh installer from Downloads.</div></div></div>
     </section>
@@ -882,6 +884,7 @@ function onSave(which) {
   if (which === "agents-autoupdate") return saveKeys({ RMM_AUTO_UPDATE_AGENTS: document.querySelector('[data-toggle="autoUpdate"]').classList.contains("on") ? "1" : "0" }, "Auto-update policy saved");
   if (which === "agents-cputemp") return saveKeys({ RMM_CPU_TEMP_DRIVER: document.querySelector('[data-toggle="cpuTempDriver"]').classList.contains("on") ? "1" : "0" }, "CPU-temp driver policy saved");
   if (which === "agents-synology") return saveKeys({ RMM_SYNOLOGY_SOURCE: document.querySelector('[data-toggle="synologySource"]').classList.contains("on") ? "1" : "0" }, "Synology source policy saved");
+  if (which === "agents-unifi") return saveKeys({ RMM_UNIFI: document.querySelector('[data-toggle="unifiEnabled"]').classList.contains("on") ? "1" : "0" }, "UniFi monitoring policy saved");
 }
 
 async function init() {

@@ -64,6 +64,7 @@
               <button data-tab="network"><span class="ni" data-i="network"></span> Network <span class="count" id="nav-network-count">0</span></button>
               <button data-tab="nodes"><span class="ni" data-i="nodes"></span> Nodes <span class="count" id="nav-nodes-count">0</span></button>
               <button data-tab="snmp"><span class="ni" data-i="server"></span> SNMP <span class="count" id="nav-snmp-count">0</span></button>
+              <button data-tab="unifi"><span class="ni" data-i="wifi"></span> UniFi <span class="count" id="nav-unifi-count">0</span></button>
               <button data-tab="scripts"><span class="ni" data-i="terminal"></span> Scripts <span class="count" id="nav-scripts-count">0</span></button>
               <button data-tab="monitors"><span class="ni" data-i="shieldCheck"></span> Policies <span class="count" id="nav-monitors-count">0</span></button>
               <button data-tab="downloads"><span class="ni" data-i="download"></span> Downloads</button>
@@ -115,6 +116,14 @@
                 <div class="panel-head"><h2>SNMP monitoring</h2><span class="sub" id="snmp-sub">Poll network devices (v1/v2c) from a node</span><div class="spacer"></div>
                   <button class="btn sm" id="snmp-add"><span class="hi" data-i="plus"></span> Add target</button></div>
                 <div style="padding:18px" id="snmp-body"></div>
+              </div>
+            </div>
+            <!-- UniFi -->
+            <div id="tab-unifi" class="hidden">
+              <div class="panel">
+                <div class="panel-head"><h2>UniFi network</h2><span class="sub" id="unifi-sub">Monitor UniFi gateways, switches &amp; APs via the UniFi API</span><div class="spacer"></div>
+                  <button class="btn sm" id="unifi-add"><span class="hi" data-i="plus"></span> Add UniFi account</button></div>
+                <div style="padding:18px" id="unifi-body"></div>
               </div>
             </div>
             <!-- Scripts -->
