@@ -921,7 +921,10 @@ function unifiAccountCard(a) {
   const nDev = snap && snap.devices ? snap.devices.length : 0;
   const meta = `${a.last_poll ? "polled " + relTime(a.last_poll) : "awaiting first poll"}${snap && snap.ok ? ` · ${nDev} device${nDev === 1 ? "" : "s"}` : ""}`;
   let bodyHtml;
-  if (snap && snap.ok) bodyHtml = unifiWan(snap.isp) + unifiMap(snap) + unifiDeviceRows(snap.devices);
+  if (snap && snap.ok) {
+    const warn = snap.error ? `<div class="h-sub" style="padding:6px 2px;color:var(--warn)">Partial data: ${escapeHtml(snap.error)}</div>` : "";
+    bodyHtml = warn + unifiWan(snap.isp) + unifiMap(snap) + unifiDeviceRows(snap.devices);
+  }
   else if (a.last_poll && !a.last_ok) bodyHtml = `<div class="h-sub" style="padding:10px 2px">Last poll failed: ${escapeHtml(a.last_error || "unknown error")}. Check the API key and its permissions.</div>`;
   else bodyHtml = `<div class="h-sub" style="padding:10px 2px">Waiting for the first poll — this can take up to a minute.</div>`;
   return `<div class="tile" style="margin-bottom:14px" data-aid="${a.id}">

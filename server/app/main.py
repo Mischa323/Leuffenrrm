@@ -283,11 +283,14 @@ async def _poll_unifi_account(acct: dict) -> None:
     loop = asyncio.get_event_loop()
     try:
         snap = await loop.run_in_executor(None, unifi.collect, acct["api_key"])
-    except Exception as exc:  # pragma: no cover - defensive
-        db.save_unifi_result(acct["id"], False, str(exc), None)
-        return
-    db.save_unifi_result(acct["id"], bool(snap.get("ok")), snap.get("error"),
-                         snap if snap.get("ok") else None)
+    except Exception as exc:  # pragma: no cover - collect is already defensive
+        log.warning("unifi collect failed for account %s: %s", acct.get("id"), exc)
+        snap = {"ok": False, "error": str(exc)}
+    try:
+        db.save_unifi_result(acct["id"], bool(snap.get("ok")), snap.get("error"),
+                             snap if snap.get("ok") else None)
+    except Exception as exc:  # pragma: no cover
+        log.warning("unifi save failed for account %s: %s", acct.get("id"), exc)
     try:
         alerts.evaluate_unifi_account(acct, snap)
     except Exception as exc:  # pragma: no cover

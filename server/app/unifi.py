@@ -229,8 +229,9 @@ def list_devices(key: str) -> list:
 
 
 def isp_metrics(key: str) -> list:
-    # ISP metrics want an interval segment; 5m is the finest. Best-effort.
-    return _paged(key, "/isp-metrics/5m")
+    # Documented as GET /isp-metrics. Best-effort — skipped (empty) on any error,
+    # since the exact sample shape varies by console/plan.
+    return _paged(key, "/isp-metrics")
 
 
 def test_key(key: str) -> tuple[bool, str]:

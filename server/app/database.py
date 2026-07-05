@@ -2143,6 +2143,11 @@ def update_unifi_account(account_id: int, fields: dict) -> None:
 def delete_unifi_account(account_id: int) -> None:
     with write() as conn:
         conn.execute("DELETE FROM unifi_accounts WHERE id=?", (account_id,))
+        # Clear live alert state for this account's synthetic devices
+        # (unifi-<id>-<mac> / unifi-<id>-wan-<host>) so a deleted account can't
+        # leave a stuck 'raised' row behind. The trailing '-' keeps id 5 from
+        # matching id 50.
+        conn.execute("DELETE FROM alert_state WHERE device_id LIKE ?", (f"unifi-{account_id}-%",))
 
 
 def save_unifi_result(account_id: int, ok: bool, error: str | None,
