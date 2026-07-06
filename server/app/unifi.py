@@ -25,7 +25,9 @@ import httpx
 log = logging.getLogger("rmm.unifi")
 
 SITE_MGR = "https://api.ui.com/v1"
+CONNECTOR = "https://api.ui.com/v1/connector/consoles"   # + /{consoleId}/proxy/network/integration/v1
 _TIMEOUT = 20.0
+_TOPO_MAX_DEVICES = 60   # cap detail calls per console (bounds a poll's proxy calls)
 
 
 class UnifiError(Exception):
@@ -279,5 +281,134 @@ def collect(key: str, host_ids: list | None = None) -> dict:
         snap["isp"] = [w for w in isp if not sel or w.get("host_id") in sel]
     except UnifiError as exc:
         log.info("UniFi ISP metrics unavailable: %s", exc)  # non-fatal
+    # Real topology (which device hangs under which) via the Connector Proxy →
+    # local Network Integration API. Best-effort: consoles without the proxy
+    # (old firmware) simply keep the role-tiered map.
+    try:
+        _enrich_topology(key, snap)
+    except Exception as exc:  # pragma: no cover - defensive; never fail a poll
+        log.info("UniFi topology enrichment skipped: %s", exc)
     snap["ok"] = True
     return snap
+
+
+# --------------------------------------------------------------------------- #
+# Topology enrichment (Connector Proxy → Network Integration API)
+# --------------------------------------------------------------------------- #
+def _canon_mac(m) -> str:
+    """Canonical MAC (lowercased hex only) so cloud (aa:bb:..) and integration
+    (aabb..) MACs correlate."""
+    return "".join(c for c in str(m or "").lower() if c in "0123456789abcdef")
+
+
+def proxy_get(key: str, console_id: str, path: str, params: dict | None = None):
+    """GET a console's local Network Integration API through the Connector Proxy.
+
+    Returns the ``data`` payload, or ``None`` on any error (console on old
+    firmware / proxy unsupported / permission) so enrichment is strictly optional.
+    """
+    base = f"{CONNECTOR}/{console_id}/proxy/network/integration/v1"
+    try:
+        body = _request(key, path, base=base, params=params)
+    except UnifiError:
+        return None
+    return body.get("data") if isinstance(body, dict) else None
+
+
+def _clients_of(d: dict):
+    return _first(d, "numClients", "clientCount", "num_sta", "connectedClients",
+                  "numberOfConnectedClients", "clients")
+
+
+def _uplink_mac(d: dict, id_to_mac: dict) -> str | None:
+    """Canonical MAC of a device's uplink parent (or None for a root/gateway)."""
+    up = d.get("uplink") if isinstance(d.get("uplink"), dict) else {}
+    m = _first(up, "mac", "macAddress", "uplinkMac", "deviceMac")
+    if m:
+        return _canon_mac(m)
+    pid = _first(up, "deviceId", "device_id", "uplinkDeviceId", "id")
+    if pid is not None and str(pid) in id_to_mac:
+        return id_to_mac[str(pid)]
+    return None
+
+
+def _console_topology(key: str, console_id: str, macs_wanted: set) -> dict:
+    """Best-effort per-console topology. Returns
+    ``{by_mac: {canon_mac: {uplink_mac, clients}}, edges: [{child_mac, parent_mac}]}``
+    with canonical MACs. Only enriches devices in ``macs_wanted`` (bounds detail calls)."""
+    out = {"by_mac": {}, "edges": []}
+    sites = proxy_get(key, console_id, "/sites", params={"limit": 50})
+    if not isinstance(sites, list):
+        return out                      # no proxy / unsupported → nothing to add
+    for site in sites:
+        sid = _first(site, "id", "_id", "name") if isinstance(site, dict) else None
+        if not sid:
+            continue
+        devs = proxy_get(key, console_id, f"/sites/{sid}/devices", params={"limit": 200})
+        if not isinstance(devs, list):
+            continue
+        id_to_mac = {}
+        for d in devs:
+            if isinstance(d, dict):
+                cm = _canon_mac(_first(d, "macAddress", "mac"))
+                did = _first(d, "id", "_id", "deviceId")
+                if cm and did is not None:
+                    id_to_mac[str(did)] = cm
+        count = 0
+        for d in devs:
+            if not isinstance(d, dict):
+                continue
+            cm = _canon_mac(_first(d, "macAddress", "mac"))
+            did = _first(d, "id", "_id", "deviceId")
+            if not cm or did is None or (macs_wanted and cm not in macs_wanted):
+                continue
+            if count >= _TOPO_MAX_DEVICES:
+                break
+            count += 1
+            # The list item may already carry uplink; else fetch device detail.
+            detail = d if isinstance(d.get("uplink"), dict) else (
+                proxy_get(key, console_id, f"/sites/{sid}/devices/{did}") or d)
+            up = _uplink_mac(detail, id_to_mac)
+            out["by_mac"][cm] = {"uplink_mac": up, "clients": _clients_of(detail)}
+            if up and up != cm:
+                out["edges"].append({"child_mac": cm, "parent_mac": up})
+    return out
+
+
+def _enrich_topology(key: str, snap: dict) -> None:
+    """Attach uplink_mac + client counts to devices and fill snap['edges'] with real
+    parent→child links, using the device MAC strings the dashboard already holds."""
+    devices = snap.get("devices") or []
+    if not devices:
+        return
+    canon2mac = {}
+    by_console: dict = {}
+    for d in devices:
+        cm = _canon_mac(d.get("mac"))
+        if cm:
+            canon2mac[cm] = d["mac"]
+        hid = d.get("host_id")
+        if hid:
+            by_console.setdefault(hid, set()).add(cm)
+    edges, seen = [], set()
+    for console_id, macs in by_console.items():
+        topo = _console_topology(key, console_id, macs)
+        if not topo["by_mac"]:
+            continue
+        for d in devices:
+            if d.get("host_id") != console_id:
+                continue
+            info = topo["by_mac"].get(_canon_mac(d.get("mac")))
+            if not info:
+                continue
+            if info.get("uplink_mac"):
+                d["uplink_mac"] = canon2mac.get(info["uplink_mac"]) or d.get("uplink_mac")
+            if info.get("clients") is not None:
+                d["clients"] = info["clients"]
+        for e in topo["edges"]:
+            cm, pm = canon2mac.get(e["child_mac"]), canon2mac.get(e["parent_mac"])
+            if cm and pm and cm != pm and (cm, pm) not in seen:
+                seen.add((cm, pm))
+                edges.append({"child_mac": cm, "parent_mac": pm})
+    if edges:
+        snap["edges"] = edges
