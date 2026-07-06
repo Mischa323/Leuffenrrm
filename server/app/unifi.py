@@ -114,10 +114,13 @@ def _classify(*hints: str) -> str:
                             "dream router", "udr", "uck", "cloud key", "router", "console")):
         # Cloud Key is a controller host, not a router, but it still sits at the top tier.
         return "gateway"
-    if any(t in s for t in ("switch", "usw", "us-", "flex", "poe", "aggregation")):
+    # NB: "flex" alone is NOT a switch signal — FlexHD is an AP and "G3 Flex" is a
+    # Protect camera. Real switches all carry usw/us-/poe/switch, so no switch relies
+    # on it. (The AP check below owns "flexhd".)
+    if any(t in s for t in ("switch", "usw", "us-", "poe", "aggregation")):
         return "switch"
-    if any(t in s for t in ("uap", "u6", "u7", "u5", "uwb", "nanohd", "ap ", "access point",
-                            "-ap", "lite", "lr", "pro", "mesh", "iw", "swiss")):
+    if any(t in s for t in ("uap", "u6", "u7", "u5", "uwb", "nanohd", "flexhd", "ap ",
+                            "access point", "-ap", "lite", "lr", "pro", "mesh", "iw", "swiss")):
         return "ap"
     return "other"
 
@@ -245,8 +248,13 @@ def test_key(key: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def collect(key: str) -> dict:
+def collect(key: str, host_ids: list | None = None) -> dict:
     """Poll a UniFi account and return a normalised snapshot.
+
+    ``host_ids`` restricts which consoles are included: an empty/None list means
+    "all consoles the key can see" (the picker still gets the full ``hosts`` list,
+    but ``devices``/``isp`` are filtered to the selection so the map, table and
+    alerts only cover the chosen consoles).
 
     Each sub-call is isolated so one failing endpoint (e.g. ISP metrics) doesn't
     sink the whole snapshot. ``ok`` is True when the core inventory was reachable.
@@ -259,13 +267,16 @@ def collect(key: str) -> dict:
         return snap  # auth/transport failure — nothing else will work
     hosts = [_norm_host(h) for h in raw_hosts if isinstance(h, dict)]
     hosts_by_id = {h["id"]: h for h in hosts if h.get("id")}
-    snap["hosts"] = hosts
+    snap["hosts"] = hosts                       # always ALL consoles, for the picker
+    sel = set(host_ids or [])                   # empty => all
     try:
-        snap["devices"] = _extract_devices(list_devices(key), hosts_by_id)
+        devs = _extract_devices(list_devices(key), hosts_by_id)
+        snap["devices"] = [d for d in devs if not sel or d.get("host_id") in sel]
     except UnifiError as exc:
         snap["error"] = f"devices: {exc}"
     try:
-        snap["isp"] = _extract_isp(isp_metrics(key), hosts_by_id)
+        isp = _extract_isp(isp_metrics(key), hosts_by_id)
+        snap["isp"] = [w for w in isp if not sel or w.get("host_id") in sel]
     except UnifiError as exc:
         log.info("UniFi ISP metrics unavailable: %s", exc)  # non-fatal
     snap["ok"] = True

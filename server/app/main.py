@@ -282,7 +282,7 @@ async def _poll_unifi_account(acct: dict) -> None:
     snapshot, and evaluate device-offline / WAN-down alerts."""
     loop = asyncio.get_event_loop()
     try:
-        snap = await loop.run_in_executor(None, unifi.collect, acct["api_key"])
+        snap = await loop.run_in_executor(None, unifi.collect, acct["api_key"], acct.get("host_ids"))
     except Exception as exc:  # pragma: no cover - collect is already defensive
         log.warning("unifi collect failed for account %s: %s", acct.get("id"), exc)
         snap = {"ok": False, "error": str(exc)}
@@ -2230,7 +2230,8 @@ async def create_unifi_account(org_id: str, req: UnifiAccountRequest,
     if not ok:
         raise HTTPException(status_code=400, detail=f"API key rejected: {msg}")
     aid = db.add_unifi_account(org_id, (req.name or "UniFi").strip() or "UniFi", key,
-                               interval=max(int(req.interval), 60), enabled=req.enabled)
+                               interval=max(int(req.interval), 60), enabled=req.enabled,
+                               host_ids=req.host_ids or [])
     acct = db.get_unifi_account(aid, redact=False)
     if acct:
         asyncio.create_task(_poll_unifi_account(acct))  # first poll in the background
