@@ -866,8 +866,63 @@ function unifiAcctStatus(a) {
 }
 // Tiered SVG network map: Internet → Gateway → Switches → APs (the cloud API has
 // no cabling/uplink data, so tiers are by device role; edges fan from each tier's hub).
+// One node box. `n` is a device (name/state/model/clients) or {name,state,sub}.
+function unifiNodeSvg(x, y, NW, NH, n) {
+  const col = unifiColor(n.state || "offline");
+  const nm = n.name || "device";
+  const sub = n.sub != null ? n.sub
+    : [n.model, (n.clients != null ? `${n.clients} client${n.clients === 1 ? "" : "s"}` : "")].filter(Boolean).join(" · ");
+  return `<g><rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="8" class="umap-node" style="stroke:${col}"/>`
+    + `<circle cx="${x + 13}" cy="${y + NH / 2}" r="5" fill="${col}"/>`
+    + `<text x="${x + 26}" y="${y + 21}" class="umap-name">${escapeHtml(nm.length > 19 ? nm.slice(0, 18) + "…" : nm)}</text>`
+    + `<text x="${x + 26}" y="${y + 37}" class="umap-sub">${escapeHtml((sub || "").length > 22 ? sub.slice(0, 21) + "…" : (sub || ""))}</text></g>`;
+}
 function unifiMap(snap) {
+  if ((snap.devices || []).length === 0) return "";
+  // Real parent→child tree when the Connector Proxy gave us uplinks; else tier by role.
+  return (snap.edges && snap.edges.length) ? unifiTreeMap(snap) : unifiTierMap(snap);
+}
+// Real topology: Internet → gateway → switches → the APs/devices that uplink to them.
+function unifiTreeMap(snap) {
+  const devs = (snap.devices || []).filter((d) => d.mac);
+  if (!devs.length) return unifiTierMap(snap);
+  const byMac = {}; devs.forEach((d) => (byMac[d.mac] = d));
+  const edges = (snap.edges || []).filter((e) => byMac[e.child_mac] && byMac[e.parent_mac]);
+  const parentOf = {}, childrenOf = {};
+  edges.forEach((e) => { parentOf[e.child_mac] = e.parent_mac; (childrenOf[e.parent_mac] = childrenOf[e.parent_mac] || []).push(e.child_mac); });
+  const wanDown = (snap.isp || []).some((w) => w.status === "offline");
+  const byName = (a, b) => (byMac[a].name || "").localeCompare(byMac[b].name || "");
+  const INET = "__inet__";
+  const pos = { [INET]: { col: 0, row: 0 } }, colRows = { 0: 1 };
+  const place = (mac, col) => {
+    if (pos[mac]) return;                             // guards cycles / multiple uplinks
+    const row = (colRows[col] = colRows[col] || 0); colRows[col] = row + 1;
+    pos[mac] = { col, row };
+    (childrenOf[mac] || []).slice().sort(byName).forEach((cm) => place(cm, col + 1));
+  };
+  const roots = devs.filter((d) => !parentOf[d.mac]).map((d) => d.mac).sort(byName);
+  roots.forEach((m) => place(m, 1));
+  devs.forEach((d) => { if (!pos[d.mac]) place(d.mac, 1); });   // any stragglers at tier 1
+  const COLW = 210, ROWH = 64, NW = 168, NH = 48, PAD = 18, TOP = 10;
+  const maxCol = Math.max(...Object.values(pos).map((p) => p.col));
+  const maxRow = Math.max(...Object.values(colRows));
+  const w = PAD * 2 + maxCol * COLW + NW, h = PAD * 2 + TOP + maxRow * ROWH;
+  const nx = (c) => PAD + c * COLW, ny = (r) => PAD + TOP + r * ROWH;
+  let eSvg = "", nSvg = "";
+  const link = (a, b) => {
+    const px = nx(a.col) + NW, py = ny(a.row) + NH / 2, x = nx(b.col), y = ny(b.row) + NH / 2, mx = (px + x) / 2;
+    eSvg += `<path d="M${px} ${py} C ${mx} ${py} ${mx} ${y} ${x} ${y}" class="umap-edge"/>`;
+  };
+  roots.forEach((m) => link(pos[INET], pos[m]));
+  edges.forEach((e) => { if (pos[e.parent_mac] && pos[e.child_mac]) link(pos[e.parent_mac], pos[e.child_mac]); });
+  nSvg += unifiNodeSvg(nx(0), ny(0), NW, NH, { name: "Internet", state: wanDown ? "offline" : "online", sub: "" });
+  devs.forEach((d) => { const p = pos[d.mac]; if (p) nSvg += unifiNodeSvg(nx(p.col), ny(p.row), NW, NH, d); });
+  return `<div class="umap-wrap"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" class="umap">${eSvg}${nSvg}</svg></div>`;
+}
+// Role-tiered fallback (no uplink data — e.g. consoles the Connector Proxy can't reach).
+function unifiTierMap(snap) {
   const devs = snap.devices || [];
+  if (devs.length === 0) return "";
   const wanDown = (snap.isp || []).some((w) => w.status === "offline");
   const of = (t) => devs.filter((d) => d.type === t);
   let tiers = [
@@ -879,7 +934,6 @@ function unifiMap(snap) {
   const other = devs.filter((d) => !["gateway", "switch", "ap"].includes(d.type));
   if (other.length) tiers.push({ label: "Other", nodes: other });
   tiers = tiers.filter((t, i) => i === 0 || t.nodes.length);
-  if (devs.length === 0) return "";
   const COLW = 200, ROWH = 66, NW = 158, NH = 50, PAD = 18, LBLH = 26;
   const maxRows = Math.max(1, ...tiers.map((t) => t.nodes.length));
   const w = PAD * 2 + (tiers.length - 1) * COLW + NW;
@@ -895,16 +949,7 @@ function unifiMap(snap) {
         edges += `<path d="M${px} ${py} C ${mx} ${py} ${mx} ${y} ${x} ${y}" class="umap-edge"/>`;
       });
     }
-    t.nodes.forEach((n, j) => {
-      const x = nx(i), y = ny(j), st = n.state || "offline", col = unifiColor(st);
-      const nm = n.name || "device";
-      const sub = n.sub != null ? n.sub
-        : [n.model, (n.clients != null ? `${n.clients} client${n.clients === 1 ? "" : "s"}` : "")].filter(Boolean).join(" · ");
-      nodes += `<g><rect x="${x}" y="${y}" width="${NW}" height="${NH}" rx="8" class="umap-node" style="stroke:${col}"/>`
-        + `<circle cx="${x + 13}" cy="${y + NH / 2}" r="5" fill="${col}"/>`
-        + `<text x="${x + 26}" y="${y + 21}" class="umap-name">${escapeHtml(nm.length > 18 ? nm.slice(0, 17) + "…" : nm)}</text>`
-        + `<text x="${x + 26}" y="${y + 37}" class="umap-sub">${escapeHtml((sub || "").length > 21 ? sub.slice(0, 20) + "…" : (sub || ""))}</text></g>`;
-    });
+    t.nodes.forEach((n, j) => { nodes += unifiNodeSvg(nx(i), ny(j), NW, NH, n); });
   });
   return `<div class="umap-wrap"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" class="umap">${edges}${labels}${nodes}</svg></div>`;
 }
