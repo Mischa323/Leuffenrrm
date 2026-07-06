@@ -107,6 +107,7 @@ class UnifiAccountRequest(BaseModel):
     api_key: str | None = None          # write-only; omit/empty on update = keep existing
     enabled: bool = True
     interval: int = 300                 # seconds between polls (min enforced server-side)
+    host_ids: list[str] | None = None   # consoles to include ([]/None = all)
 
 
 class InviteRequest(BaseModel):

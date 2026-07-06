@@ -930,7 +930,11 @@ function unifiDeviceRows(devs) {
 function unifiAccountCard(a) {
   const snap = a.snapshot;
   const nDev = snap && snap.devices ? snap.devices.length : 0;
-  const meta = `${a.last_poll ? "polled " + relTime(a.last_poll) : "awaiting first poll"}${snap && snap.ok ? ` · ${nDev} device${nDev === 1 ? "" : "s"}` : ""}`;
+  const nHost = snap && Array.isArray(snap.hosts) ? snap.hosts.length : 0;
+  const nSel = (a.host_ids || []).length;
+  const consoleBit = nSel ? ` · ${nSel} of ${nHost || nSel} console${(nHost || nSel) === 1 ? "" : "s"}`
+    : (nHost > 1 ? ` · all ${nHost} consoles` : "");
+  const meta = `${a.last_poll ? "polled " + relTime(a.last_poll) : "awaiting first poll"}${snap && snap.ok ? ` · ${nDev} device${nDev === 1 ? "" : "s"}` : ""}${consoleBit}`;
   let bodyHtml;
   if (snap && snap.ok) {
     const warn = snap.error ? `<div class="h-sub" style="padding:6px 2px;color:var(--warn)">Partial data: ${escapeHtml(snap.error)}</div>` : "";
@@ -979,6 +983,16 @@ function renderUnifi() {
     catch (e) { toast(e.message); }
   });
 }
+function unifiConsolePicker(a) {
+  if (!a) return `<div class="h-sub" style="margin-bottom:10px">After saving, this account is polled — then edit it to choose which consoles to monitor.</div>`;
+  const hosts = (a.snapshot && Array.isArray(a.snapshot.hosts)) ? a.snapshot.hosts : [];
+  if (!hosts.length) return `<div class="h-sub" style="margin-bottom:10px">Consoles appear here after the first poll — use “Poll now”, then edit.</div>`;
+  const sel = new Set(a.host_ids || []);   // empty = all consoles
+  return `<div style="margin:2px 0 5px;font-size:12px;color:var(--text-dim)">Consoles to monitor <span class="h-sub">— untick a console to ignore it</span></div>
+    <div style="max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:var(--r-sm);padding:8px;margin-bottom:10px">
+      ${hosts.map((h) => `<label style="display:flex;align-items:center;gap:8px;padding:3px 1px;font-size:13px"><input type="checkbox" class="uf-host" value="${escapeHtml(h.id || "")}" ${(sel.size === 0 || sel.has(h.id)) ? "checked" : ""}> ${escapeHtml(h.name || h.id || "console")}${h.ip ? ` <span class="h-sub mono">${escapeHtml(h.ip)}</span>` : ""}</label>`).join("")}
+    </div>`;
+}
 function openUnifiForm(a) {
   state.unifiEditing = true;
   const body = $("unifi-body"); if (!body) return;
@@ -990,6 +1004,7 @@ function openUnifiForm(a) {
       <input class="inp" id="uf-key" type="password" autocomplete="off" placeholder="${a && a.key_set ? "•••••••••• (unchanged)" : "paste your UniFi API key"}"></label>
     <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><input type="checkbox" id="uf-enabled" ${(!a || a.enabled) ? "checked" : ""}> Enabled</label>
     <label style="display:block;margin-bottom:10px">Poll interval (seconds)<input class="inp" id="uf-interval" type="number" min="60" value="${a && a.interval ? a.interval : 300}"></label>
+    ${unifiConsolePicker(a)}
     <div style="display:flex;gap:8px;margin-top:12px">
       <button class="btn" id="uf-save">${ICON.save} ${a ? "Save changes" : "Add account"}</button>
       <button class="btn ghost" id="uf-cancel">Cancel</button>
@@ -1001,6 +1016,12 @@ function openUnifiForm(a) {
     const key = $("uf-key").value.trim();
     const payload = { name: $("uf-name").value.trim() || null, enabled: $("uf-enabled").checked, interval: +$("uf-interval").value || 300 };
     if (key) payload.api_key = key;
+    const boxes = body.querySelectorAll(".uf-host");
+    if (boxes.length) {
+      const checked = [...boxes].filter((b) => b.checked).map((b) => b.value);
+      // all (or none) ticked => [] meaning "every console"; a subset => just those
+      payload.host_ids = (checked.length === boxes.length || checked.length === 0) ? [] : checked;
+    }
     if (!a && !key) return toast("An API key is required");
     try {
       if (a) await api(`/api/unifi/accounts/${a.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });

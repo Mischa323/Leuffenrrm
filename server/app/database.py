@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS unifi_accounts (
     api_key       TEXT NOT NULL,
     enabled       INTEGER NOT NULL DEFAULT 1,
     interval      INTEGER NOT NULL DEFAULT 300,
+    host_ids_json TEXT,                        -- JSON list of console ids to include ([] = all)
     snapshot_json TEXT,
     last_poll     REAL,
     last_ok       INTEGER,
@@ -1287,6 +1288,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("gpu_percent", "gpu_temp", "gpu_mem_percent", "cpu_temp"):
         if col not in metcols:
             conn.execute(f"ALTER TABLE metrics ADD COLUMN {col} REAL")
+    # UniFi per-console selection (added later).
+    ucols = {r[1] for r in conn.execute("PRAGMA table_info(unifi_accounts)")}
+    if ucols and "host_ids_json" not in ucols:
+        conn.execute("ALTER TABLE unifi_accounts ADD COLUMN host_ids_json TEXT")
     ocols = {r[1] for r in conn.execute("PRAGMA table_info(organizations)")}
     if "auto_update" not in ocols:
         # Per-org agent auto-update override: 'inherit' (use global default) | 'on' | 'off'.
@@ -2086,16 +2091,24 @@ def _unifi_row(r, redact: bool = True) -> dict:
     except (ValueError, TypeError):
         d["snapshot"] = None
     d.pop("snapshot_json", None)
+    try:
+        d["host_ids"] = json.loads(d["host_ids_json"]) if d.get("host_ids_json") else []
+    except (ValueError, TypeError):
+        d["host_ids"] = []
+    d.pop("host_ids_json", None)
     return d
 
 
 def add_unifi_account(org_id: str, name: str | None, api_key: str, *,
-                      interval: int = 300, enabled: bool = True) -> int:
+                      interval: int = 300, enabled: bool = True,
+                      host_ids: list | None = None) -> int:
     with write() as conn:
         cur = conn.execute(
-            """INSERT INTO unifi_accounts (org_id, name, api_key, enabled, interval, created_at)
-               VALUES (?,?,?,?,?,?)""",
-            (org_id, name, api_key, 1 if enabled else 0, int(interval), time.time()))
+            """INSERT INTO unifi_accounts (org_id, name, api_key, enabled, interval,
+                   host_ids_json, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (org_id, name, api_key, 1 if enabled else 0, int(interval),
+             json.dumps(host_ids or []), time.time()))
         return cur.lastrowid
 
 
@@ -2117,7 +2130,7 @@ def list_unifi_accounts_all(enabled_only: bool = True) -> list[dict]:
     return [_unifi_row(r, redact=False) for r in get_conn().execute(q).fetchall()]
 
 
-_UNIFI_FIELDS = {"name", "enabled", "interval", "api_key"}
+_UNIFI_FIELDS = {"name", "enabled", "interval", "api_key", "host_ids"}
 
 
 def update_unifi_account(account_id: int, fields: dict) -> None:
@@ -2125,13 +2138,18 @@ def update_unifi_account(account_id: int, fields: dict) -> None:
     for k, v in fields.items():
         if k not in _UNIFI_FIELDS:
             continue
-        if k == "api_key" and not (v or "").strip():
-            continue  # empty -> keep existing key
-        if k == "enabled":
+        col = k
+        if k == "api_key":
+            if not (v or "").strip():
+                continue  # empty -> keep existing key
+        elif k == "enabled":
             v = 1 if v else 0
         elif k == "interval":
             v = int(v)
-        sets.append(f"{k}=?")
+        elif k == "host_ids":
+            col = "host_ids_json"
+            v = json.dumps(v or [])
+        sets.append(f"{col}=?")
         vals.append(v)
     if not sets:
         return
