@@ -108,9 +108,9 @@ async function refreshBellBadge() {
   const ping = $("bell-ping"), menu = $("bell-menu");
   ping.classList.toggle("hidden", alerts.length === 0);
   if (alerts.length === 0) {
-    menu.innerHTML = `<div style="padding:14px 16px;color:var(--muted);font-size:13px">No open alerts</div>`;
+    menu.innerHTML = `<div style="padding:14px 16px;color:var(--text-dim);font-size:13px">No new notifications</div>`;
   } else {
-    menu.innerHTML = `<div style="padding:10px 16px 6px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Open alerts</div>` +
+    menu.innerHTML = `<div style="padding:10px 16px 6px;font-size:11px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em">Open alerts</div>` +
       alerts.map((a) => {
         const sev = a.severity || "warning";
         const col = sev === "critical" ? "var(--bad)" : "var(--warn,#f59e0b)";
@@ -118,7 +118,7 @@ async function refreshBellBadge() {
           <div style="padding:9px 16px;display:flex;align-items:flex-start;gap:10px;cursor:pointer" data-alert-org="${escapeAttr(a.org_id||"")}">
             <span style="color:${col};flex-shrink:0;margin-top:1px">${ICON.bell}</span>
             <div style="min-width:0"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(a.name)}</div>
-            <div style="font-size:11px;color:var(--muted)">${escapeHtml(a.org||"")}</div></div>
+            <div style="font-size:11px;color:var(--text-dim)">${escapeHtml(a.org||"")}</div></div>
           </div>`;
       }).join("");
     menu.querySelectorAll("[data-alert-org]").forEach((row) => {
@@ -1317,8 +1317,8 @@ function kindTag(label) {
 function setupMonitorMenu() {
   const btn = $("mon-new"), menu = $("mon-new-menu");
   menu.innerHTML = `
-    <a href="#" data-new="template" style="align-items:flex-start">${ICON.shieldCheck}<span><b style="font-weight:600">From a template</b><br><small style="color:var(--muted)">Threshold &amp; standard rules — one click</small></span></a>
-    <a href="#" data-new="script" style="align-items:flex-start">${ICON.terminal}<span><b style="font-weight:600">Script policy</b><br><small style="color:var(--muted)">Run a monitor script &amp; auto-remediate</small></span></a>`;
+    <a href="#" data-new="template" style="align-items:flex-start">${ICON.shieldCheck}<span><b style="font-weight:600">From a template</b><br><small style="color:var(--text-dim)">Threshold &amp; standard rules — one click</small></span></a>
+    <a href="#" data-new="script" style="align-items:flex-start">${ICON.terminal}<span><b style="font-weight:600">Script policy</b><br><small style="color:var(--text-dim)">Run a monitor script &amp; auto-remediate</small></span></a>`;
   btn.onclick = (e) => { e.stopPropagation(); menu.classList.toggle("open"); };
   document.addEventListener("click", () => menu.classList.remove("open"));
   menu.querySelectorAll("[data-new]").forEach((a) => a.onclick = (e) => {

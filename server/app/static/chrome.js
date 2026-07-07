@@ -4,6 +4,7 @@
 
 let ME = { name: "—", email: "", role: "", is_global_admin: false };
 const initials = (s) => (s || "?").split(/[\s\-@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 const SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4 12H2m20 0h-2M5.6 5.6 4.2 4.2m15.6 15.6-1.4-1.4M18.4 5.6l1.4-1.4M4.2 19.8l1.4-1.4"/></svg>';
 const MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>';
@@ -17,7 +18,10 @@ function buildChrome(crumb) {
     </nav>
     <div class="spacer"></div>
     <button class="icon-btn" id="theme-btn" title="Toggle theme"><span id="theme-ico"></span></button>
-    <button class="icon-btn" title="Alerts">${ICON.bell}<span class="ping"></span></button>
+    <div style="position:relative">
+      <button class="icon-btn" id="chrome-bell" title="Alerts">${ICON.bell}<span class="ping hidden" id="chrome-bell-ping"></span></button>
+      <div class="menu" id="chrome-bell-menu" style="width:300px;right:0;left:auto"></div>
+    </div>
     <div style="position:relative">
       <div class="userchip" id="userchip"><span class="avatar" id="chrome-av">?</span><span class="who"><span id="chrome-name">…</span><small id="chrome-email"></small></span></div>
       <div class="menu" id="usermenu"></div>
@@ -43,6 +47,25 @@ function buildChrome(crumb) {
   chip.style.cursor = "pointer";
   chip.onclick = (e) => { e.stopPropagation(); menu.classList.toggle("open"); };
   document.addEventListener("click", () => menu.classList.remove("open"));
+
+  // Notifications bell — same open-alerts feed as the dashboard.
+  const bell = document.getElementById("chrome-bell");
+  const bmenu = document.getElementById("chrome-bell-menu");
+  const bping = document.getElementById("chrome-bell-ping");
+  bmenu.innerHTML = `<div style="padding:14px 16px;color:var(--text-dim);font-size:13px">No new notifications</div>`;
+  bell.onclick = (e) => { e.stopPropagation(); menu.classList.remove("open"); bmenu.classList.toggle("open"); };
+  document.addEventListener("click", () => bmenu.classList.remove("open"));
+  fetch("/api/global").then((r) => (r.ok ? r.json() : null)).then((d) => {
+    const alerts = (d && d.monitors) || [];
+    bping.classList.toggle("hidden", alerts.length === 0);
+    if (!alerts.length) return;
+    bmenu.innerHTML =
+      `<div style="padding:10px 16px 6px;font-size:11px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em">Open alerts</div>` +
+      alerts.map((a) => {
+        const col = a.severity === "critical" ? "var(--bad)" : "var(--warn)";
+        return `<a href="/"><span style="color:${col};flex:none">${ICON.bell}</span><span style="min-width:0"><span style="display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.name || "Alert")}</span><small style="color:var(--text-faint)">${esc(a.org || "")}</small></span></a>`;
+      }).join("");
+  }).catch(() => {});
 
   // Fill in the real signed-in user.
   fetch("/api/me").then((r) => r.json()).then((me) => {
