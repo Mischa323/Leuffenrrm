@@ -1464,19 +1464,37 @@ async function saveMonitor() {
 
 /* ---------- monitors: template gallery + metric-threshold rules ---------- */
 function metricIcon(metric) {
+  metric = metric || "";
   if (metric === "cpu_percent") return ICON.cpu;
   if (metric === "mem_percent") return ICON.mem;
-  if (metric === "disk_percent") return ICON.disk;
+  if (metric === "disk_percent" || metric === "disk_health") return ICON.disk;
   if (metric === "gpu_percent") return ICON.gpu;
   if (metric === "cpu_temp" || metric === "gpu_temp") return ICON.thermo;
   if (metric === "wol") return ICON.power;
+  if (metric === "offline") return ICON.zap;
+  if (metric === "uptime" || metric === "reboot_pending") return ICON.clock;
+  if (metric === "av_health" || metric === "firewall" || metric === "bitlocker" || metric === "failed_logons") return ICON.shieldCheck;
+  if (metric === "eventlog") return ICON.history;
+  if (metric === "process" || metric.startsWith("process:")) return ICON.terminal;
+  if (metric === "service" || metric.startsWith("service:")) return ICON.gear;
   return ICON.wifi;
 }
 function ruleValueText(r) {
-  if (r.metric === "wol") return "Wake-on-LAN · Windows only";
-  if (r.metric === "offline") return `unseen for ${Math.round(r.threshold)}s`;
-  const unit = r.metric.endsWith("_temp") ? "°C" : "%";
-  const label = r.metric.replace("_percent", "").replace("_temp", " temp");
+  const m = r.metric || "";
+  if (m === "wol") return "Wake-on-LAN · Windows only";
+  if (m === "offline") return `unseen for ${Math.round(r.threshold)}s`;
+  if (m === "disk_health") return "SMART / disk health";
+  if (m === "reboot_pending") return "reboot required";
+  if (m === "uptime") return `up ≥ ${Math.round(r.threshold)} days`;
+  if (m === "av_health") return `antivirus health · defs > ${Math.round(r.threshold)}d`;
+  if (m === "firewall") return "firewall disabled";
+  if (m === "bitlocker") return "BitLocker off (system drive)";
+  if (m === "failed_logons") return `≥ ${Math.round(r.threshold)} failed logons / 15 min`;
+  if (m.startsWith("process:")) return `process “${m.slice(8)}” not running`;
+  if (m.startsWith("service:")) return `service “${m.slice(8)}” not running`;
+  if (m.startsWith("eventlog:")) { const p = m.split(":"); return `event log · ${p[1]} ${p[2]}${p[3] ? " #" + p[3] : ""}`; }
+  const unit = m.endsWith("_temp") ? "°C" : "%";
+  const label = m.replace("_percent", "").replace("_temp", " temp");
   return `${label} ≥ ${r.threshold}${unit} for ${r.duration_minutes} min`;
 }
 function renderMonitorGallery() {
@@ -1484,9 +1502,16 @@ function renderMonitorGallery() {
   // "service" is created from a device's Services list (it needs a service name),
   // so it's not offered as a generic gallery template.
   gallery.innerHTML = (state.templates || []).filter((t) => t.id !== "service").map((t) => {
-    const detail = t.kind === "policy"
-      ? (t.os_support ? "Applies to: " + t.os_support.map((o) => o === "windows_server" ? "Windows Server" : "Windows").join(", ") : "All devices")
-      : "Default: " + (t.metric === "offline" ? t.default_threshold + "s unseen" : t.default_threshold + (t.unit || "%") + " for " + t.default_duration_minutes + " min");
+    const osNote = t.os_support ? t.os_support.map((o) => o === "windows_server" ? "Windows Server" : "Windows").join(" / ") : "Windows & Linux";
+    let detail;
+    if (t.kind === "policy") detail = t.os_support ? "Applies to: " + osNote : "All devices";
+    else if (["disk_health", "reboot_pending", "firewall", "bitlocker", "av_health"].includes(t.metric)) detail = osNote;
+    else if (t.metric === "process") detail = "Watches a named process · " + osNote;
+    else if (t.metric === "eventlog") detail = "System / Application errors · " + osNote;
+    else if (t.metric === "offline") detail = "Default: " + t.default_threshold + "s unseen";
+    else if (t.metric === "uptime") detail = "Default: over " + t.default_threshold + " days";
+    else if (t.metric === "failed_logons") detail = "Default: " + t.default_threshold + " / 15 min · " + osNote;
+    else detail = "Default: " + t.default_threshold + (t.unit || "%") + " for " + t.default_duration_minutes + " min";
     return `
     <div class="tile" data-tmpl="${t.id}" style="display:flex;flex-direction:column;gap:10px">
       <div style="display:flex;align-items:center;gap:10px"><div class="os-ico">${metricIcon(t.metric)}</div><div style="font-weight:650">${escapeHtml(t.name)}</div>${t.kind === "policy" ? `<span class="badge" style="margin-left:auto">policy</span>` : ""}</div>
@@ -1548,14 +1573,33 @@ function openRuleForm(tmpl, existing) {
   $("rm-desc").textContent = tmpl.description;
   // A policy (e.g. Wake-on-LAN) has one standard config — only name + scope/target.
   const isPolicy = tmpl.kind === "policy";
-  $("rm-metric-row").classList.toggle("hidden", isPolicy);
+  const m = tmpl.metric;
+  const isProcess = m === "process", isEvent = m === "eventlog";
+  const isStatus = ["reboot_pending", "firewall", "bitlocker", "disk_health"].includes(m);
+  const noDuration = ["offline", "uptime", "av_health", "failed_logons"].includes(m);
+  const showThreshold = !isPolicy && !isStatus && !isProcess && !isEvent;
+  $("rm-metric-row").classList.toggle("hidden", !showThreshold);
   $("rm-alert-row").classList.toggle("hidden", isPolicy);
+  $("rm-process-wrap").classList.toggle("hidden", !isProcess);
+  $("rm-event-wrap").classList.toggle("hidden", !isEvent);
   $("rm-name").value = existing ? existing.name : tmpl.name;
-  $("rm-threshold-label").textContent = tmpl.metric === "offline" ? "Unseen for (seconds)"
+  $("rm-threshold-label").textContent =
+      m === "offline" ? "Unseen for (seconds)"
+    : m === "uptime" ? "Uptime over (days)"
+    : m === "av_health" ? "Definitions older than (days)"
+    : m === "failed_logons" ? "Failed logons (count / 15 min)"
     : `Threshold (${tmpl.unit || "%"})`;
   $("rm-threshold").value = existing ? existing.threshold : tmpl.default_threshold;
-  $("rm-duration-wrap").classList.toggle("hidden", tmpl.metric === "offline");
+  $("rm-duration-wrap").classList.toggle("hidden", noDuration);
   $("rm-duration").value = existing ? (existing.duration_minutes || "") : (tmpl.default_duration_minutes || "");
+  // process / event-log config lives in the (immutable) metric string, so it is
+  // shown read-only when editing an existing rule.
+  if (isProcess) $("rm-process").value = existing ? (existing.metric || "").replace(/^process:/, "") : "";
+  if (isEvent) {
+    const p = (existing ? existing.metric : "eventlog:system:error:").split(":");
+    $("rm-event-log").value = p[1] || "system"; $("rm-event-level").value = p[2] || "error"; $("rm-event-ids").value = p[3] || "";
+  }
+  ["rm-process", "rm-event-log", "rm-event-level", "rm-event-ids"].forEach((id) => { const e = $(id); if (e) e.disabled = !!existing; });
   const groups = (state.cache.groups || []).map((g) => `<option value="group:${g.id}">Group: ${escapeHtml(g.name)}</option>`).join("");
   const devs = (state.cache.devices || []).map((d) => `<option value="device:${d.id}">${escapeHtml(d.hostname)}</option>`).join("");
   $("rm-target").innerHTML = `<option value="all">All devices</option>` + groups + devs;
@@ -1583,14 +1627,26 @@ async function saveRule() {
     else if (tgt.startsWith("device:")) { target_type = "device"; target_id = tgt.slice(7); }
   }
   const isPolicy = currentTemplate.kind === "policy";
+  const m = currentTemplate.metric;
+  const noThreshold = isPolicy || ["reboot_pending", "firewall", "bitlocker", "disk_health", "process", "eventlog"].includes(m);
+  const noDuration = noThreshold || ["offline", "uptime", "av_health", "failed_logons"].includes(m);
   const body = {
     template_id: currentTemplate.id, name,
-    threshold: isPolicy ? 0 : parseFloat($("rm-threshold").value),
-    duration_minutes: (isPolicy || currentTemplate.metric === "offline") ? null : parseFloat($("rm-duration").value),
+    threshold: noThreshold ? (currentTemplate.default_threshold || 0) : parseFloat($("rm-threshold").value),
+    duration_minutes: noDuration ? null : parseFloat($("rm-duration").value),
     target_type, target_id,
     severity: isPolicy ? (currentTemplate.default_severity || "info") : $("rm-severity").value,
     notify_email: isPolicy ? false : $("rm-notify-switch").classList.contains("on"),
   };
+  if (m === "process") {
+    body.process = $("rm-process").value.trim();
+    if (!editingRuleId && !body.process) { $("rm-process").focus(); return toast("Enter a process name"); }
+  }
+  if (m === "eventlog") {
+    body.event_log = $("rm-event-log").value;
+    body.event_level = $("rm-event-level").value;
+    body.event_ids = $("rm-event-ids").value.trim();
+  }
   try {
     if (editingRuleId) {
       await api(`/api/monitor-rules/${editingRuleId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

@@ -99,6 +99,10 @@ class MonitorRuleRequest(BaseModel):
     notify_email: bool = True
     severity: str | None = None             # defaults to the template's suggestion
     service: str | None = None              # for the 'service' template: the service name to watch
+    process: str | None = None              # for the 'process' template: the process name to watch
+    event_log: str | None = None            # eventlog: 'system' | 'application' | 'both'
+    event_level: str | None = None          # eventlog: 'error' | 'critical'
+    event_ids: str | None = None            # eventlog: comma-separated event IDs, or blank for any
 
 
 class UnifiAccountRequest(BaseModel):

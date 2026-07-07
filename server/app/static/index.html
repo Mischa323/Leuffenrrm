@@ -339,6 +339,14 @@
           <div id="rm-threshold-wrap"><label class="ml2" id="rm-threshold-label">Threshold</label><input id="rm-threshold" class="mm-inp" type="number" /></div>
           <div id="rm-duration-wrap"><label class="ml2">Sustained for (minutes)</label><input id="rm-duration" class="mm-inp" type="number" /></div>
         </div>
+        <div id="rm-process-wrap" class="hidden"><label class="ml2">Process name</label><input id="rm-process" class="mm-inp" placeholder="e.g. sqlservr.exe" /></div>
+        <div id="rm-event-wrap" class="hidden" style="display:flex;flex-direction:column;gap:14px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+            <div><label class="ml2">Log</label><select id="rm-event-log" class="mm-inp"><option value="system">System</option><option value="application">Application</option><option value="both">Both</option></select></div>
+            <div><label class="ml2">Minimum level</label><select id="rm-event-level" class="mm-inp"><option value="error">Error &amp; Critical</option><option value="critical">Critical only</option></select></div>
+          </div>
+          <div><label class="ml2">Event IDs <span style="color:var(--text-faint)">· optional, comma-separated</span></label><input id="rm-event-ids" class="mm-inp" placeholder="e.g. 7031, 1000" /></div>
+        </div>
         <div><label class="ml2">Target</label><select id="rm-target" class="mm-inp"></select></div>
         <div id="rm-alert-row" style="display:flex;flex-direction:column;gap:14px">
           <div><label class="ml2">Severity</label><select id="rm-severity" class="mm-inp"><option value="info">Info</option><option value="warning" selected>Warning</option><option value="critical">Critical</option></select></div>

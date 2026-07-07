@@ -1740,6 +1740,49 @@ MONITOR_TEMPLATES = [
                     "device's Services list (Windows Services / Linux & Synology systemd).",
      "metric": "service", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
      "default_severity": "warning", "os_support": None},
+    {"id": "process", "name": "Process not running", "category": "Availability", "kind": "monitor",
+     "description": "Alert when a named process is not running on a device (e.g. sqlservr.exe, "
+                    "nginx). Windows & Linux.",
+     "metric": "process", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
+     "default_severity": "warning", "os_support": None},
+    {"id": "disk_health", "name": "Disk health (SMART)", "category": "Hardware", "kind": "monitor",
+     "description": "Alert when a physical disk reports a failing / non-healthy SMART status. "
+                    "Windows (Get-PhysicalDisk), Linux (smartctl) and Synology.",
+     "metric": "disk_health", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
+     "default_severity": "critical", "os_support": None},
+    {"id": "reboot_pending", "name": "Reboot required", "category": "Maintenance", "kind": "monitor",
+     "description": "Alert when the OS is waiting on a reboot after updates. Windows & Linux.",
+     "metric": "reboot_pending", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
+     "default_severity": "info", "os_support": None},
+    {"id": "uptime", "name": "Excessive uptime", "category": "Maintenance", "kind": "monitor",
+     "description": "Alert when a device has been running longer than the threshold (a reboot "
+                    "reminder). Threshold is in days.",
+     "metric": "uptime", "unit": "d", "default_threshold": 30, "default_duration_minutes": None,
+     "default_severity": "info", "os_support": None},
+    {"id": "av_health", "name": "Antivirus health", "category": "Security", "kind": "monitor",
+     "description": "Alert when Microsoft Defender real-time protection is off, its definitions are "
+                    "older than the threshold (days), or an active threat is detected. Windows only.",
+     "metric": "av_health", "unit": "d", "default_threshold": 7, "default_duration_minutes": None,
+     "default_severity": "warning", "os_support": ["windows", "windows_server"]},
+    {"id": "firewall", "name": "Firewall disabled", "category": "Security", "kind": "monitor",
+     "description": "Alert when any Windows Firewall profile (Domain / Private / Public) is turned "
+                    "off. Windows only.",
+     "metric": "firewall", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
+     "default_severity": "warning", "os_support": ["windows", "windows_server"]},
+    {"id": "bitlocker", "name": "BitLocker off", "category": "Security", "kind": "monitor",
+     "description": "Alert when the Windows system drive is not protected by BitLocker. Windows only.",
+     "metric": "bitlocker", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
+     "default_severity": "warning", "os_support": ["windows", "windows_server"]},
+    {"id": "failed_logons", "name": "Failed logon attempts", "category": "Security", "kind": "monitor",
+     "description": "Alert when failed sign-ins (Security event 4625) in the last 15 minutes cross "
+                    "the threshold — a brute-force signal. Windows only.",
+     "metric": "failed_logons", "unit": "", "default_threshold": 10, "default_duration_minutes": None,
+     "default_severity": "warning", "os_support": ["windows", "windows_server"]},
+    {"id": "eventlog", "name": "Event log error", "category": "Availability", "kind": "monitor",
+     "description": "Alert on Windows event-log errors — choose a log (System / Application), a "
+                    "minimum level (Error / Critical) and optional event IDs. Windows only.",
+     "metric": "eventlog", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
+     "default_severity": "warning", "os_support": ["windows", "windows_server"]},
     {"id": "wol", "name": "Wake-on-LAN", "category": "Power", "kind": "policy",
      "description": "Configure agents' NICs for Wake-on-LAN and disable Fast Startup so they can be "
                     "woken. Windows only.",
@@ -1843,6 +1886,27 @@ def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:
             raise HTTPException(status_code=400, detail="Service monitors must target a device")
         metric = f"service:{svc}"
         name = (req.name or f"Service: {svc}").strip() or f"Service: {svc}"
+    # The 'process' template watches a named process — the name rides in the
+    # metric as "process:<name>", and can target a device, group or all.
+    elif tmpl["id"] == "process":
+        proc = (req.process or "").strip()
+        if not proc:
+            raise HTTPException(status_code=400, detail="A process name is required")
+        metric = f"process:{proc}"
+        name = (req.name or f"Process: {proc}").strip() or f"Process: {proc}"
+    # The 'eventlog' template carries its filter in the metric as
+    # "eventlog:<log>:<level>:<ids>" (ids comma-separated, or empty for any).
+    elif tmpl["id"] == "eventlog":
+        log = (req.event_log or "system").strip().lower()
+        if log not in ("system", "application", "both"):
+            log = "system"
+        level = (req.event_level or "error").strip().lower()
+        if level not in ("error", "critical"):
+            level = "error"
+        ids = ",".join(x.strip() for x in (req.event_ids or "").split(",") if x.strip().isdigit())
+        metric = f"eventlog:{log}:{level}:{ids}"
+        _lbl = f"{log} {level}" + (f" #{ids}" if ids else "")
+        name = (req.name or f"Event log: {_lbl}").strip() or f"Event log: {_lbl}"
     return db.create_monitor_rule(org_id, tmpl["id"], name, metric, threshold, duration,
                                   req.target_type, req.target_id, req.notify_email, severity)
 
@@ -2376,6 +2440,16 @@ async def _handle_agent_msg(device_id: str, org_id: str, data: dict) -> None:
             db.set_device_backups(device_id, m.get("backups"))
         if m.get("services"):
             db.set_device_services(device_id, m.get("services"))
+        if m.get("disk_health") is not None:
+            db.set_device_disk_health(device_id, m.get("disk_health"))
+        if m.get("security"):
+            db.set_device_security(device_id, m.get("security"))
+        if m.get("events") is not None:
+            db.set_device_events(device_id, m.get("events"))
+        if m.get("processes"):
+            db.set_device_processes(device_id, m.get("processes"))
+        if "reboot_pending" in m:
+            db.set_device_reboot_pending(device_id, bool(m.get("reboot_pending")))
     elif mtype == "ack":
         manager.resolve(data.get("rid", ""), data.get("payload", data))
     elif mtype == "shell_output":

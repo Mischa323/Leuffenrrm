@@ -87,6 +87,11 @@ CREATE TABLE IF NOT EXISTS devices (
     hyperv_json   TEXT,
     backups_json  TEXT,
     services_json TEXT,
+    disk_health_json TEXT,
+    security_json TEXT,
+    events_json   TEXT,
+    processes_json TEXT,
+    reboot_pending INTEGER,
     is_node       INTEGER NOT NULL DEFAULT 0,
     inventory_json TEXT,
     compliant     INTEGER,
@@ -1220,6 +1225,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN backups_json TEXT")
     if "services_json" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN services_json TEXT")
+    for _col, _type in (("disk_health_json", "TEXT"), ("security_json", "TEXT"),
+                        ("events_json", "TEXT"), ("processes_json", "TEXT"),
+                        ("reboot_pending", "INTEGER")):
+        if _col not in dcols:
+            conn.execute(f"ALTER TABLE devices ADD COLUMN {_col} {_type}")
     if "gpu" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN gpu TEXT")
     if "software_json" not in dcols:
@@ -1756,6 +1766,50 @@ def set_device_services(device_id: str, services: list | None) -> None:
     with write() as conn:
         conn.execute("UPDATE devices SET services_json=? WHERE id=?",
                      (json.dumps(services), device_id))
+
+
+def set_device_disk_health(device_id: str, disks: list | None) -> None:
+    """Latest per-disk SMART/health list (best-effort, agent-throttled)."""
+    if disks is None:
+        return
+    with write() as conn:
+        conn.execute("UPDATE devices SET disk_health_json=? WHERE id=?",
+                     (json.dumps(disks), device_id))
+
+
+def set_device_security(device_id: str, sec: dict | None) -> None:
+    """Latest Windows security posture (Defender / firewall / BitLocker / logons)."""
+    if not sec:
+        return
+    with write() as conn:
+        conn.execute("UPDATE devices SET security_json=? WHERE id=?",
+                     (json.dumps(sec), device_id))
+
+
+def set_device_events(device_id: str, events: list | None) -> None:
+    """Latest recent Windows event-log errors. An empty list is meaningful (no
+    recent errors), so it is stored so the event-log monitor can clear."""
+    if events is None:
+        return
+    with write() as conn:
+        conn.execute("UPDATE devices SET events_json=? WHERE id=?",
+                     (json.dumps(events), device_id))
+
+
+def set_device_processes(device_id: str, procs: list | None) -> None:
+    """Latest running-process name set (for the process-not-running monitor)."""
+    if not procs:
+        return
+    with write() as conn:
+        conn.execute("UPDATE devices SET processes_json=? WHERE id=?",
+                     (json.dumps(procs), device_id))
+
+
+def set_device_reboot_pending(device_id: str, pending: bool) -> None:
+    """Whether the OS is waiting on a reboot (patched-but-not-restarted)."""
+    with write() as conn:
+        conn.execute("UPDATE devices SET reboot_pending=? WHERE id=?",
+                     (1 if pending else 0, device_id))
 
 
 def set_node(device_id: str, is_node: bool) -> None:
