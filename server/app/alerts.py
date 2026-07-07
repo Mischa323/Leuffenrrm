@@ -68,6 +68,37 @@ def _service_state(dev: dict, name: str) -> str | None:
     return None
 
 
+def _json_list(s) -> list | None:
+    try:
+        v = json.loads(s or "")
+    except (ValueError, TypeError):
+        return None
+    return v if isinstance(v, list) else None
+
+
+def _json_obj(s) -> dict | None:
+    try:
+        v = json.loads(s or "")
+    except (ValueError, TypeError):
+        return None
+    return v if isinstance(v, dict) else None
+
+
+# Explicit "bad" markers — anything a disk reports that isn't one of these is
+# treated as healthy, so an unfamiliar/OK status never raises a false alarm.
+# (Substring match, but careful: "healthy" is a substring of "unhealthy".)
+_DISK_BAD = ("unhealthy", "warn", "fail", "critical", "bad", "predict", "error", "degrad")
+
+
+def _disk_ok(d: dict) -> bool:
+    """Whether a reported disk is healthy. Only explicit failure markers raise;
+    unknown/blank status is treated as OK (don't alarm on missing data)."""
+    status = (d.get("status") or d.get("health") or "").strip().lower()
+    if not status:
+        return True
+    return not any(bad in status for bad in _DISK_BAD)
+
+
 def evaluate_once() -> None:
     now = time.time()
     online = manager.online_ids()
@@ -115,6 +146,137 @@ def evaluate_once() -> None:
                        f"{dev['hostname']}: {rule['name']}",
                        f"Service <b>{_esc(svc_name)}</b> on <b>{_esc(dev['hostname'])}</b> "
                        f"is <b>{_esc(state or 'not reported')}</b> (expected running).",
+                       notify, severity, meta)
+                continue
+            if rule["metric"] == "disk_health":
+                disks = _json_list(dev.get("disk_health_json")) or []
+                bad = [d for d in disks if isinstance(d, dict) and not _disk_ok(d)]
+                raised = bool(bad)
+                names = ", ".join(f"{d.get('name')} ({d.get('status') or d.get('health')})" for d in bad[:4])
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": names or "all disks healthy"}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       f"Disk health warning on <b>{_esc(dev['hostname'])}</b>: {_esc(names)}.",
+                       notify, severity, meta)
+                continue
+            if rule["metric"] == "reboot_pending":
+                raised = bool(dev.get("reboot_pending"))
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": "Reboot required" if raised else "Up to date"}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       f"<b>{_esc(dev['hostname'])}</b> is waiting on a reboot to finish applying updates.",
+                       notify, severity, meta)
+                continue
+            if rule["metric"] == "av_health":
+                av = (_json_obj(dev.get("security_json")) or {}).get("av") or {}
+                reasons = []
+                if av.get("realtime") is False:
+                    reasons.append("real-time protection is off")
+                if av.get("threats"):
+                    reasons.append(f"{int(av['threats'])} active threat(s)")
+                age = av.get("sig_age_days")
+                if isinstance(age, (int, float)) and age > (rule["threshold"] or 7):
+                    reasons.append(f"definitions {int(age)} days old")
+                raised = bool(av) and bool(reasons)
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": "; ".join(reasons) or "healthy"}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       f"Antivirus health issue on <b>{_esc(dev['hostname'])}</b>: "
+                       f"{_esc('; '.join(reasons))}.", notify, severity, meta)
+                continue
+            if rule["metric"] == "firewall":
+                fw = (_json_obj(dev.get("security_json")) or {}).get("firewall") or {}
+                off = [p for p, v in fw.items() if v is False]
+                raised = bool(off)
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": ("off: " + ", ".join(off)) if off else "all profiles on"}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       f"Windows Firewall is disabled on <b>{_esc(dev['hostname'])}</b> "
+                       f"(profiles: {_esc(', '.join(off))}).", notify, severity, meta)
+                continue
+            if rule["metric"] == "bitlocker":
+                sec = _json_obj(dev.get("security_json"))
+                raised = sec is not None and sec.get("bitlocker_system") is False
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": "system drive unprotected" if raised else "protected"}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       f"The system drive on <b>{_esc(dev['hostname'])}</b> is not protected by "
+                       f"BitLocker.", notify, severity, meta)
+                continue
+            if rule["metric"] == "failed_logons":
+                n = (_json_obj(dev.get("security_json")) or {}).get("failed_logons_15m")
+                raised = isinstance(n, (int, float)) and n >= rule["threshold"]
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": f"{int(n)} failed logons/15m" if isinstance(n, (int, float)) else "no data"}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       f"<b>{int(n) if isinstance(n, (int, float)) else 0}</b> failed sign-ins on "
+                       f"<b>{_esc(dev['hostname'])}</b> in the last 15 minutes "
+                       f"(threshold {int(rule['threshold'])}).", notify, severity, meta)
+                continue
+            if rule["metric"] == "uptime":
+                up = latest.get("uptime") if latest else None
+                days = (up / 86400.0) if up else None
+                raised = days is not None and days >= rule["threshold"]
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": f"up {days:.1f}d" if days is not None else "unknown"}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       (f"<b>{_esc(dev['hostname'])}</b> has been up for {days:.0f} days "
+                        f"(threshold {int(rule['threshold'])}d) — a reboot is due."
+                        if days is not None else ""), notify, severity, meta)
+                continue
+            if rule["metric"].startswith("process:"):
+                if dev["id"] not in online:
+                    continue
+                pname = rule["metric"].split(":", 1)[1].strip().lower()
+                procs = _json_list(dev.get("processes_json"))
+                if not procs:
+                    continue  # no process data yet — don't alert
+                raised = pname not in {str(p).strip().lower() for p in procs}
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": f"'{pname}' " + ("not running" if raised else "running")}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       f"Process <b>{_esc(pname)}</b> is <b>not running</b> on "
+                       f"<b>{_esc(dev['hostname'])}</b>.", notify, severity, meta)
+                continue
+            if rule["metric"].startswith("eventlog:"):
+                events = _json_list(dev.get("events_json"))
+                if events is None:
+                    continue  # no event data yet
+                parts = rule["metric"].split(":", 3)
+                log = parts[1] if len(parts) > 1 else "system"
+                level = parts[2] if len(parts) > 2 else "error"
+                ids = parts[3] if len(parts) > 3 else ""
+                id_set = {int(x) for x in ids.split(",") if x.strip().isdigit()}
+                want_crit = level == "critical"
+                matches = []
+                for e in events:
+                    if not isinstance(e, dict):
+                        continue
+                    if log != "both" and (e.get("log", "").lower() != log):
+                        continue
+                    if want_crit and "crit" not in (e.get("level", "").lower()):
+                        continue
+                    if id_set and e.get("id") not in id_set:
+                        continue
+                    matches.append(e)
+                raised = bool(matches)
+                sample = matches[0] if matches else {}
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": (f"{len(matches)} event(s); e.g. {sample.get('source')} #{sample.get('id')}"
+                                   if matches else "no matching events")}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       (f"{len(matches)} matching event-log error(s) on <b>{_esc(dev['hostname'])}</b>"
+                        + (f" — e.g. <b>{_esc(sample.get('source') or '')}</b> event {sample.get('id')}: "
+                           f"{_esc((sample.get('msg') or '')[:160])}" if matches else "") + "."),
                        notify, severity, meta)
                 continue
             if not latest:
