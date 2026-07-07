@@ -21,7 +21,10 @@
       </nav>
       <div class="spacer"></div>
       <div class="searchbox" id="searchbox"><span id="search-ico"></span><input placeholder="Search devices, IPs, orgs…" /><kbd>⌘K</kbd></div>
-      <button class="org-switch hidden" id="org-switch"><span class="dotmark" id="org-switch-dot" style="width:7px;height:7px;border-radius:99px"></span><span id="org-switch-name"></span><span id="org-switch-chev"></span></button>
+      <div style="position:relative" id="org-switch-wrap">
+        <button class="org-switch hidden" id="org-switch"><span class="dotmark" id="org-switch-dot" style="width:8px;height:8px;border-radius:99px"></span><span id="org-switch-name"></span><span id="org-switch-chev"></span></button>
+        <div class="hmenu" id="org-menu" style="left:0;right:auto;min-width:240px"></div>
+      </div>
       <button class="icon-btn" id="theme-btn" title="Toggle theme"><span id="theme-ico"></span></button>
       <div style="position:relative">
         <button class="icon-btn" id="bell-btn" title="Alerts"><span id="bell-ico"></span><span class="ping hidden" id="bell-ping"></span></button>
@@ -65,7 +68,7 @@
               <button data-tab="approvals"><span class="ni" data-i="shieldCheck"></span> Approvals <span class="count" id="nav-approvals-count">0</span></button>
               <button data-tab="network"><span class="ni" data-i="network"></span> Network <span class="count" id="nav-network-count">0</span></button>
               <button data-tab="nodes"><span class="ni" data-i="nodes"></span> Nodes <span class="count" id="nav-nodes-count">0</span></button>
-              <button data-tab="snmp"><span class="ni" data-i="server"></span> SNMP <span class="count" id="nav-snmp-count">0</span></button>
+              <button data-tab="snmp"><span class="ni" data-i="radio"></span> SNMP <span class="count" id="nav-snmp-count">0</span></button>
               <button data-tab="unifi"><span class="ni" data-i="wifi"></span> UniFi <span class="count" id="nav-unifi-count">0</span></button>
               <button data-tab="scripts"><span class="ni" data-i="terminal"></span> Scripts <span class="count" id="nav-scripts-count">0</span></button>
               <button data-tab="monitors"><span class="ni" data-i="shieldCheck"></span> Policies <span class="count" id="nav-monitors-count">0</span></button>
@@ -78,14 +81,9 @@
           <div class="content">
             <!-- Devices -->
             <div id="tab-devices">
-              <div class="panel">
-                <div class="panel-head"><h2>Devices</h2><span class="sub" id="devices-sub"></span><div class="spacer"></div>
-                  <button class="btn ghost sm"><span class="hi" data-i="filter"></span> Filter</button></div>
-                <div style="overflow-x:auto"><table class="grid">
-                  <thead><tr><th>Device</th><th>Status</th><th>CPU</th><th>Memory</th><th>Disk</th><th>Compliance</th></tr></thead>
-                  <tbody id="device-rows"></tbody>
-                </table></div>
-              </div>
+              <div class="tab-head"><h2>Devices</h2><span class="sub" id="devices-sub"></span><div class="spacer"></div>
+                <button class="btn ghost sm"><span class="hi" data-i="filter"></span> Filter</button></div>
+              <div class="device-grid" id="device-cards"></div>
             </div>
             <!-- Approvals -->
             <div id="tab-approvals" class="hidden">

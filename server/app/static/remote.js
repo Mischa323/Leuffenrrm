@@ -17,6 +17,24 @@
   const btnLock  = document.getElementById("btn-lock");
   const btnCopy  = document.getElementById("btn-copy");
   const btnClip  = document.getElementById("btn-clip");
+  // Chrome (session bar + side panel) — all optional, populated best-effort.
+  const connPill = document.getElementById("rc-conn");
+  const rcSub    = document.getElementById("rc-sub");
+  const rcOs     = document.getElementById("rc-os");
+  const rcLog    = document.getElementById("rc-log");
+
+  const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  function logActivity(msg) {
+    if (!rcLog) return;
+    if (rcLog.firstChild && rcLog.firstChild.dataset && rcLog.firstChild.dataset.msg === msg) return;
+    const row = document.createElement("div");
+    row.className = "rc-log-row"; row.dataset.msg = msg;
+    const t = document.createElement("span"); t.className = "t"; t.textContent = new Date().toTimeString().slice(0, 8);
+    const m = document.createElement("span"); m.textContent = msg;
+    row.appendChild(t); row.appendChild(m);
+    rcLog.insertBefore(row, rcLog.firstChild);
+    while (rcLog.children.length > 40) rcLog.removeChild(rcLog.lastChild);
+  }
 
   let ws         = null;
   let nativeW    = 0;
@@ -51,16 +69,25 @@
   function setStatus(state, msg) {
     statusTx.textContent = msg;
     connLbl.textContent  = msg;
-    connDot.className    = state === "ok" ? "ok" : state === "bad" ? "bad" : "";
+    connDot.className    = "led";
+    if (connPill) {
+      connPill.classList.toggle("live", state === "ok");
+      connPill.classList.toggle("bad", state === "bad");
+    }
     overlay.classList.toggle("hidden", state === "ok");
     canvas.style.display = state === "ok" ? "block" : "none";
+    if (state === "ok") { const s = document.getElementById("rc-s-started"); if (s && s.textContent === "—") s.textContent = new Date().toTimeString().slice(0, 5); }
+    logActivity(msg);
   }
 
+  // Update a button's label span (falls back to the button itself) so an icon
+  // sitting alongside the label survives a transient flash.
   function flash(btn, label) {
-    const orig = btn.dataset.label || btn.textContent;
-    btn.dataset.label = orig;
-    btn.textContent = label;
-    setTimeout(() => { btn.textContent = btn.dataset.label; }, 1500);
+    const lbl = btn.querySelector(".lbl") || btn;
+    const orig = lbl.dataset.label || lbl.textContent;
+    lbl.dataset.label = orig;
+    lbl.textContent = label;
+    setTimeout(() => { lbl.textContent = lbl.dataset.label; }, 1500);
   }
 
   function send(obj) {
@@ -229,7 +256,17 @@
   btnSize.onclick = () => {
     const vp = document.getElementById("viewport");
     const actual = vp.classList.toggle("actual");
-    btnSize.textContent = actual ? "Fit to window" : "Actual size";
+    const lbl = btnSize.querySelector(".lbl") || btnSize;
+    lbl.textContent = actual ? "Fit to window" : "Actual size";
+  };
+
+  // Disconnect: close the session and return to the dashboard (or close the tab
+  // if we were opened in one).
+  const btnDisc = document.getElementById("rc-disconnect");
+  if (btnDisc) btnDisc.onclick = () => {
+    if (ws) { ws.onclose = null; ws.close(); ws = null; }
+    setStatus("bad", "Disconnected");
+    setTimeout(() => { if (window.opener) window.close(); else location.href = "/"; }, 250);
   };
 
   // Copy: pull the remote clipboard to this computer.
@@ -268,14 +305,20 @@
     send({ kind: "hotkey", keys: ["ctrl", "alt", "delete"] });
   };
 
-  // ---- fetch device name ----
+  // ---- fetch device identity (session bar + Session card) ----
   fetch(`/api/devices/${deviceId}`)
     .then((r) => r.ok ? r.json() : null)
     .then((d) => {
-      if (d && d.hostname) {
-        devTitle.textContent = `Remote — ${d.hostname}`;
+      if (!d) return;
+      if (d.hostname) {
+        devTitle.textContent = d.hostname;
         document.title = `Remote — ${d.hostname} · Leuffen RMM`;
       }
+      if (rcSub) rcSub.textContent = [d.os, d.ip].filter(Boolean).join(" · ") || "—";
+      if (rcOs && window.osIcon) rcOs.innerHTML = window.osIcon(d.os || "");
+      setTxt("rc-s-device", d.hostname || "—");
+      setTxt("rc-s-ip", d.ip || "—");
+      setTxt("rc-s-os", d.os || "—");
     })
     .catch(() => {});
 

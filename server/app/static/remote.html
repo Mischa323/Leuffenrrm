@@ -1,110 +1,187 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-density="comfortable" data-dataviz="on">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Remote — Leuffen RMM</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Remote control — Leuffen RMM</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root {
-      --bg: #0d1117; --surface: #161b22; --border: #30363d;
-      --text: #e6edf3; --muted: #8b949e; --accent: #3b82f6;
-      --bad: #ef4444; --good: #22c55e;
-    }
-    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; }
-    body { display: flex; flex-direction: column; }
+    /* Remote control session (dedicated page) — design handoff look. */
+    .remote-app { min-height: 100vh; height: 100vh; display: flex; flex-direction: column; }
+    .remote-main { flex: 1; display: flex; flex-direction: column; padding: 0; max-width: none; margin: 0; min-height: 0; }
 
-    /* ---- top bar ---- */
-    #topbar {
-      display: flex; align-items: center; gap: 10px;
-      padding: 8px 16px; background: var(--surface);
-      border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap;
-    }
-    #topbar svg.logo { width: 22px; height: 22px; flex-shrink: 0; }
-    #dev-title { font-weight: 600; font-size: 14px; }
-    #conn-badge {
-      display: inline-flex; align-items: center; gap: 5px;
-      font-size: 12px; padding: 2px 8px; border-radius: 20px;
-      background: var(--bg); border: 1px solid var(--border);
-    }
-    #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
-    #conn-dot.ok  { background: var(--good); }
-    #conn-dot.bad { background: var(--bad); }
-    #stats {
-      font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-    }
-    .spacer { flex: 1; }
-    .tbtn, select.tbtn {
-      background: var(--bg); border: 1px solid var(--border); color: var(--text);
-      border-radius: 6px; padding: 5px 11px; font-size: 12px; cursor: pointer;
-      font-family: inherit; transition: background .15s;
-    }
-    .tbtn:hover { background: #1c2128; }
-    .tbtn:disabled { opacity: .45; cursor: default; }
-    select.tbtn { padding: 5px 8px; }
+    /* session bar */
+    .rc-bar { display: flex; align-items: center; gap: 16px; padding: 12px 22px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 82%, transparent); backdrop-filter: blur(12px); }
+    .rc-title { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .rc-title .os-ico { width: 34px; height: 34px; }
+    .rc-host { font-weight: 650; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rc-sub { font-size: 12px; color: var(--text-faint); font-family: var(--font-mono); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-    /* ---- viewport ---- */
-    #viewport {
-      flex: 1; overflow: auto; background: #000;
-      display: flex; align-items: center; justify-content: center;
-      position: relative;
-    }
-    /* Fit-to-window (default): shrink to fit. */
-    #remote-canvas {
-      display: block; max-width: 100%; max-height: 100%;
-      cursor: default; outline: none; image-rendering: auto;
-    }
-    /* Actual size: show 1:1 and let the viewport scroll. */
-    #viewport.actual { align-items: flex-start; justify-content: flex-start; }
-    #viewport.actual #remote-canvas { max-width: none; max-height: none; }
+    .rc-conn { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; padding: 6px 12px; border-radius: var(--r-pill); background: var(--surface-2); border: 1px solid var(--border); color: var(--text-dim); }
+    .rc-conn .led { width: 8px; height: 8px; border-radius: 99px; background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent); flex: none; }
+    .rc-conn.live { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, var(--border)); }
+    .rc-conn.live .led { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); animation: rc-pulse 2s ease-in-out infinite; }
+    .rc-conn.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--border)); }
+    .rc-conn.bad .led { background: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 20%, transparent); animation: none; }
+    @keyframes rc-pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
 
-    #overlay {
-      position: absolute; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 12px;
-      color: var(--muted); font-size: 14px; pointer-events: none;
+    .rc-metrics { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+    .rc-bar .spacer { flex: 1; }
+
+    /* body layout */
+    .rc-body { flex: 1; display: grid; grid-template-columns: 1fr 320px; gap: 18px; padding: 18px 22px 22px; min-height: 0; }
+    .rc-stage { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
+
+    /* screen — hosts the real canvas */
+    .rc-screen { position: relative; flex: 1; min-height: 300px; border-radius: var(--r-lg); background: #05070c; border: 1px solid var(--border-strong); overflow: hidden; box-shadow: 0 20px 60px -20px rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; }
+    .rc-screen.actual { align-items: flex-start; justify-content: flex-start; overflow: auto; }
+    #remote-canvas { display: none; max-width: 100%; max-height: 100%; cursor: default; outline: none; image-rendering: auto; }
+    .rc-screen.actual #remote-canvas { max-width: none; max-height: none; }
+
+    .rc-connecting { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: var(--text-dim); pointer-events: none; }
+    .rc-connecting.hidden { display: none; }
+    .rc-spinner { width: 44px; height: 44px; border-radius: 50%; border: 3px solid var(--surface-3); border-top-color: var(--accent); animation: rc-spin .8s linear infinite; }
+    @keyframes rc-spin { to { transform: rotate(360deg); } }
+    .rc-connecting-t { font-size: 14px; font-weight: 600; color: var(--text); }
+    .rc-connecting-s { font-size: 12px; color: var(--text-faint); }
+
+    /* toolbar */
+    .rc-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 9px 11px; }
+    .rc-tool { display: inline-flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 8px 13px; font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: .15s; }
+    .rc-tool:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+    .rc-tool:disabled { opacity: .45; cursor: default; }
+    .rc-tool svg { width: 15px; height: 15px; color: var(--text-dim); flex: none; }
+    .rc-tool-sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 4px; }
+
+    /* side panel */
+    .rc-side { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; min-height: 0; }
+    .rc-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 15px 16px; }
+    .rc-card-h { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-faint); font-weight: 600; margin-bottom: 12px; }
+    .rc-dl { display: grid; grid-template-columns: auto 1fr; gap: 9px 12px; margin: 0; font-size: 12.5px; }
+    .rc-dl dt { color: var(--text-faint); }
+    .rc-dl dd { margin: 0; text-align: right; font-weight: 500; word-break: break-word; }
+    .rc-dl dd.mono { font-family: var(--font-mono); font-size: 11.5px; }
+    .rc-field { margin-bottom: 13px; }
+    .rc-field:last-child { margin-bottom: 0; }
+    .rc-field label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint); margin-bottom: 6px; }
+    .rc-field select { width: 100%; }
+    .rc-field .hint { font-size: 11.5px; color: var(--text-dim); margin-top: 7px; line-height: 1.45; }
+    .rc-log { display: flex; flex-direction: column; gap: 8px; font-size: 12px; max-height: 240px; overflow-y: auto; }
+    .rc-log:empty::after { content: "No activity yet."; color: var(--text-faint); font-size: 12px; }
+    .rc-log-row { display: flex; gap: 9px; color: var(--text-dim); }
+    .rc-log-row .t { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; flex: none; }
+
+    @media (max-width: 900px) {
+      .rc-body { grid-template-columns: 1fr; }
+      .rc-metrics { display: none; }
+      .rc-side { flex-direction: row; flex-wrap: wrap; }
+      .rc-side .rc-card { flex: 1; min-width: 240px; }
     }
-    #overlay.hidden { display: none; }
-    #overlay svg { width: 48px; height: 48px; opacity: .3; }
-    #status-text { font-size: 13px; }
+    @media (max-width: 560px) {
+      .rc-bar { gap: 10px; padding: 10px 14px; flex-wrap: wrap; }
+      .rc-body { padding: 12px 14px 14px; }
+    }
   </style>
 </head>
 <body>
-  <div id="topbar">
-    <!-- Shield logo -->
-    <svg class="logo" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <polygon points="13,13 51,13 51,33 32,55 13,33" fill="#3b82f6"/>
-      <polyline points="24,28 30,35 42,21" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-    </svg>
-    <span id="dev-title">Remote control</span>
-    <span id="conn-badge"><span id="conn-dot"></span><span id="conn-label">Connecting…</span></span>
-    <span id="stats">—</span>
-    <span class="spacer"></span>
-    <select class="tbtn" id="sel-quality" title="Speed vs. quality">
-      <option value="balanced">Balanced</option>
-      <option value="smooth">Smooth (faster)</option>
-      <option value="sharp">Sharp (slower)</option>
-    </select>
-    <button class="tbtn" id="btn-size" title="Toggle fit-to-window / actual size">Actual size</button>
-    <button class="tbtn" id="btn-copy" title="Copy the remote clipboard to this computer">Copy</button>
-    <button class="tbtn" id="btn-clip" title="Paste this computer's clipboard into the remote">Paste</button>
-    <button class="tbtn" id="btn-lock" title="Lock the remote device">Lock</button>
-    <button class="tbtn" id="btn-cad">Ctrl+Alt+Del</button>
-    <button class="tbtn" id="btn-reconnect">Reconnect</button>
-    <button class="tbtn" id="btn-fs">⛶ Fullscreen</button>
+  <div class="app remote-app">
+    <main class="remote-main">
+      <!-- session bar -->
+      <div class="rc-bar">
+        <a class="btn ghost sm" href="/" id="rc-back"><span id="rc-back-ico"></span> Back</a>
+        <div class="rc-title">
+          <div class="os-ico" id="rc-os"></div>
+          <div style="min-width:0">
+            <div class="rc-host" id="dev-title">Remote control</div>
+            <div class="rc-sub" id="rc-sub">—</div>
+          </div>
+        </div>
+        <div class="rc-conn" id="rc-conn"><span class="led" id="conn-dot"></span><span id="conn-label">Connecting…</span></div>
+        <div class="rc-metrics" id="stats">—</div>
+        <div class="spacer"></div>
+        <button class="btn danger sm" id="rc-disconnect"><span id="rc-disc-ico"></span> Disconnect</button>
+      </div>
+
+      <div class="rc-body">
+        <!-- screen + controls -->
+        <div class="rc-stage">
+          <div class="rc-screen" id="viewport">
+            <div class="rc-connecting" id="overlay">
+              <div class="rc-spinner"></div>
+              <div class="rc-connecting-t" id="status-text">Connecting…</div>
+              <div class="rc-connecting-s">Negotiating an encrypted session</div>
+            </div>
+            <canvas id="remote-canvas" tabindex="0"></canvas>
+          </div>
+          <div class="rc-toolbar">
+            <button class="rc-tool" id="btn-size" title="Toggle fit-to-window / actual size"><span id="ic-size"></span> <span class="lbl">Actual size</span></button>
+            <div class="rc-tool-sep"></div>
+            <button class="rc-tool" id="btn-copy" title="Copy the remote clipboard to this computer"><span id="ic-copy"></span> <span class="lbl">Copy</span></button>
+            <button class="rc-tool" id="btn-clip" title="Paste this computer's clipboard into the remote"><span id="ic-clip"></span> <span class="lbl">Paste</span></button>
+            <button class="rc-tool" id="btn-cad"><span class="lbl">Ctrl+Alt+Del</span></button>
+            <button class="rc-tool" id="btn-lock" title="Lock the remote device"><span id="ic-lock"></span> <span class="lbl">Lock</span></button>
+            <div class="rc-tool-sep"></div>
+            <button class="rc-tool" id="btn-reconnect" title="Reconnect the session"><span id="ic-reconnect"></span> <span class="lbl">Reconnect</span></button>
+            <button class="rc-tool" id="btn-fs" title="Fullscreen"><span id="ic-fs"></span> <span class="lbl">Fullscreen</span></button>
+          </div>
+        </div>
+
+        <!-- side panel -->
+        <aside class="rc-side">
+          <div class="rc-card">
+            <div class="rc-card-h">Session</div>
+            <dl class="rc-dl" id="rc-session">
+              <dt>Device</dt><dd id="rc-s-device">—</dd>
+              <dt>Address</dt><dd class="mono" id="rc-s-ip">—</dd>
+              <dt>OS</dt><dd id="rc-s-os">—</dd>
+              <dt>Encryption</dt><dd>TLS</dd>
+              <dt>Protocol</dt><dd>WebSocket · JPEG</dd>
+              <dt>Started</dt><dd id="rc-s-started">—</dd>
+            </dl>
+          </div>
+          <div class="rc-card">
+            <div class="rc-card-h">Display</div>
+            <div class="rc-field">
+              <label>Quality</label>
+              <select id="sel-quality">
+                <option value="balanced">Balanced</option>
+                <option value="smooth">Smooth (faster)</option>
+                <option value="sharp">Sharp (slower)</option>
+              </select>
+              <div class="hint">Higher quality is crisper; smoother trades detail for frame rate.</div>
+            </div>
+          </div>
+          <div class="rc-card">
+            <div class="rc-card-h">Activity</div>
+            <div class="rc-log" id="rc-log"></div>
+          </div>
+        </aside>
+      </div>
+    </main>
   </div>
 
-  <div id="viewport">
-    <div id="overlay">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <rect x="2" y="3" width="20" height="14" rx="2"/>
-        <path d="M8 21h8M12 17v4"/>
-      </svg>
-      <span id="status-text">Connecting…</span>
-    </div>
-    <canvas id="remote-canvas" tabindex="0"></canvas>
-  </div>
+  <div id="toast" class="toast"><span id="toast-ico"></span><span></span></div>
 
+  <script src="/icons.js"></script>
+  <script src="/appearance.js"></script>
   <script src="/remote.js"></script>
+  <script>
+    // hydrate static icon slots (remote.js manages the dynamic state)
+    var _set = function (id, name) { var e = document.getElementById(id); if (e && window.ICON) e.innerHTML = ICON[name] || ""; };
+    _set("rc-back-ico", "chevD"); // rotated below into a left chevron
+    var back = document.getElementById("rc-back-ico");
+    if (back && window.ICON) back.innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="m15 6-6 6 6 6"');
+    _set("rc-disc-ico", "power");
+    _set("ic-size", "desktop");
+    _set("ic-copy", "copy");
+    _set("ic-clip", "copy");
+    _set("ic-lock", "lock");
+    _set("ic-reconnect", "refresh");
+    _set("ic-fs", "scan");
+    document.getElementById("toast-ico").innerHTML = window.ICON ? ICON.check : "";
+  </script>
 </body>
 </html>

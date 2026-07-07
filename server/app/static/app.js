@@ -80,7 +80,7 @@ async function init() {
   $("cust-scrim").onclick = closeCustomise;
   $("cust-save").onclick = saveCustomise;
   $("cust-reset").onclick = () => { custDraft = state.dash.catalog.map((w) => ({ id: w.id, enabled: ["totals", "orgs", "attention", "approvals"].includes(w.id) })); renderCustList(); };
-  $("org-switch").onclick = cycleOrg;
+  // org switcher click is wired per-org in buildOrgMenu() (dropdown, or cycle fallback)
   document.querySelectorAll(".nav button").forEach((b) => b.onclick = () => { selectTab(b.dataset.tab); closeSidebar(); });
   document.querySelectorAll(".dtabs button").forEach((b) => b.onclick = () => selectDrawerTab(b.dataset.dtab));
   $("nav-toggle").onclick = toggleSidebar;
@@ -317,6 +317,7 @@ async function showOrg(orgId, name) {
   const sw = $("org-switch"); sw.classList.remove("hidden");
   $("org-switch-name").textContent = state.orgName;
   $("org-switch-dot").style.background = colorFor(orgId);
+  buildOrgMenu();
   await refreshOrgCaches();
   buildNav(); buildGroups();
   selectTab(state.tab);
@@ -326,6 +327,32 @@ function cycleOrg() {
   const idx = orgs.findIndex((o) => o.id === state.org);
   const next = orgs[(idx + 1) % orgs.length];
   showOrg(next.id, next.name); toast("Switched to " + next.name);
+}
+/* Org switcher dropdown — lists every org the user can see with a colour dot,
+   device count (when the global overview has loaded), and a check on the active
+   one. Falls back to click-to-cycle if the menu element is missing. */
+function buildOrgMenu() {
+  const sw = $("org-switch"), menu = $("org-menu"), chev = $("org-switch-chev");
+  const orgs = (state.me && state.me.orgs) || [];
+  if (!menu || orgs.length < 2) {
+    sw.onclick = orgs.length > 1 ? cycleOrg : null;
+    if (chev) chev.style.display = orgs.length > 1 && !menu ? "" : (orgs.length < 2 ? "none" : "");
+    return;
+  }
+  if (chev) chev.style.display = "";
+  const counts = {};
+  (state.orgs || []).forEach((o) => { counts[o.id] = o.devices; });
+  menu.innerHTML =
+    `<div style="padding:7px 11px 5px;font-size:10.5px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.06em">Organisations</div>` +
+    orgs.map((o) => `<a data-org="${escapeAttr(o.id)}" class="${o.id === state.org ? "active" : ""}"><span class="org-dot" style="background:${colorFor(o.id)}"></span><span>${escapeHtml(o.name)}</span><span class="org-meta">${counts[o.id] != null ? counts[o.id] + " devices" : ""}</span><span class="org-check" style="width:15px">${o.id === state.org ? ICON.check.replace("<svg", '<svg style="width:15px;height:15px"') : ""}</span></a>`).join("") +
+    `<div class="hmenu-sep"></div><a href="settings.html">${ICON.gear} Manage organisations</a>`;
+  menu.querySelectorAll("a[data-org]").forEach((a) => a.onclick = (e) => {
+    e.stopPropagation(); menu.classList.remove("open"); sw.classList.remove("open");
+    const o = orgs.find((x) => x.id === a.dataset.org);
+    if (o && a.dataset.org !== state.org) { showOrg(o.id, o.name); toast("Switched to " + o.name); }
+  });
+  sw.onclick = (e) => { e.stopPropagation(); const open = menu.classList.toggle("open"); sw.classList.toggle("open", open); };
+  if (!buildOrgMenu._doc) { buildOrgMenu._doc = true; document.addEventListener("click", () => { menu.classList.remove("open"); sw.classList.remove("open"); }); }
 }
 async function refreshOrgCaches() {
   const [devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp, unifi] = await Promise.all([
@@ -630,27 +657,38 @@ function renderDevices() {
   let devs = state.cache.devices || [];
   if (state.group) devs = devs.filter((d) => d.group_id === state.group);
   $("devices-sub").textContent = `${devs.length} device${devs.length === 1 ? "" : "s"}`;
-  const tb = $("device-rows"); tb.innerHTML = "";
-  if (!devs.length) { tb.innerHTML = `<tr><td colspan="6"><div class="empty"><div class="big">${ICON.monitor}</div>No devices in this group.<br><span class="muted">Install an agent from the Downloads tab.</span></div></td></tr>`; return; }
+  const wrap = $("device-cards"); wrap.innerHTML = "";
+  if (!devs.length) { wrap.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="big">${ICON.monitor}</div>No devices in this group.<br><span class="muted">Install an agent from the Downloads tab.</span></div>`; return; }
+  // Ring colour tracks load: green/accent/warn base, amber ≥78%, red ≥90%.
+  const gcol = (p, base) => (p == null || Number.isNaN(p)) ? base : p >= 90 ? "var(--bad)" : p >= 78 ? "var(--warn)" : base;
+  const gauge = (label, val, color) => `<div class="dc-gauge"><div class="dc-gv">${ringChart(val, color)}</div><div class="dc-gl">${label}</div></div>`;
+  const clk = ICON.clock.replace("<svg", '<svg style="width:13px;height:13px;vertical-align:-2px"');
   for (const d of devs) {
     const m = d.latest || {};
     const comp = d.compliant == null ? `<span class="badge na">N/A</span>`
       : d.compliant ? `<span class="badge ok">${ICON.check} Compliant</span>`
       : `<span class="badge bad">${ICON.alert} Non-compliant</span>`;
-    const sub = d.online ? "up " + fmtUptime(m.uptime) : "last seen " + relTime(d.last_seen);
-    const hv = (d.hyperv && d.hyperv.present)
-      ? ` <span class="badge info" title="Hyper-V host${d.hyperv.total ? ` · ${d.hyperv.running}/${d.hyperv.total} VMs running` : ""}" style="font-weight:500;vertical-align:middle">${ICON.server.replace("<svg", '<svg style="width:11px;height:11px;vertical-align:-1px;margin-right:3px"')}Hyper-V${d.hyperv.total ? ` ${d.hyperv.total}` : ""}</span>`
-      : "";
-    const tr = el("tr");
-    tr.innerHTML = `
-      <td><div class="host"><div class="os-ico">${osIcon(d.os)}</div><div><div class="h-name">${d.hostname}${hv}</div><div class="h-sub">${d.os || "—"} · ${d.ip || "—"}</div></div></div></td>
-      <td>${statusPill(d.online)}<div class="h-sub" style="margin-top:3px">${sub}</div></td>
-      <td>${d.online ? meter(m.cpu_percent) : meter(null)}</td>
-      <td>${d.online ? meter(m.mem_percent) : meter(null)}</td>
-      <td>${d.online ? meter(m.disk_percent) : meter(null)}</td>
-      <td>${comp}</td>`;
-    tr.onclick = () => openDrawer(d.id);
-    tb.appendChild(tr);
+    const stats = d.online
+      ? `<div class="dc-gauges">
+          ${gauge("CPU", m.cpu_percent, gcol(m.cpu_percent, "var(--accent)"))}
+          ${gauge("MEM", m.mem_percent, gcol(m.mem_percent, "var(--good)"))}
+          ${gauge("DISK", m.disk_percent, gcol(m.disk_percent, "var(--warn)"))}
+        </div>`
+      : `<div class="dc-offline">Offline · last seen ${relTime(d.last_seen)}</div>`;
+    const foot = d.online
+      ? `<span class="h-sub">${clk} up ${fmtUptime(m.uptime)}</span>`
+      : `<span class="h-sub">Agent v${escapeHtml(String(d.agent_version || "?"))}</span>`;
+    const c = el("div", "dev-card");
+    c.innerHTML = `
+      <div class="dc-head">
+        <div class="os-ico">${osIcon(d.os)}</div>
+        <div class="dc-id"><div class="h-name">${escapeHtml(d.hostname || "—")}</div><div class="h-sub">${escapeHtml(d.os || "—")} · ${escapeHtml(d.ip || "—")}</div></div>
+        ${statusPill(d.online)}
+      </div>
+      ${stats}
+      <div class="dc-foot">${foot}${comp}</div>`;
+    c.onclick = () => openDrawer(d.id);
+    wrap.appendChild(c);
   }
 }
 
