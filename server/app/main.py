@@ -2512,8 +2512,11 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
         return
     manager.subscribe(device_id, channel, ws)
     if channel == "screen":
-        await agent.send({"type": "screen_start", "fps": 4, "quality": 50,
-                          "purpose": purpose})
+        # Initial quality; an interactive viewer immediately overrides this with
+        # its selected preset, but a one-shot screenshot uses it as-is — so keep
+        # it crisp (near-native resolution, high quality).
+        await agent.send({"type": "screen_start", "fps": 15, "quality": 82,
+                          "max_edge": 3200, "purpose": purpose})
     try:
         while True:
             data = await ws.receive_json()
