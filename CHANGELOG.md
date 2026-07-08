@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Sharper remote control.** The remote-desktop viewer now streams at much higher quality: full-resolution, higher-frame-rate presets — **Balanced** (default) is crisper and smoother, **Sharp** is near-lossless at native resolution, and **Smooth** favours frame rate on slower links. One-shot screenshots are crisper too. (A further efficiency step — H.264 delta encoding — is in progress.)
+
 ## [1.5.63] - 2026-07-08
 
 ### Added
