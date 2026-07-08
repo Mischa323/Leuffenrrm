@@ -67,6 +67,49 @@ in the vendored copy (see "The auto-update loop" below).
 
 ---
 
+## UI design system (styling)
+
+All UI is **vanilla HTML/CSS/JS, no build step**, dark-first with a full light
+theme. `server/app/static/styles.css` is the source of truth; match it — don't
+invent new colours/spacing.
+
+- **Fonts:** `Onest` (UI, weights 400–800) and `JetBrains Mono` (IPs, MACs, code,
+  terminals — the `.mono` class / `--font-mono`). Loaded from Google Fonts.
+- **Design tokens** (CSS custom properties in `:root` + `[data-theme="light"]`):
+  - Accent: `--accent` (default `#3b82f6`); tints derive via `color-mix`
+    (`--accent-soft/-softer/-ring`). Swatch options: `#3b82f6 #6366f1 #8b5cf6
+    #06b6d4 #10b981 #f59e0b #ef4444 #ec4899`.
+  - Semantic: `--good #34d399` · `--warn #fbbf24` · `--bad #f87171` (each with a
+    `*-soft` ~15% mix).
+  - Dark ramp: `--bg #0a0c11` · `--surface #12161e` · `--surface-2 #171c26` ·
+    `--surface-3 #1c222e` · `--border #232b37` (`-soft`/`-strong` variants) ·
+    `--text #e9eef6` · `--text-dim #97a3b4` · `--text-faint #5f6b7c`. Light theme
+    swaps the ramp under `[data-theme="light"]`.
+  - Radii `--r-xs 4 · -sm 7 · -md 10 · -lg 14 · -xl 20 · -pill 999` (scaled by
+    `--radius-scale`); density via `--density` / `[data-density]`.
+  - `body` has a fixed accent-tinted radial glow, top-right.
+- **Theming:** `appearance.js` applies the effective look to `<html>` **before
+  paint** (`data-theme` dark/light, `--accent`, density, roundness, font). Two
+  tiers: workspace default (Settings → Appearance) ← per-user override (Account).
+  New surfaces must be theme-aware (style both, or use the tokens).
+- **Core component classes** (in `styles.css`): `.btn` (+ `.ghost/.subtle/.warn/
+  .danger/.sm`), `.kpi`/`.kpis`, `.orgcard` + `.health-bar`, `.device-grid` +
+  `.dev-card` (with CPU/MEM/DISK **ring gauges** — `ringChart()` in `app.js`),
+  `.panel`/`.tab-head`, `.status` pill (on/off + LED), `.badge` (`ok/bad/na/warn/
+  info`), `.meter`, `.mini-grid`/`.mini` tiles, `.modal` + `.modal-head/-foot`,
+  `.seg`/`.segmented`/`.seg-opt` cards, `.toast`, `.drawer`. Settings/account use
+  `settings.css`: `.card-block`, `.frow`/`.inp`, `.callout`, `.switch` toggle,
+  `.segmented`, `.utable`, `.acct-hero`, `.pw-meter`.
+- **Icons:** inline SVG in `icons.js`. In JS use `ICON.<name>`; static markup uses
+  `<span class="ni|hi" data-i="<name>">` hydrated by `ICON[dataset.i]` in the
+  page's boot script — **dynamically-built HTML must inline `ICON.x`, not
+  `data-i`** (there's no re-hydration pass). `osIcon(os)` picks the OS glyph.
+- **Gotchas:** a global `svg { width:16px; height:16px }` sizes inline icons — a
+  full-size inline SVG (e.g. the UniFi map) must opt out with its own
+  `width/height:auto` (that rule once collapsed the map to a 16px dot). Keep the
+  `.mini` tile styles scoped to `.mini-grid` so they don't hit the widget
+  `table.grid.mini`.
+
 ## Two independent version numbers
 
 | | File | Example | Used for |
