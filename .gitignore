@@ -15,3 +15,6 @@ dist/
 build/
 *.spec
 .DS_Store
+
+# Local design-handoff reference bundle (not part of the app)
+design center/

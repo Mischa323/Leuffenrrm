@@ -1,5 +1,9 @@
 # Leuffen RMM — Development & Release Guide
 
+> This is `CLAUDE.md`, so Claude Code loads it automatically when working in this
+> repo — it's the guide to reference every session. It's also the human
+> dev/release guide; keep it current.
+
 How this project is laid out and, most importantly, **what to do every time you
 push to `main`** so releases don't drift (MSI, versions and the changelog have
 gone stale before — this is the checklist to prevent that).
