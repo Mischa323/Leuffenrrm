@@ -40,6 +40,13 @@
   let nativeW    = 0;
   let nativeH    = 0;
 
+  // ---- H.264 (WebCodecs) — Phase 1. Negotiated per session; falls back to JPEG
+  // when the browser has no VideoDecoder or the agent can't encode H.264. ----
+  const H264_SUPPORTED = typeof VideoDecoder !== "undefined";
+  let decoder    = null;   // WebCodecs VideoDecoder once a session negotiates H.264
+  let sawKeyframe = false;  // ignore delta frames until the first keyframe arrives
+  let vpts       = 0;       // monotonic timestamp for EncodedVideoChunk
+
   // Marks a clipboard payload on the (otherwise JPEG) binary stream.
   const CLIP_MAGIC = "LRMMCLIP";
 
@@ -98,7 +105,60 @@
 
   function startCapture() {
     const p = PRESETS[selQual.value] || PRESETS.balanced;
-    send({ type: "screen_start", fps: p.fps, quality: p.quality, max_edge: p.max_edge });
+    send({ type: "screen_start", fps: p.fps, quality: p.quality, max_edge: p.max_edge,
+           codecs: H264_SUPPORTED ? ["h264", "jpeg"] : ["jpeg"] });
+  }
+
+  // ---- H.264 decode (WebCodecs) ----
+  function closeDecoder() {
+    if (decoder) { try { decoder.close(); } catch (e) {} decoder = null; }
+    sawKeyframe = false; vpts = 0;
+  }
+  function setupDecoder(codecString) {
+    closeDecoder();
+    try {
+      decoder = new VideoDecoder({
+        output: (frame) => {
+          try {
+            if (frame.displayWidth !== nativeW || frame.displayHeight !== nativeH) {
+              nativeW = canvas.width = frame.displayWidth;
+              nativeH = canvas.height = frame.displayHeight;
+            }
+            ctx.drawImage(frame, 0, 0);
+            frameCount++;
+            setStatus("ok", "Connected");
+          } finally { frame.close(); }
+        },
+        error: () => { setStatus("bad", "Video decoder error"); closeDecoder(); },
+      });
+      decoder.configure({ codec: codecString || "avc1.42E01F", optimizeForLatency: true });
+    } catch (e) {
+      decoder = null;   // stay in JPEG mode
+    }
+  }
+  // A H.264 Annex-B access unit is a keyframe if it carries an IDR/SPS/PPS NAL
+  // (types 5/7/8) — used to tag the EncodedVideoChunk 'key' vs 'delta'.
+  function isKeyAU(u8) {
+    for (let i = 0; i + 4 < u8.length; i++) {
+      if (u8[i] === 0 && u8[i + 1] === 0 &&
+          (u8[i + 2] === 1 || (u8[i + 2] === 0 && u8[i + 3] === 1))) {
+        const t = u8[u8[i + 2] === 1 ? i + 3 : i + 4] & 0x1f;
+        if (t === 5 || t === 7 || t === 8) return true;
+      }
+    }
+    return false;
+  }
+  function decodeAU(buf) {
+    if (!decoder || decoder.state !== "configured") return;
+    const u8 = new Uint8Array(buf);
+    const key = isKeyAU(u8);
+    if (!sawKeyframe) { if (!key) return; sawKeyframe = true; }  // await first keyframe
+    try {
+      decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: vpts, data: u8 }));
+      vpts += 33333;  // ~30fps in µs; only needs to be monotonic
+    } catch (e) {
+      setStatus("bad", "Decode failed"); closeDecoder();
+    }
   }
 
   // ---- coordinate scaling (display -> native image pixels) ----
@@ -126,6 +186,7 @@
   // ---- connect ----
   function connect() {
     if (ws) { ws.onclose = null; ws.close(); ws = null; }
+    closeDecoder();
     setStatus("connecting", "Connecting…");
     frameCount = 0; byteCount = 0;
 
@@ -140,9 +201,10 @@
 
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") {
-        // JSON control message (error / session ended / info)
+        // JSON control message (codec negotiation / error).
         try {
           const m = JSON.parse(ev.data);
+          if (m.type === "video_info" && m.codec === "h264") { setupDecoder(m.codecString); return; }
           if (m.error) setStatus("bad", m.error);
         } catch {}
         return;
@@ -155,8 +217,10 @@
           .catch(() => flash(btnCopy, "Copy blocked"));
         return;
       }
-      // Binary: JPEG frame
       byteCount += ev.data.byteLength;
+      // H.264 mode: feed the access unit to the WebCodecs decoder.
+      if (decoder) { decodeAU(ev.data); return; }
+      // Binary: JPEG frame (fallback / no WebCodecs).
       const blob = new Blob([ev.data], { type: "image/jpeg" });
       const url  = URL.createObjectURL(blob);
       const img  = new Image();
