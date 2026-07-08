@@ -44,11 +44,13 @@
   const CLIP_MAGIC = "LRMMCLIP";
 
   // Speed/quality presets sent to the agent via screen_start. max_edge caps the
-  // captured frame's longest side: smaller = higher fps, larger = crisper.
+  // captured frame's longest side: smaller = higher fps, larger = crisper. Tuned
+  // up into the range the agent already allows (fps ≤ 24, quality ≤ 90,
+  // max_edge ≤ 4096) — a much sharper baseline than before.
   const PRESETS = {
-    balanced: { fps: 12, quality: 60, max_edge: 1600 },
-    smooth:   { fps: 20, quality: 50, max_edge: 1200 },
-    sharp:    { fps: 10, quality: 75, max_edge: 2400 },
+    balanced: { fps: 20, quality: 78, max_edge: 2880 },  // default — crisp + smooth
+    sharp:    { fps: 15, quality: 90, max_edge: 4096 },  // best image, full resolution
+    smooth:   { fps: 24, quality: 62, max_edge: 1920 },  // highest frame rate, 1080p
   };
 
   // ---- live stats (frames + bytes per second) ----
