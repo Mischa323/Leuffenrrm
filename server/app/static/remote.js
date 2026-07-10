@@ -55,9 +55,12 @@
   // up into the range the agent already allows (fps ≤ 24, quality ≤ 90,
   // max_edge ≤ 4096) — a much sharper baseline than before.
   const PRESETS = {
-    balanced: { fps: 20, quality: 78, max_edge: 2880 },  // default — crisp + smooth
-    sharp:    { fps: 15, quality: 90, max_edge: 4096 },  // best image, full resolution
-    smooth:   { fps: 24, quality: 62, max_edge: 1920 },  // highest frame rate, 1080p
+    // Full-frame JPEG bitrate ≈ fps × frameSize, so high fps + high res + high
+    // quality can saturate the relayed WebSocket and drop the session. These are
+    // tuned to stay sustainable; H.264 (Phase 1) removes this ceiling.
+    balanced: { fps: 12, quality: 62, max_edge: 1760 },  // default — stable ~1080p
+    sharp:    { fps: 10, quality: 80, max_edge: 2560 },  // crisper; heavier (fast/LAN links)
+    smooth:   { fps: 20, quality: 48, max_edge: 1280 },  // highest frame rate, low bitrate
   };
 
   // ---- live stats (frames + bytes per second) ----
