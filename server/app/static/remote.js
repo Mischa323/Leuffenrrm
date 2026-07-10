@@ -113,6 +113,7 @@
   function closeDecoder() {
     if (decoder) { try { decoder.close(); } catch (e) {} decoder = null; }
     sawKeyframe = false; vpts = 0;
+    setTxt("rc-s-proto", "WebSocket · JPEG");
   }
   function setupDecoder(codecString) {
     closeDecoder();
@@ -132,8 +133,10 @@
         error: () => { setStatus("bad", "Video decoder error"); closeDecoder(); },
       });
       decoder.configure({ codec: codecString || "avc1.42E01F", optimizeForLatency: true });
+      setTxt("rc-s-proto", "WebSocket · H.264");
     } catch (e) {
       decoder = null;   // stay in JPEG mode
+      setTxt("rc-s-proto", "WebSocket · JPEG");
     }
   }
   // A H.264 Annex-B access unit is a keyframe if it carries an IDR/SPS/PPS NAL
