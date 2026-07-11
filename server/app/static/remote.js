@@ -189,11 +189,29 @@
     return true;
   }
 
-  // ---- connect ----
+  // ---- connect (auto-reconnects on transient browser-side ws drops) ----
+  let reconnectTimer = null;
+  let reconnectAttempts = 0;
+  let userClosed = false;       // true once the user deliberately disconnects
+  const MAX_RECONNECT = 8;      // ~30s of trying before we wait for a manual click
+
+  function scheduleReconnect() {
+    if (userClosed || reconnectTimer) return;
+    if (reconnectAttempts >= MAX_RECONNECT) {
+      setStatus("bad", "Disconnected — click Reconnect");
+      return;
+    }
+    reconnectAttempts++;
+    const delay = Math.min(400 * Math.pow(1.7, reconnectAttempts - 1), 5000);
+    setStatus("connecting", `Reconnecting… (${reconnectAttempts})`);
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+  }
+
   function connect() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (ws) { ws.onclose = null; ws.close(); ws = null; }
     closeDecoder();
-    setStatus("connecting", "Connecting…");
+    setStatus("connecting", reconnectAttempts ? "Reconnecting…" : "Connecting…");
     frameCount = 0; byteCount = 0;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -201,6 +219,7 @@
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
+      reconnectAttempts = 0;      // recovered — reset the backoff
       startCapture();
       setStatus("connecting", "Starting capture…");
     };
@@ -246,11 +265,13 @@
 
     ws.onclose = () => {
       ws = null;
-      setStatus("bad", "Disconnected");
+      if (userClosed) { setStatus("bad", "Disconnected"); return; }
+      scheduleReconnect();        // transient drop — self-heal
     };
 
     ws.onerror = () => {
-      setStatus("bad", "Connection error");
+      // onerror is always followed by onclose; let onclose drive the reconnect.
+      if (!userClosed) setStatus("connecting", "Connection lost — reconnecting…");
     };
   }
 
@@ -321,7 +342,9 @@
   });
 
   // ---- toolbar buttons ----
-  document.getElementById("btn-reconnect").onclick = connect;
+  document.getElementById("btn-reconnect").onclick = () => {
+    userClosed = false; reconnectAttempts = 0; connect();
+  };
 
   selQual.onchange = () => { if (ws && ws.readyState === WebSocket.OPEN) startCapture(); };
 
@@ -336,6 +359,8 @@
   // if we were opened in one).
   const btnDisc = document.getElementById("rc-disconnect");
   if (btnDisc) btnDisc.onclick = () => {
+    userClosed = true;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (ws) { ws.onclose = null; ws.close(); ws = null; }
     setStatus("bad", "Disconnected");
     setTimeout(() => { if (window.opener) window.close(); else location.href = "/"; }, 250);
