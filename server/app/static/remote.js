@@ -55,12 +55,12 @@
   // up into the range the agent already allows (fps ≤ 24, quality ≤ 90,
   // max_edge ≤ 4096) — a much sharper baseline than before.
   const PRESETS = {
-    // Full-frame JPEG bitrate ≈ fps × frameSize, so high fps + high res + high
-    // quality can saturate the relayed WebSocket and drop the session. These are
-    // tuned to stay sustainable; H.264 (Phase 1) removes this ceiling.
-    balanced: { fps: 12, quality: 62, max_edge: 1760 },  // default — stable ~1080p
-    sharp:    { fps: 10, quality: 80, max_edge: 2560 },  // crisper; heavier (fast/LAN links)
-    smooth:   { fps: 20, quality: 48, max_edge: 1280 },  // highest frame rate, low bitrate
+    // fps is capped at 24 by the agent. These are generous now that the earlier
+    // "disconnects" turned out to be the consent-banner bug (fixed), not
+    // bandwidth. H.264 (Phase 1) will drop the bitrate further once it engages.
+    balanced: { fps: 20, quality: 72, max_edge: 2400 },  // default — smooth + crisp
+    sharp:    { fps: 15, quality: 88, max_edge: 2880 },  // best image quality
+    smooth:   { fps: 24, quality: 60, max_edge: 1920 },  // highest frame rate
   };
 
   // ---- live stats (frames + bytes per second) ----
