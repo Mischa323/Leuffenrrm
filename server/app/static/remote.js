@@ -263,8 +263,11 @@
       img.src = url;
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       ws = null;
+      // Log the close code so the root cause of transient drops is diagnosable
+      // (1006 = abnormal/proxy or network kill, 1001 = going away, 1011 = server).
+      if (!userClosed) console.warn(`[remote] screen ws closed: code=${ev.code} reason="${ev.reason||""}" clean=${ev.wasClean}`);
       if (userClosed) { setStatus("bad", "Disconnected"); return; }
       scheduleReconnect();        // transient drop — self-heal
     };
