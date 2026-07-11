@@ -667,6 +667,14 @@ def get_dashboard(user: dict = Depends(auth.current_user)):
     return {"layout": layout, "catalog": DASHBOARD_WIDGETS, "data": _dashboard_data(user)}
 
 
+@app.get("/api/global")
+def get_global(user: dict = Depends(auth.current_user)):
+    """Lightweight open-alerts feed for the notification bell (used on every page,
+    polled every 30s). Returns just the monitor/rule alerts currently raised across
+    the orgs the user can see, in the shape the bell expects (``{monitors: [...]}``)."""
+    return {"monitors": _dashboard_data(user)["monitors"]}
+
+
 @app.put("/api/dashboard")
 async def save_dashboard(request: Request, user: dict = Depends(auth.current_user)):
     body = await request.json()
