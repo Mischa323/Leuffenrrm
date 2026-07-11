@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Remote control auto-reconnects.** If the browser's connection to the server is briefly severed mid-session (a proxy/CDN or network blip — the device stays online the whole time), the viewer now silently re-establishes the session with backoff instead of stranding you on "Disconnected". Reconnects are seamless; only a deliberate Disconnect ends the session.
+
 ### Changed
 - **Sharper remote control.** The remote-desktop viewer now streams at much higher quality: full-resolution, higher-frame-rate presets — **Balanced** (default) is crisper and smoother, **Sharp** is near-lossless at native resolution, and **Smooth** favours frame rate on slower links. One-shot screenshots are crisper too. (A further efficiency step — H.264 delta encoding — is in progress.)
 
