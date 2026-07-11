@@ -42,7 +42,14 @@ def main() -> None:
     cert = os.environ.get("RMM_TLS_CERT", os.path.join(tls_dir, "cert.pem"))
     key = os.environ.get("RMM_TLS_KEY", os.path.join(tls_dir, "key.pem"))
 
-    kwargs: dict = {"host": host, "port": port}
+    # The screen/terminal relays are high-throughput WebSockets. uvicorn's default
+    # ws ping-timeout (20s) can false-positive **kill a saturated-but-alive stream**:
+    # the server's ping/pong queues behind buffered frame data, the pong returns
+    # >20s late, and uvicorn closes the connection (the low-throughput agent ws's
+    # never trip it — which is exactly the symptom seen). Be generous; liveness is
+    # also covered by application traffic, TCP keepalive and client auto-reconnect.
+    kwargs: dict = {"host": host, "port": port,
+                    "ws_ping_interval": 30, "ws_ping_timeout": 120}
 
     if mode == "proxy":
         # TLS terminated upstream; trust forwarded headers for scheme/client IP.
