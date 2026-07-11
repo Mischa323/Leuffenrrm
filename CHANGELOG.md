@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Remote control stays connected.** Raised the server's WebSocket ping-timeout so a busy remote-desktop stream is no longer false-positive disconnected: uvicorn's default 20s timeout could kill a healthy-but-saturated screen connection (its keepalive ping queued behind buffered video frames), which dropped the viewer roughly once a minute even though the device never went offline. Combined with the auto-reconnect below, remote sessions are now stable.
 - **Remote control auto-reconnects.** If the browser's connection to the server is briefly severed mid-session (a proxy/CDN or network blip — the device stays online the whole time), the viewer now silently re-establishes the session with backoff instead of stranding you on "Disconnected". Reconnects are seamless; only a deliberate Disconnect ends the session.
 
 ### Changed
