@@ -11,6 +11,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import re
 import secrets
 import time
 
@@ -34,6 +35,7 @@ from .models import (AccessGroupMemberRequest, AccessGroupOrgRequest, AccessGrou
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
+_remote_log = logging.getLogger("rmm.remote")  # tagged "remote" in the Logs view
 
 def _resolve_version() -> str:
     """Server version, resolved automatically at startup (first hit wins):
@@ -91,19 +93,46 @@ def _resolve_agent_version() -> str:
 AGENT_VERSION = _resolve_agent_version()
 
 
+# Map a logger name to a coarse tag so the Logs view can be filtered by area. An
+# explicit "[tag=xxx]" marker anywhere in a message overrides this (and is stripped
+# from the shown text) — use it to tag a line more precisely than its logger.
+_LOG_TAG_BY_LOGGER = {
+    "rmm.remote": "remote", "rmm.ws": "remote",
+    "rmm.unifi": "unifi", "rmm.update": "update", "rmm.snmp": "snmp",
+    "rmm.alerts": "alerts", "rmm.mail": "mail", "rmm.mailer": "mail",
+    "uvicorn.access": "http", "uvicorn.error": "ws", "uvicorn": "server",
+    "httpx": "http-out", "rmm": "app",
+}
+_LOG_TAG_ORDER = sorted(_LOG_TAG_BY_LOGGER, key=len, reverse=True)
+_LOG_TAG_RE = re.compile(r"\s*\[tag=([a-z0-9_-]+)\]")
+
+
+def _log_tag_and_msg(name: str, msg: str) -> tuple[str, str]:
+    """Return (tag, cleaned_message) for a log record — an inline [tag=x] wins,
+    otherwise the tag is derived from the logger name (longest-prefix match)."""
+    m = _LOG_TAG_RE.search(msg)
+    if m:
+        return m.group(1), (msg[:m.start()] + msg[m.end():]).strip()
+    for lg in _LOG_TAG_ORDER:
+        if name == lg or name.startswith(lg + "."):
+            return _LOG_TAG_BY_LOGGER[lg], msg
+    return "app", msg
+
+
 class _RingLogHandler(logging.Handler):
     """Keep the most recent log records in memory so the Settings → Logs view can
     show them without a filesystem dependency (works the same in Docker)."""
 
-    def __init__(self, capacity: int = 1000) -> None:
+    def __init__(self, capacity: int = 2000) -> None:
         super().__init__()
         from collections import deque
         self.records: deque = deque(maxlen=capacity)
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            tag, msg = _log_tag_and_msg(record.name, record.getMessage())
             self.records.append({"t": record.created, "level": record.levelname,
-                                 "name": record.name, "msg": record.getMessage()})
+                                 "name": record.name, "msg": msg, "tag": tag})
         except Exception:
             pass
 
@@ -2522,6 +2551,14 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
         await ws.close()
         return
     manager.subscribe(device_id, channel, ws)
+    # --- detailed session diagnostics (why do remote sessions drop?) -----------
+    t0 = time.monotonic()
+    peer = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
+    who = (user or {}).get("email", "dev-auth")
+    _remote_log.info("remote %s OPEN device=%s user=%s peer=%s purpose=%s",
+                     channel, device_id, who, peer, purpose)
+    close_code: object = "?"
+    close_reason = ""
     if channel == "screen":
         # Initial quality; an interactive viewer immediately overrides this with
         # its selected preset, but a one-shot screenshot uses it as-is — so keep
@@ -2536,10 +2573,27 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
                 await agent.send({"type": "shell_input", "data": data.get("data", "")})
             else:
                 await agent.send({"type": "input", **data})
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as e:
+        # The close code tells us *who* ended it: 1000/1001 = the browser (clean/
+        # navigate-away), 1006 = abnormal (proxy or network killed it, no close
+        # frame), 1011 = server/ASGI error, 1012 = restart. This is the key signal.
+        close_code = e.code
+        close_reason = getattr(e, "reason", "") or ""
+    except Exception as e:  # noqa: BLE001 — surface any non-disconnect failure
+        close_code = "ERR"
+        close_reason = repr(e)
+        _remote_log.warning("remote %s ERROR device=%s: %r", channel, device_id, e)
     finally:
         manager.unsubscribe(device_id, channel, ws)
+        dur = time.monotonic() - t0
+        frames = getattr(ws, "_relay_frames", 0)
+        kb = getattr(ws, "_relay_bytes", 0) / 1024.0
+        drops = getattr(ws, "_relay_drops", 0)
+        rate = (frames / dur) if dur > 0 else 0.0
+        _remote_log.info("remote %s CLOSE device=%s code=%s reason=%r after=%.1fs "
+                         "frames=%d (%.1f/s) sent=%.0fKB (%.0fkbit/s) send_fail=%d",
+                         channel, device_id, close_code, close_reason, dur,
+                         frames, rate, kb, (kb * 8 / dur) if dur > 0 else 0.0, drops)
         if channel == "screen" and manager.is_online(device_id):
             await manager.get(device_id).send({"type": "screen_stop"})
 
@@ -3159,16 +3213,43 @@ def server_update_apply(user: dict = Depends(auth.current_user)):
 
 
 @app.get("/api/logs")
-def get_logs(limit: int = 300, level: str | None = None,
+def get_logs(limit: int = 300, level: str | None = None, tag: str | None = None,
+             q: str | None = None, format: str | None = None,
              user: dict = Depends(auth.current_user)):
-    """Recent in-memory server logs (newest last) for the Settings → Logs view."""
+    """Recent in-memory server logs (newest last) for the Settings → Logs view.
+
+    Filterable by ``level``, ``tag`` (area — remote/http/unifi/…) and ``q`` (text
+    substring). ``format=csv`` streams the filtered rows as a CSV download."""
     if not user["is_global_admin"]:
         raise HTTPException(status_code=403, detail="Global admin required")
     records = list(_ring_log.records)
-    if level:
+    tags = sorted({r.get("tag", "app") for r in records})
+    if level and level.lower() != "all":
         wanted = level.upper()
         records = [r for r in records if r["level"] == wanted]
-    return {"version": SERVER_VERSION, "logs": records[-max(1, min(limit, 1000)):]}
+    if tag and tag.lower() != "all":
+        records = [r for r in records if r.get("tag") == tag]
+    if q:
+        needle = q.lower()
+        records = [r for r in records if needle in r["msg"].lower()
+                   or needle in r["name"].lower()]
+    # CSV export gets a larger cap; the on-screen view stays light.
+    cap = 2000 if (format or "").lower() == "csv" else max(1, min(limit, 1000))
+    records = records[-cap:]
+    if (format or "").lower() == "csv":
+        import csv
+        import datetime as _dt
+        import io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["timestamp", "level", "tag", "logger", "message"])
+        for r in records:
+            ts = _dt.datetime.fromtimestamp(r["t"]).isoformat(timespec="seconds")
+            w.writerow([ts, r["level"], r.get("tag", ""), r["name"], r["msg"]])
+        fname = f"leuffen-rmm-logs-{_dt.datetime.now():%Y%m%d-%H%M%S}.csv"
+        return Response(content=buf.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    return {"version": SERVER_VERSION, "logs": records, "tags": tags}
 
 
 @app.post("/api/settings")

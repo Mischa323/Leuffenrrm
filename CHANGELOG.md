@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Richer, filterable server logs (Settings → Logs).** Every log line now carries a **tag** (area — `remote`, `http`, `ws`, `unifi`, `update`, `app`, …) you can filter by, plus a free-text search box, and a **Download CSV** button that exports the current (filtered) log with timestamp / level / tag / logger / message columns. The in-memory buffer was doubled (2000 lines). Remote-desktop sessions now log detailed open/close diagnostics — **close code** (who ended it: 1000/1001 browser, 1006 proxy/network, 1011 server), session duration, frames and throughput relayed, and any per-frame send failure — to pin down why a session drops.
+
 ### Fixed
 - **Notification bell now works.** The bell (top bar, every page) fetched a `/api/global` endpoint that didn't exist — it silently 404'd, so it always showed "No new notifications" and never surfaced open alerts. Added the endpoint; the bell now lists the monitor/rule alerts currently raised across your organisations, with the red dot when there are any.
 - **Remote control stays connected.** Raised the server's WebSocket ping-timeout so a busy remote-desktop stream is no longer false-positive disconnected: uvicorn's default 20s timeout could kill a healthy-but-saturated screen connection (its keepalive ping queued behind buffered video frames), which dropped the viewer roughly once a minute even though the device never went offline. Combined with the auto-reconnect below, remote sessions are now stable.
