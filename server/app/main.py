@@ -36,6 +36,7 @@ from .models import (AccessGroupMemberRequest, AccessGroupOrgRequest, AccessGrou
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
 _remote_log = logging.getLogger("rmm.remote")  # tagged "remote" in the Logs view
+_health_log = logging.getLogger("rmm.health")  # tagged "health" in the Logs view
 
 def _resolve_version() -> str:
     """Server version, resolved automatically at startup (first hit wins):
@@ -100,6 +101,7 @@ _LOG_TAG_BY_LOGGER = {
     "rmm.remote": "remote", "rmm.ws": "remote",
     "rmm.unifi": "unifi", "rmm.update": "update", "rmm.snmp": "snmp",
     "rmm.alerts": "alerts", "rmm.mail": "mail", "rmm.mailer": "mail",
+    "rmm.health": "health",
     "uvicorn.access": "http", "uvicorn.error": "ws", "uvicorn": "server",
     "httpx": "http-out", "rmm": "app",
 }
@@ -239,6 +241,7 @@ async def _startup() -> None:
     asyncio.create_task(_schedule_loop())
     asyncio.create_task(_auto_update_loop())
     asyncio.create_task(_unifi_loop())
+    asyncio.create_task(_selfcheck_loop())
 
 
 def _resolve_setup_state() -> None:
@@ -354,6 +357,124 @@ async def _prune_loop() -> None:
             db.prune_device_events()
         except Exception:  # pragma: no cover
             pass
+
+
+# Interval between reachability self-checks (seconds); override via env for tests.
+SELFCHECK_INTERVAL = int(os.environ.get("RMM_SELFCHECK_INTERVAL", "300") or "300")
+# Remembers the last self-check outcome so we log transitions (not every tick).
+_selfcheck_state: dict = {"key": None, "ts": 0.0}
+
+
+def _effective_public_url() -> str:
+    """The public URL the server advertises — env wins, else the wizard-saved DB
+    value, else the localhost default (same precedence the rest of the app uses)."""
+    val = os.environ.get("RMM_PUBLIC_URL")
+    if not val:
+        try:
+            val = db.get_setting("RMM_PUBLIC_URL")
+        except Exception:
+            val = None
+    return (val or "http://localhost:8000").rstrip("/")
+
+
+def _selfcheck_once() -> dict:
+    """Resolve the public-URL hostname and (best-effort) read its TLS cert expiry.
+
+    Pure/blocking — run in an executor. Returns a dict describing the outcome; the
+    loop decides what to log. DNS resolution is the authoritative signal (a name
+    that no longer resolves is why browsers/agents get "server not found"); the TLS
+    reachability probe is best-effort and never treated as a hard failure, because
+    a server often can't hairpin-connect to its own public URL from behind NAT."""
+    import socket
+    from urllib.parse import urlparse
+
+    url = _effective_public_url()
+    parsed = urlparse(url)
+    host = parsed.hostname or "localhost"
+    scheme = (parsed.scheme or "http").lower()
+    port = parsed.port or (443 if scheme == "https" else 80)
+    out: dict = {"url": url, "host": host, "port": port, "scheme": scheme,
+                 "ips": [], "resolved": False, "error": None,
+                 "cert_days": None, "connected": False}
+
+    # A bare IP or localhost never "fails to resolve" in a meaningful way.
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        out["ips"] = sorted({ai[4][0] for ai in infos})
+        out["resolved"] = bool(out["ips"])
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+
+    if scheme == "https":
+        try:
+            import ssl
+            from datetime import datetime, timezone
+            # Read the *leaf* cert with verification disabled: we only want its
+            # expiry, and we must not depend on chain/trust-store validity (an
+            # expired LE cross-sign, a self-signed server, or a hairpin hostname
+            # mismatch would otherwise hide a perfectly readable notAfter). Parse
+            # the DER with `cryptography` (already a dependency) — no trust needed.
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with socket.create_connection((host, port), timeout=5) as raw:
+                with ctx.wrap_socket(raw, server_hostname=host) as ss:
+                    out["connected"] = True
+                    der = ss.getpeercert(binary_form=True)
+            if der:
+                from cryptography import x509
+                cert = x509.load_der_x509_certificate(der)
+                exp = cert.not_valid_after_utc  # tz-aware (cryptography ≥ 42)
+                out["cert_days"] = int((exp - datetime.now(timezone.utc)).total_seconds() // 86400)
+        except Exception:
+            pass  # best-effort only — a failed self-connect is not a real outage
+    return out
+
+
+async def _selfcheck_loop() -> None:
+    """Periodically verify the server's public URL still resolves (and its cert is
+    not about to expire), logging to the 'health' tag in Settings → Logs.
+
+    This is the log trail that was missing when the dashboard became unreachable:
+    a DNS record disappearing leaves nothing in the app logs (the request never
+    arrives), so we probe the public name ourselves and record it. Quiet by design
+    — an INFO heartbeat at most hourly, and a state line only when something
+    changes (name stops/starts resolving, resolved IPs change, cert nears expiry)."""
+    await asyncio.sleep(10)  # let startup settle before the first probe
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            r = await loop.run_in_executor(None, _selfcheck_once)
+            now = time.time()
+            cert_warn = r["cert_days"] is not None and r["cert_days"] <= 14
+            key = (r["resolved"], tuple(r["ips"]), cert_warn)
+            changed = key != _selfcheck_state["key"]
+            heartbeat = now - _selfcheck_state["ts"] >= 3600
+            if not r["resolved"]:
+                # Hard problem: the advertised hostname does not resolve here.
+                if changed or heartbeat:
+                    _health_log.warning(
+                        "public URL %s does NOT resolve (%s) — browsers/agents "
+                        "reaching the server by name will get 'server not found'",
+                        r["host"], r["error"] or "no addresses")
+            elif cert_warn:
+                if changed or heartbeat:
+                    _health_log.warning(
+                        "public URL %s resolves to %s but its TLS certificate "
+                        "expires in %d day(s)", r["host"], ", ".join(r["ips"]),
+                        r["cert_days"])
+            elif changed or heartbeat:
+                cert = ("cert ~%dd left" % r["cert_days"]) if r["cert_days"] is not None \
+                    else ("cert not read" if r["scheme"] == "https" else "http")
+                _health_log.info("public URL %s resolves to %s (%s)",
+                                 r["host"], ", ".join(r["ips"]) or "-", cert)
+            if changed or heartbeat:
+                _selfcheck_state["ts"] = now
+            _selfcheck_state["key"] = key
+        except Exception as exc:  # pragma: no cover — never let the loop die
+            log.warning("selfcheck loop error: %s", exc)
+        await asyncio.sleep(SELFCHECK_INTERVAL)
 
 
 async def _schedule_loop() -> None:
