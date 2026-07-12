@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Device Overview: Services moved below Applied policies.** The Services list (with "Show services") now sits under the *Applied policies* section instead of above the history charts, grouping the policy/services information together.
+
 ### Added
 - **One-click shareable installer link (Windows).** An organisation's **Downloads → Shareable one-click installer link** now produces a link you can send to anyone **without an RMM login**. The recipient runs a small self-elevating installer that downloads the agent and installs it silently with the **server address and a fresh enrolment key already filled in** — nothing to type — after which the new device lands in your **approval queue** to accept. The link is multi-use (each install mints its own one-time enrolment key), time-limited and revocable. Previously the "shareable" option handed out a raw MSI that still prompted for the server URL and key on the target machine, and the plain Download button required an admin session.
 

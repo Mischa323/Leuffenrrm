@@ -1848,7 +1848,7 @@ function renderOverview(d) {
   const hvHtml = hypervSection(d.hyperv);
   const bkHtml = backupsSection(d.backups);
   const svcHtml = servicesSection(d);
-  $("dtab-overview").innerHTML = cards + hvHtml + bkHtml + svcHtml + histHtml + polHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
+  $("dtab-overview").innerHTML = cards + hvHtml + bkHtml + histHtml + polHtml + svcHtml + `<div class="sec-label">Inventory</div><dl class="inv">${rows.map((r) => `<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join("")}${nicHtml}</dl>`;
   wireServices(d);
   const dc = $("disk-card");
   if (dc && multi) dc.onclick = () => $("disk-detail").classList.toggle("hidden");
