@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Device activity audit trail (device → History tab).** Each device's **History** tab now shows an **Activity** section recording operator actions — **who did what, and when**: remote-control sessions, terminal sessions, commands and scripts run, power (reboot/shutdown) and Wake-on-LAN, and file uploads/downloads/deletes. Kept for 90 days.
 - **Richer, filterable server logs (Settings → Logs).** Every log line now carries a **tag** (area — `remote`, `http`, `ws`, `unifi`, `update`, `app`, …) you can filter by, plus a free-text search box, and a **Download CSV** button that exports the current (filtered) log with timestamp / level / tag / logger / message columns. The in-memory buffer was doubled (2000 lines). Remote-desktop sessions now log detailed open/close diagnostics — **close code** (who ended it: 1000/1001 browser, 1006 proxy/network, 1011 server), session duration, frames and throughput relayed, and any per-frame send failure — to pin down why a session drops.
 
 ### Fixed

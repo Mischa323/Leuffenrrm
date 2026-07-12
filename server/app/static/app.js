@@ -1729,13 +1729,38 @@ function incidentRow(it, resolved) {
       <div class="h-sub">${escapeHtml(it.detail || "")} · ${when}</div>
     </div>${dot}</div>`;
 }
+function eventIcon(action) {
+  const a = (action || "").toLowerCase();
+  if (a.includes("remote")) return ICON.desktop;
+  if (a.includes("terminal")) return ICON.terminal;
+  if (a.includes("command") || a.includes("script")) return ICON.code;
+  if (a.includes("power") || a.includes("wake")) return ICON.power;
+  if (a.includes("upload")) return ICON.upload;
+  if (a.includes("download")) return ICON.download;
+  if (a.includes("file")) return ICON.folder;
+  if (a.includes("screen") || a.includes("view")) return ICON.monitor;
+  return ICON.history;
+}
+function eventRow(e) {
+  const who = escapeHtml((e.actor || "system").split("@")[0]);
+  const detail = e.detail ? ` <span class="mono" style="color:var(--text-faint)">${escapeHtml(e.detail)}</span>` : "";
+  const abs = new Date(e.ts * 1000).toLocaleString();
+  return `<div class="tile" style="display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:6px">
+    <span style="color:var(--accent);flex:none">${eventIcon(e.action)}</span>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:13px"><b>${escapeHtml(e.action)}</b>${detail}</div>
+      <div class="muted" style="font-size:11.5px">${who} · ${relTime(e.ts)}</div>
+    </div>
+    <span class="muted" style="flex:none;font-size:11px" title="${abs}">${abs}</span>
+  </div>`;
+}
 async function loadDeviceHistory(id) {
   const host = $("dtab-history");
-  host.innerHTML = `<div class="muted" style="padding:14px;font-size:12.5px">Loading policy history…</div>`;
+  host.innerHTML = `<div class="muted" style="padding:14px;font-size:12.5px">Loading device history…</div>`;
   let data;
   try { data = await api(`/api/devices/${id}/incidents`); }
   catch (e) { host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Couldn't load history</div><div class="cd">${escapeHtml(e.message)}</div></div></div>`; return; }
-  const active = data.active || [], resolved = data.resolved || [];
+  const active = data.active || [], resolved = data.resolved || [], events = data.events || [];
   let html = "";
   html += `<div class="sec-label">Current issues${active.length ? ` <span class="muted">(${active.length})</span>` : ""}</div>`;
   html += active.length
@@ -1745,6 +1770,10 @@ async function loadDeviceHistory(id) {
   html += resolved.length
     ? resolved.map((it) => incidentRow(it, true)).join("")
     : `<div class="muted" style="padding:6px 2px 14px;font-size:12.5px">No resolved issues recorded yet. Past issues will appear here once a policy alert clears.</div>`;
+  html += `<div class="sec-label" style="margin-top:18px">Activity${events.length ? ` <span class="muted">(${events.length})</span>` : ""}</div>`;
+  html += events.length
+    ? events.map(eventRow).join("")
+    : `<div class="muted" style="padding:6px 2px 14px;font-size:12.5px">No operator actions recorded yet. Remote control, power, scripts, terminal and file transfers will appear here (who did what, and when).</div>`;
   host.innerHTML = html;
 }
 async function loadSoftware(id) {

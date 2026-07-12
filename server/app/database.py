@@ -226,6 +226,18 @@ CREATE TABLE IF NOT EXISTS incidents (
 );
 CREATE INDEX IF NOT EXISTS idx_incidents_device ON incidents(device_id);
 
+-- Operator action audit trail per device (remote control, power, scripts, files…),
+-- shown on the device History tab.
+CREATE TABLE IF NOT EXISTS device_events (
+    id          TEXT PRIMARY KEY,
+    device_id   TEXT NOT NULL,
+    actor       TEXT,
+    action      TEXT NOT NULL,
+    detail      TEXT,
+    ts          REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_device_events_device ON device_events(device_id, ts);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -2319,3 +2331,43 @@ def prune_incidents(older_than_days: int = 90) -> None:
     cutoff = _now() - older_than_days * 86400
     with write() as conn:
         conn.execute("DELETE FROM incidents WHERE resolved_at IS NOT NULL AND resolved_at < ?", (cutoff,))
+
+
+# --------------------------------------------------------------------------- #
+# Device action audit trail (who did what on a device).
+# --------------------------------------------------------------------------- #
+def record_device_event(device_id: str, actor: str | None, action: str,
+                        detail: str | None = None, dedupe_seconds: int = 0) -> str | None:
+    """Record an operator action against a device. ``dedupe_seconds`` (>0) skips a
+    duplicate of the same actor+action logged within that window — used so a remote
+    session that auto-reconnects doesn't spam the trail."""
+    if dedupe_seconds > 0:
+        row = get_conn().execute(
+            """SELECT ts FROM device_events WHERE device_id=? AND action=?
+               AND COALESCE(actor,'')=COALESCE(?,'') ORDER BY ts DESC LIMIT 1""",
+            (device_id, action, actor),
+        ).fetchone()
+        if row and (_now() - row["ts"]) < dedupe_seconds:
+            return None
+    eid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO device_events (id, device_id, actor, action, detail, ts) VALUES (?,?,?,?,?,?)",
+            (eid, device_id, actor, action, detail, _now()),
+        )
+    return eid
+
+
+def list_device_events(device_id: str, limit: int = 100) -> list[dict]:
+    """Operator-action history for a device, most recent first."""
+    rows = get_conn().execute(
+        "SELECT actor, action, detail, ts FROM device_events WHERE device_id=? ORDER BY ts DESC LIMIT ?",
+        (device_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def prune_device_events(older_than_days: int = 90) -> None:
+    cutoff = _now() - older_than_days * 86400
+    with write() as conn:
+        conn.execute("DELETE FROM device_events WHERE ts < ?", (cutoff,))

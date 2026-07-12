@@ -351,6 +351,7 @@ async def _prune_loop() -> None:
         try:
             db.prune_metrics(METRIC_RETENTION)
             db.prune_incidents()
+            db.prune_device_events()
         except Exception:  # pragma: no cover
             pass
 
@@ -541,6 +542,17 @@ def _device_for_user(device_id: str, user: dict) -> dict:
         raise HTTPException(status_code=404, detail="Device not found")
     auth.require_org(user, dev["org_id"])
     return dev
+
+
+def _audit(device_id: str, user: dict | None, action: str, detail: str = "",
+           dedupe_seconds: int = 0) -> None:
+    """Record an operator action against a device for its History tab (best-effort —
+    auditing must never break the action itself)."""
+    try:
+        actor = (user or {}).get("email") or "system"
+        db.record_device_event(device_id, actor, action, detail or None, dedupe_seconds)
+    except Exception:  # pragma: no cover
+        log.warning("audit: failed to record %r on %s", action, device_id)
 
 
 def _decorate(dev: dict, full: bool = False) -> dict:
@@ -898,7 +910,8 @@ def device_incidents(device_id: str, user: dict = Depends(auth.current_user)):
         a["detail"] = _alert_detail(a)
         a["opened_at"] = a.pop("since", None)
         active.append(a)
-    return {"active": active, "resolved": db.list_incidents(device_id, limit=100)}
+    return {"active": active, "resolved": db.list_incidents(device_id, limit=100),
+            "events": db.list_device_events(device_id, limit=100)}
 
 
 @app.delete("/api/devices/{device_id}")
@@ -965,7 +978,9 @@ async def files_mkdir(device_id: str, req: Request, user: dict = Depends(auth.cu
 @app.post("/api/devices/{device_id}/files/delete")
 async def files_delete(device_id: str, req: Request, user: dict = Depends(auth.current_user)):
     body = await req.json()
-    return await _agent_file_op(device_id, user, {"type": "file_delete", "path": body.get("path", "")})
+    res = await _agent_file_op(device_id, user, {"type": "file_delete", "path": body.get("path", "")})
+    _audit(device_id, user, "Deleted file", body.get("path", ""))
+    return res
 
 
 @app.get("/api/devices/{device_id}/files/download")
@@ -982,6 +997,7 @@ async def files_download(device_id: str, path: str = Query(...),
     # Strip CR/LF/quote/backslash so the agent-supplied name can't malform (or inject
     # into) the Content-Disposition header.
     name = _re.sub(r'[\r\n"\\]+', "_", name)[:255] or "download"
+    _audit(device_id, user, "Downloaded file", path)
     return Response(data, media_type="application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="{name}"',
                              "Cache-Control": "no-store"})
@@ -999,9 +1015,11 @@ async def files_upload(device_id: str, path: str = Query(...), file: UploadFile 
     # the server may be Linux) so a crafted name can't add path components to dest.
     fname = os.path.basename((file.filename or "upload").replace("\\", "/")) or "upload"
     dest = path.rstrip("\\/") + sep + fname
-    return await _agent_file_op(device_id, user,
-                                {"type": "file_put", "path": dest,
-                                 "data": base64.b64encode(raw).decode()}, timeout=120)
+    res = await _agent_file_op(device_id, user,
+                               {"type": "file_put", "path": dest,
+                                "data": base64.b64encode(raw).decode()}, timeout=120)
+    _audit(device_id, user, "Uploaded file", dest)
+    return res
 
 
 @app.post("/api/devices/{device_id}/move")
@@ -1044,6 +1062,7 @@ async def power(device_id: str, req: PowerRequest, user: dict = Depends(auth.cur
         res = await manager.request(device_id, {"type": "power", "action": req.action})
     except Exception as exc:
         raise HTTPException(status_code=504, detail=str(exc))
+    _audit(device_id, user, "Power", req.action)
     return res
 
 
@@ -1057,6 +1076,7 @@ async def shell(device_id: str, req: ShellRequest, user: dict = Depends(auth.cur
         res = await manager.request(device_id, {"type": "shell_run", "cmd": req.cmd}, timeout=60)
     except Exception as exc:
         raise HTTPException(status_code=504, detail=str(exc))
+    _audit(device_id, user, "Ran command", (req.cmd or "")[:200])
     return res
 
 
@@ -1401,6 +1421,7 @@ async def run_script(script_id: str, req: ScriptRunRequest,
         raise HTTPException(status_code=400, detail="Device is in a different organisation")
     if not manager.is_online(req.device_id):
         raise HTTPException(status_code=409, detail="Device offline")
+    _audit(req.device_id, user, "Ran script", script.get("name", ""))
     try:
         return await _exec_script_on_device(script, req.device_id, req.timeout)
     except Exception as exc:
@@ -2081,9 +2102,11 @@ async def wake_device(device_id: str, req: WakeRequest | None = None,
     if not mac:
         raise HTTPException(status_code=400, detail="No MAC address known for this device")
     try:
-        return await _wake(dev["org_id"], mac, req.broadcast_ip, req.port, dev.get("ip"), req.node_id)
+        result = await _wake(dev["org_id"], mac, req.broadcast_ip, req.port, dev.get("ip"), req.node_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    _audit(device_id, user, "Wake-on-LAN")
+    return result
 
 
 @app.post("/api/orgs/{org_id}/network/wake")
@@ -2557,6 +2580,15 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
     who = (user or {}).get("email", "dev-auth")
     _remote_log.info("remote %s OPEN device=%s user=%s peer=%s purpose=%s",
                      channel, device_id, who, peer, purpose)
+    # Audit trail for the device History tab (dedupe so an auto-reconnecting session
+    # or a burst of screenshot refreshes doesn't spam it). Passive screenshots are
+    # recorded distinctly from an interactive remote-control session.
+    if channel == "screen" and purpose == "control":
+        _audit(device_id, user, "Remote control", "session started", dedupe_seconds=45)
+    elif channel == "screen" and purpose == "screenshot":
+        _audit(device_id, user, "Viewed screen", "screenshot", dedupe_seconds=120)
+    elif channel == "terminal":
+        _audit(device_id, user, "Opened terminal", "", dedupe_seconds=45)
     close_code: object = "?"
     close_reason = ""
     if channel == "screen":
