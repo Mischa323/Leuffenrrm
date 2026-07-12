@@ -1161,8 +1161,8 @@ async function renderDownloads() {
           <button data-ctd="off">Off</button>
         </div>
       </div></div>
-    <div class="dl-block"><div class="lab">${ICON.link} Shareable MSI download link</div>
-      <div class="h-sub" style="margin:4px 0 10px">Generate a link you can share with anyone. The link downloads the MSI pre-configured for this organisation — valid for a set number of days, unlimited installs. Revoke anytime.</div>
+    <div class="dl-block"><div class="lab">${ICON.link} Shareable one-click installer link</div>
+      <div class="h-sub" style="margin:4px 0 10px">Send this link to anyone who needs the agent installed — <b>no RMM login required</b>. They download and run a one-click installer with the <b>server address and key already filled in</b>; the device then appears in your <b>approval queue</b> to accept. Valid for a set number of days, unlimited installs, revoke anytime.</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <select id="dl-ttl" class="inp" style="width:auto">
           <option value="1">1 day</option>
@@ -1235,9 +1235,11 @@ async function renderDownloads() {
       });
       const host = $("dl-link-result");
       host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.link}</div><div style="flex:1">
-        <div class="ct">Shareable MSI download link</div>
-        <div class="h-sub" style="margin:4px 0 6px">Valid for ${ttl} day${ttl !== 1 ? "s" : ""} · unlimited downloads · anyone with the link can install the agent</div>
-        <div class="code"><button class="btn ghost sm tcopy" data-c="${escapeAttr(r.msi_url)}">${ICON.copy} Copy link</button>${escapeHtml(r.msi_url)}</div>
+        <div class="ct">One-click installer link — send this</div>
+        <div class="h-sub" style="margin:4px 0 6px">Valid for ${ttl} day${ttl !== 1 ? "s" : ""} · unlimited installs · no login · server URL &amp; key already filled in. The recipient runs it; the device shows up in your approval queue.</div>
+        <div class="code"><button class="btn ghost sm tcopy" data-c="${escapeAttr(r.cmd_url)}">${ICON.copy} Copy link</button>${escapeHtml(r.cmd_url)}</div>
+        <div class="h-sub" style="margin:8px 0 2px">Advanced — raw MSI (installs with the key supplied separately):</div>
+        <div class="code"><button class="btn ghost sm tcopy" data-c="${escapeAttr(r.msi_url)}">${ICON.copy} Copy MSI link</button>${escapeHtml(r.msi_url)}</div>
       </div></div>`;
       host.querySelectorAll(".tcopy").forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.c); toast("Copied"); });
       dlLinks = (await api(`/api/orgs/${state.org}/download-links`)).links || [];

@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- **One-click shareable installer link (Windows).** An organisation's **Downloads → Shareable one-click installer link** now produces a link you can send to anyone **without an RMM login**. The recipient runs a small self-elevating installer that downloads the agent and installs it silently with the **server address and a fresh enrolment key already filled in** — nothing to type — after which the new device lands in your **approval queue** to accept. The link is multi-use (each install mints its own one-time enrolment key), time-limited and revocable. Previously the "shareable" option handed out a raw MSI that still prompted for the server URL and key on the target machine, and the plain Download button required an admin session.
+
+## [1.5.75] - 2026-07-12
+
+### Added
 - **Server reachability self-check (Settings → Logs, `health` tag).** The server now periodically verifies that its own **public URL still resolves** in DNS and reads its **TLS certificate's expiry**, logging the result under a new **`health`** tag (filterable and searchable in Settings → Logs). It warns when the advertised hostname stops resolving — the server-side signal behind a browser's *"server not found"* — or when the certificate is within 14 days of expiry. This fills a blind spot: a name-resolution failure otherwise leaves **no trace** in the logs, because the request never reaches the server.
 - **Clearer agent DNS diagnostics.** When an agent can't **resolve the server's hostname** (dead or wrong DNS, or a removed DNS record), it now logs a distinct **`DNS resolution failed for <host>`** line instead of a generic "connection lost", so a fleet-wide name-resolution outage is obvious at a glance. Requires the updated agent (v2.2.39+).
 - **Device activity audit trail (device → History tab).** Each device's **History** tab now shows an **Activity** section recording operator actions — **who did what, and when**: remote-control sessions, terminal sessions, commands and scripts run, power (reboot/shutdown) and Wake-on-LAN, and file uploads/downloads/deletes. Kept for 90 days.

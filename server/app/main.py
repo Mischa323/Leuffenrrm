@@ -967,6 +967,9 @@ def create_download_link(org_id: str, body: DownloadLinkRequest,
     ttl = max(0.5, min(body.ttl_days, 90))
     result = db.create_download_token(org_id, label=body.label, ttl_days=ttl)
     pub = public_url()
+    # cmd_url: the self-configuring one-click installer (server URL + key baked in).
+    # msi_url: the raw MSI (needs the key supplied at install) — kept for advanced use.
+    result["cmd_url"] = f"{pub}/api/orgs/{org_id}/install.cmd?token={result['token']}"
     result["msi_url"] = f"{pub}/api/orgs/{org_id}/install.msi?token={result['token']}"
     return result
 
@@ -2927,6 +2930,102 @@ async def install_msi(org_id: str, token: str | None = Query(None),
                             detail="MSI not available yet — build/publish a release first.")
     return Response(r.content, media_type="application/x-msdownload",
                     headers={"Content-Disposition": "attachment; filename=leuffen-rmm-agent.msi",
+                             "Cache-Control": "no-store"})
+
+
+@app.get("/api/orgs/{org_id}/install.cmd")
+def install_cmd(org_id: str, token: str | None = Query(None),
+                user: dict | None = Depends(auth.optional_user)):
+    """Self-configuring Windows installer (a .cmd batch) meant for *sharing*.
+
+    The recipient just runs it (double-click → it self-elevates): it downloads
+    the MSI and installs it silently with this org's **server URL and enrolment
+    key already filled in** — no RMM login, nothing to type. The device then
+    lands in the approval queue for an admin to accept.
+
+    Authorised by a shareable download-link token, a one-time enrolment token,
+    or an admin session — the same options as the MSI download.
+    """
+    org = db.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    # Resolve two credentials: the token that authorises the MSI *download* inside
+    # the script (``dl_token``) and the *enrolment* key baked into the install
+    # (``enroll_key``). A download token is multi-use, so each fetch mints a fresh
+    # one-time enrolment key — one shared link can onboard many machines, and each
+    # device still needs admin approval.
+    if token and db.download_token_valid(org_id, token, count=False):
+        dl_token = token
+        enroll_key = db.create_enroll_token(org_id, label="share-install",
+                                            kind="internal", ttl_hours=72)["token"]
+    elif token and db.token_valid_for(org_id, token):
+        dl_token = enroll_key = token
+    elif user is not None:
+        auth.require_org(user, org_id)
+        enroll_key = db.create_enroll_token(org_id, label="installer",
+                                            kind="internal", ttl_hours=72)["token"]
+        dl_token = enroll_key
+    else:
+        raise HTTPException(status_code=401,
+                            detail="A valid token (?token=) or an admin session is required")
+
+    pub = public_url()
+    insecure = "1" if agent_insecure_tls() else "0"
+    msi_url = f"{pub}/api/orgs/{org_id}/install.msi?token={dl_token}"
+    # PowerShell one-liner that downloads the MSI (TLS 1.2; skip cert-check only
+    # for a self-signed server). Kept on one line to avoid batch caret-continuation
+    # pitfalls; braces here are fine — it's injected as a variable, not in the
+    # f-string template.
+    cert_bypass = ("[Net.ServicePointManager]::ServerCertificateValidationCallback={$true};"
+                   if insecure == "1" else "")
+    # Write to the batch's %MSI% variable, single-quoted for PowerShell so paths
+    # with spaces work and there are no double quotes nested inside -Command "...".
+    ps_dl = ("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;"
+             + cert_bypass
+             + f"Invoke-WebRequest -UseBasicParsing -Uri '{msi_url}' -OutFile '%MSI%'")
+    body = f"""@echo off
+setlocal enableextensions
+title Leuffen RMM agent installer
+echo ==========================================================
+echo   Leuffen RMM agent - installer
+echo   Server address and key are already filled in.
+echo ==========================================================
+echo.
+
+rem --- self-elevate to administrator if not already ---
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+  echo Requesting administrator rights...
+  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  exit /b
+)
+
+set "MSI=%TEMP%\\leuffen-rmm-agent.msi"
+echo Downloading the agent...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "{ps_dl}"
+if not exist "%MSI%" (
+  echo.
+  echo Download failed - check the internet connection and that the link is still valid.
+  pause
+  exit /b 1
+)
+
+echo Installing...
+msiexec /i "%MSI%" /qn /norestart RMM_SERVER_URL="{pub}" RMM_API_KEY="{enroll_key}" RMM_INSECURE_TLS={insecure}
+set "RC=%errorlevel%"
+del /q "%MSI%" >nul 2>&1
+if not "%RC%"=="0" (
+  echo.
+  echo Install failed with code %RC%.
+  pause
+  exit /b %RC%
+)
+echo.
+echo Done. This device will appear in the RMM once an admin approves it.
+timeout /t 6 >nul
+"""
+    return Response(body, media_type="text/plain",
+                    headers={"Content-Disposition": 'attachment; filename="install-leuffen-rmm.cmd"',
                              "Cache-Control": "no-store"})
 
 
