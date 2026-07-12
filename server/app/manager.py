@@ -9,9 +9,12 @@ so agent output frames can be fanned out to them.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from fastapi import WebSocket
+
+_log = logging.getLogger("rmm.ws")
 
 
 class AgentConn:
@@ -88,14 +91,21 @@ class ConnectionManager:
         conn = self.get(device_id)
         if not conn:
             return
+        is_bytes = isinstance(data, (bytes, bytearray))
         dead = []
         for ws in list(conn.subscribers.get(channel, set())):
             try:
-                if isinstance(data, (bytes, bytearray)):
+                if is_bytes:
                     await ws.send_bytes(data)
+                    # Per-subscriber counters, read by _bridge_ws when it logs the
+                    # session close (frames/throughput help diagnose drops).
+                    ws._relay_frames = getattr(ws, "_relay_frames", 0) + 1
+                    ws._relay_bytes = getattr(ws, "_relay_bytes", 0) + len(data)
                 else:
                     await ws.send_json(data)
-            except Exception:
+            except Exception as e:
+                ws._relay_drops = getattr(ws, "_relay_drops", 0) + 1
+                _log.warning("fanout %s send failed dev=%s: %r", channel, device_id, e)
                 dead.append(ws)
         for ws in dead:
             conn.subscribers[channel].discard(ws)

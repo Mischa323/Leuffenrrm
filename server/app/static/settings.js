@@ -104,22 +104,57 @@ async function loadFingerprint() {
   }
 }
 
+function logQuery(extra) {
+  const lvl = $("log-level") ? $("log-level").value : "all";
+  const tag = $("log-tag") ? $("log-tag").value : "all";
+  const q = $("log-search") ? $("log-search").value.trim() : "";
+  const p = new URLSearchParams(extra || {});
+  if (lvl && lvl !== "all") p.set("level", lvl);
+  if (tag && tag !== "all") p.set("tag", tag);
+  if (q) p.set("q", q);
+  return p;
+}
+
 async function loadLogs() {
   const view = $("log-view");
   if (!view) return;
-  const lvl = $("log-level") ? $("log-level").value : "all";
   try {
-    const r = await api(`/api/logs?limit=400${lvl && lvl !== "all" ? "&level=" + lvl : ""}`);
-    if (!r.logs.length) { view.innerHTML = `<div class="muted" style="padding:14px">No log entries yet.</div>`; return; }
+    const p = logQuery({ limit: "500" });
+    const r = await api(`/api/logs?${p.toString()}`);
+    // Populate the tag filter from the full tag set (preserve the selection).
+    const tsel = $("log-tag");
+    if (tsel && r.tags) {
+      const cur = tsel.value || "all";
+      tsel.innerHTML = `<option value="all">all tags</option>` +
+        r.tags.map((t) => `<option value="${esc(t)}"${t === cur ? " selected" : ""}>${esc(t)}</option>`).join("");
+    }
+    if (!r.logs.length) { view.innerHTML = `<div class="muted" style="padding:14px">No matching log entries.</div>`; return; }
     view.innerHTML = r.logs.map((e) => {
       const ts = new Date(e.t * 1000).toLocaleTimeString();
       const cls = e.level === "ERROR" || e.level === "CRITICAL" ? "err" : e.level === "WARNING" ? "warn" : "info";
-      return `<div class="log-line"><span class="lt">${ts}</span><span class="ll ${cls}">${esc(e.level)}</span><span class="ln">${esc(e.name)}</span><span class="lm">${esc(e.msg)}</span></div>`;
+      const tg = e.tag ? `<span class="lm" style="flex:none;font-family:var(--font-mono);font-size:11px;padding:0 6px;border-radius:var(--r-pill);background:var(--surface-3);color:var(--text-dim)">${esc(e.tag)}</span>` : "";
+      return `<div class="log-line"><span class="lt">${ts}</span><span class="ll ${cls}">${esc(e.level)}</span>${tg}<span class="ln">${esc(e.name)}</span><span class="lm">${esc(e.msg)}</span></div>`;
     }).join("");
     view.scrollTop = view.scrollHeight;
   } catch (e) {
     view.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Couldn't load logs</div><div class="cd">${esc(e.message)}</div></div></div>`;
   }
+}
+
+async function downloadLogsCsv() {
+  try {
+    const p = logQuery({ format: "csv" });
+    const r = await fetch(`/api/logs?${p.toString()}`, { credentials: "same-origin" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const blob = await r.blob();
+    const cd = r.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="([^"]+)"/);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = m ? m[1] : "leuffen-rmm-logs.csv";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { toast ? toast("CSV export failed: " + e.message) : alert("CSV export failed"); }
 }
 
 function block(title, desc, bodyHtml, saveId) {
@@ -279,10 +314,13 @@ function render() {
     <section class="sec" data-sec="logs">
       ${secTitle("terminal", "Logs", "Recent server activity. Held in memory — newest at the bottom.")}
       <div class="card-block">
-        <div class="cb-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <div class="cb-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <div><h3>Server log</h3><p>Leuffen RMM server <span class="mono">v${esc(cfg.RMM_VERSION || "—")}</span></p></div>
-          <div style="display:flex;align-items:center;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <input class="inp sm" id="log-search" placeholder="Filter text…" style="width:150px" />
+            <select class="inp sm" id="log-tag"><option value="all">all tags</option></select>
             ${select("log-level", ["all", "INFO", "WARNING", "ERROR"], "all")}
+            <button class="btn ghost sm" id="log-csv">${ICON.download || ""} CSV</button>
             <button class="btn ghost sm" id="log-refresh">${ICON.refresh} Refresh</button>
           </div>
         </div>
@@ -827,6 +865,10 @@ function wire() {
   };
   const lr = $("log-refresh"); if (lr) lr.onclick = loadLogs;
   const ll = $("log-level"); if (ll) ll.onchange = loadLogs;
+  const ltg = $("log-tag"); if (ltg) ltg.onchange = loadLogs;
+  const lcsv = $("log-csv"); if (lcsv) lcsv.onclick = downloadLogsCsv;
+  const lsq = $("log-search");
+  if (lsq) { let t; lsq.oninput = () => { clearTimeout(t); t = setTimeout(loadLogs, 300); }; }
   loadServerUpdate();
   loadChangelog();
   const rc = $("reset-config");
