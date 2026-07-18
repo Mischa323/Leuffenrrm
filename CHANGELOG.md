@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- **Smaller agent log files.** The agent's rotating log (`agent.log`) now caps each file at **50 KB** instead of 1 MB (still 9 rotated backups), keeping the active log small and quick to open. Requires the updated agent (v2.2.40+).
 - **Devices no longer flip to "offline" during a server restart.** A device now stays shown as **online** for a short grace period (120s, `RMM_ONLINE_GRACE`) after its connection drops, as long as it recently heartbeated. Previously the dashboard's online state was purely "is a live socket connected this instant", so **every server redeploy** — which briefly restarts the process and closes all agent sockets with WebSocket code `1012` — flipped the **entire fleet to offline** for the few seconds each agent took to reconnect. Anyone opening the dashboard just after a deploy saw everything offline until it recovered. Control actions (remote control, terminal, reboot/shutdown, agent update, Wake-on-LAN) still require a genuinely live connection. Note: this only smooths over brief blips — a device that is actually down still shows offline once the grace period lapses.
 - **Device Overview: Services moved below Applied policies.** The Services list (with "Show services") now sits under the *Applied policies* section instead of above the history charts, grouping the policy/services information together.
 
