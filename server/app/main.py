@@ -308,13 +308,20 @@ async def _alert_loop() -> None:
         except Exception as exc:  # pragma: no cover
             log.warning("alert loop error: %s", exc)
             continue
-        # Run any auto-remediation scripts the evaluation queued (a policy alerted
-        # on an online device and carries a remediation script).
+        # Run the auto-remediations the evaluation queued: either a Wake-on-LAN
+        # magic packet (device is offline) or a library script on a live agent.
         for r in remediations or []:
-            script = db.get_script(r["script_id"])
-            if not script or not manager.is_online(r["device_id"]):
-                continue
             try:
+                if r.get("action") == "wol":
+                    dev = db.get_device(r["device_id"])
+                    if dev and dev.get("mac"):
+                        await _wake(dev["org_id"], dev["mac"], None, 9, dev.get("ip"), None)
+                        log.info("auto-remediation (Wake-on-LAN) for %r sent to %s",
+                                 r["rule_name"], r["device_id"])
+                    continue
+                script = db.get_script(r["script_id"])
+                if not script or not manager.is_online(r["device_id"]):
+                    continue
                 await _exec_script_on_device(script, r["device_id"],
                                              run_name=f"auto-remediation: {r['rule_name']}")
                 log.info("auto-remediation for %r ran on %s", r["rule_name"], r["device_id"])
@@ -2003,9 +2010,10 @@ MONITOR_TEMPLATES = [
                     "to start watching a NAS's Active Backup tasks.",
      "metric": "backup", "unit": "h", "default_threshold": 48, "default_duration_minutes": None,
      "default_severity": "warning", "os_support": None},
-    {"id": "wol", "name": "Wake-on-LAN", "category": "Power", "kind": "policy",
-     "description": "Configure agents' NICs for Wake-on-LAN and disable Fast Startup so they can be "
-                    "woken. Windows only.",
+    {"id": "wol", "name": "Wake-on-LAN readiness", "category": "Power", "kind": "policy",
+     "description": "Prepare devices to be woken: enable Wake-on-LAN on their NICs and disable Fast "
+                    "Startup. Pair it with a Device-offline monitor whose remediation is Wake-on-LAN "
+                    "to auto-wake them. Windows only.",
      "metric": "wol", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
      "default_severity": "info", "os_support": ["windows", "windows_server"]},
 ]
@@ -2147,10 +2155,20 @@ def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:
                                   remediation_script_id=_resolve_remediation(req.remediation_script_id))
 
 
+# Sentinel remediation value: send a Wake-on-LAN magic packet (kept in sync with
+# the same literal in alerts.py) instead of running a library script. Chosen so a
+# Device-offline monitor can auto-wake a machine — it fires while the device is
+# offline and needs no agent on the target.
+REMEDIATION_WOL = "builtin:wol"
+
+
 def _resolve_remediation(script_id: str | None) -> str | None:
-    """Validate an optional remediation script id (any script in the library)."""
+    """Validate an optional remediation: a library script id, or the built-in
+    Wake-on-LAN action (sentinel). Anything else must be a real script."""
     if not script_id:
         return None
+    if script_id == REMEDIATION_WOL:
+        return script_id
     if not db.get_script(script_id):
         raise HTTPException(status_code=400, detail="Unknown remediation script")
     return script_id
