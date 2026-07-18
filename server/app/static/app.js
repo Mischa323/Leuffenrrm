@@ -94,6 +94,7 @@ async function init() {
   setupDeleteModal();
   setupMonitorMenu();
   setupMonitorFilter();
+  setupRemediateModal();
   state.templates = await api("/api/monitor-templates").catch(() => []);
   refreshPendingBadge();
   setInterval(refreshPendingBadge, 30000);
@@ -1414,10 +1415,12 @@ function monitorRow(m) {
     <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(m.name)} ${kindTag("Script policy")} ${monStatusBadge(m.last_status)} ${severityBadge(m.severity)} ${isGlobal ? globalBadge() : ""}</div>
       <div class="h-sub">monitor: ${escapeHtml(scriptName(m.monitor_script_id))}${rem} · ${cadenceText(m)} · ${escapeHtml(targetText(m))}${m.last_run ? " · last " + relTime(m.last_run) : ""}</div></div>
     <span class="badge ${m.enabled ? "ok" : "na"}">${m.enabled ? "enabled" : "paused"}</span>
+    <button class="btn ghost sm remediate">${ICON.bolt} Remediate</button>
     ${canManage ? `<button class="btn ghost sm run-now">${ICON.power} Run now</button>
     <button class="btn ghost sm edit">${ICON.pencil}</button>
     <button class="btn ghost sm toggle">${m.enabled ? "Pause" : "Resume"}</button>
     <button class="btn ghost sm del">${ICON.trash}</button>` : ""}</div>`;
+  row.querySelector(".remediate").onclick = () => openRemediate({ name: m.name, target_type: m.target_type, target_id: m.target_id, remediation_script_id: m.remediation_script_id });
   if (canManage) {
     row.querySelector(".run-now").onclick = async () => { try { const r = await api(`/api/monitors/${m.id}/run`, { method: "POST" }); toast("Monitor ran: " + r.status); state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); renderMonitors(); loadRuns(); } catch (e) { toast(e.message); } };
     row.querySelector(".edit").onclick = () => openMonitorForm(m);
@@ -1596,20 +1599,62 @@ function ruleRow(r) {
   const tmpl = (state.templates || []).find((t) => t.id === r.template_id);
   const isPolicy = tmpl && tmpl.kind === "policy";
   const row = el("div", "tile"); row.style.marginBottom = "10px";
+  const rem = r.remediation_script_id ? ` · fix: ${escapeHtml(scriptName(r.remediation_script_id))}` : "";
   row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
     <div class="os-ico">${metricIcon(r.metric)}</div>
     <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(r.name)} ${kindTag(isPolicy ? "Standard" : "Template rule")} ${osTags(r)} ${severityBadge(r.severity)} ${isGlobal ? globalBadge() : ""}</div>
-      <div class="h-sub">${ruleValueText(r)} · ${escapeHtml(targetText(r))}</div></div>
+      <div class="h-sub">${ruleValueText(r)} · ${escapeHtml(targetText(r))}${rem}</div></div>
     <span class="badge ${r.enabled ? "ok" : "na"}">${r.enabled ? "enabled" : "paused"}</span>
+    ${isPolicy ? "" : `<button class="btn ghost sm remediate">${ICON.bolt} Remediate</button>`}
     ${canManage ? `<button class="btn ghost sm edit">${ICON.pencil}</button>
     <button class="btn ghost sm toggle">${r.enabled ? "Pause" : "Resume"}</button>
     <button class="btn ghost sm del">${ICON.trash}</button>` : ""}</div>`;
+  const remBtn = row.querySelector(".remediate");
+  if (remBtn) remBtn.onclick = () => openRemediate({ name: r.name, target_type: r.target_type, target_id: r.target_id, remediation_script_id: r.remediation_script_id });
   if (canManage) {
     row.querySelector(".edit").onclick = () => openRuleForm((state.templates || []).find((t) => t.id === r.template_id), r);
     row.querySelector(".toggle").onclick = async () => { try { await api(`/api/monitor-rules/${r.id}/toggle`, { method: "POST" }); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); renderMonitors(); } catch (e) { toast(e.message); } };
     row.querySelector(".del").onclick = async () => { if (!confirm("Delete rule “" + r.name + "”?")) return; try { await api(`/api/monitor-rules/${r.id}`, { method: "DELETE" }); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); buildNav(); renderMonitors(); toast("Rule deleted"); } catch (e) { toast(e.message); } };
   }
   return row;
+}
+// ---- Manual remediation: run a script on a policy's (online) target device -- //
+function policyTargetDevices(p) {
+  const devs = state.cache.devices || [];
+  if (p.target_type === "device") return devs.filter((d) => d.id === p.target_id);
+  if (p.target_type === "group") return devs.filter((d) => d.group_id === p.target_id);
+  return devs;   // "all"
+}
+function openRemediate(p) {
+  const scripts = state.cache.scripts || [];
+  const targets = policyTargetDevices(p);
+  const online = targets.filter((d) => d.online);
+  $("rem-sub").textContent = "Policy: " + p.name;
+  $("rem-device").innerHTML = online.map((d) => `<option value="${d.id}">${escapeHtml(d.hostname)}</option>`).join("");
+  $("rem-script").innerHTML = scripts.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
+  if (p.remediation_script_id) $("rem-script").value = p.remediation_script_id;
+  const offlineN = targets.length - online.length;
+  $("rem-note").textContent = !scripts.length ? "Create a script first (Scripts tab)."
+    : !online.length ? "No online target devices — a script can only run on a connected device."
+    : offlineN ? offlineN + " target device(s) offline and hidden." : "";
+  $("rem-run").disabled = !scripts.length || !online.length;
+  $("remediate-modal").classList.remove("hidden");
+}
+function setupRemediateModal() {
+  $("rem-close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
+  const close = () => $("remediate-modal").classList.add("hidden");
+  $("rem-close").onclick = close; $("rem-cancel").onclick = close;
+  $("remediate-modal").addEventListener("click", (e) => { if (e.target === $("remediate-modal")) close(); });
+  $("rem-run").onclick = async () => {
+    const sid = $("rem-script").value, did = $("rem-device").value;
+    if (!sid || !did) return toast("Pick a device and a script");
+    $("rem-run").disabled = true;
+    try {
+      const r = await api(`/api/scripts/${sid}/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_id: did }) });
+      toast("Remediation " + (r.status || "started") + (r.exit_code != null ? " (exit " + r.exit_code + ")" : ""));
+      close();
+    } catch (e) { toast(e.message); } finally { $("rem-run").disabled = false; }
+  };
 }
 let ruleScope = "site";
 let currentTemplate = null;
@@ -1676,6 +1721,9 @@ function openRuleForm(tmpl, existing) {
   }
   $("rm-target").disabled = ruleScope === "global";
   $("rm-severity").value = (existing && existing.severity) || tmpl.default_severity || "warning";
+  $("rm-remediation").innerHTML = `<option value="">— None —</option>` +
+    (state.cache.scripts || []).map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
+  $("rm-remediation").value = existing ? (existing.remediation_script_id || "") : "";
   $("rm-notify-switch").classList.toggle("on", !existing || (existing.notify_email !== 0 && existing.notify_email !== false));
   document.querySelectorAll("#rm-scope-seg button").forEach((b) => b.classList.toggle("active", b.dataset.scope === ruleScope));
   $("rm-scope-wrap").classList.toggle("hidden", !!existing || !state.me.is_global_admin);
@@ -1703,6 +1751,7 @@ async function saveRule() {
     target_type, target_id,
     severity: isPolicy ? (currentTemplate.default_severity || "info") : $("rm-severity").value,
     notify_email: isPolicy ? false : $("rm-notify-switch").classList.contains("on"),
+    remediation_script_id: isPolicy ? null : ($("rm-remediation").value || null),
   };
   if (m === "process") {
     body.process = $("rm-process").value.trim();

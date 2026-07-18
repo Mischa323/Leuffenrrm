@@ -357,6 +357,7 @@
         <div><label class="ml2">Target</label><select id="rm-target" class="mm-inp"></select></div>
         <div id="rm-alert-row" style="display:flex;flex-direction:column;gap:14px">
           <div><label class="ml2">Severity</label><select id="rm-severity" class="mm-inp"><option value="info">Info</option><option value="warning" selected>Warning</option><option value="critical">Critical</option></select></div>
+          <div><label class="ml2">Remediation script <span style="color:var(--text-faint)">· optional · runs on the device when this policy alerts</span></label><select id="rm-remediation" class="mm-inp"></select></div>
           <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:9px 11px"><label class="ml2" style="margin:0">Email notifications</label><div class="switch on" id="rm-notify-switch"></div></div>
         </div>
         <div id="rm-scope-wrap" class="hidden"><label class="ml2">Scope</label><div class="seg" id="rm-scope-seg"><button data-scope="site" class="active">This site only</button><button data-scope="global">Global — all sites</button></div></div>
@@ -364,6 +365,25 @@
       <div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 22px;border-top:1px solid var(--border)">
         <button class="btn ghost" id="rm-cancel">Cancel</button>
         <button class="btn" id="rm-save">Add rule</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Run remediation (manual) ===== -->
+  <div id="remediate-modal" class="hidden" style="position:fixed;inset:0;z-index:80;display:grid;place-items:center;background:rgba(3,5,9,.55);backdrop-filter:blur(3px);padding:24px">
+    <div style="width:520px;max-width:96vw;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-xl);box-shadow:var(--shadow-lg)">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)">
+        <div><h2 style="margin:0;font-size:16px">Run remediation</h2><div class="h-sub" id="rem-sub">Run a script on a device for this policy</div></div>
+        <button class="icon-btn" id="rem-close"><span id="rem-close-ico"></span></button>
+      </div>
+      <div style="padding:20px 22px;display:flex;flex-direction:column;gap:14px">
+        <div><label class="ml2">Device</label><select id="rem-device" class="mm-inp"></select></div>
+        <div><label class="ml2">Script</label><select id="rem-script" class="mm-inp"></select></div>
+        <div class="h-sub" id="rem-note"></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 22px;border-top:1px solid var(--border)">
+        <button class="btn ghost" id="rem-cancel">Cancel</button>
+        <button class="btn" id="rem-run">Run now</button>
       </div>
     </div>
   </div>

@@ -98,6 +98,7 @@ class MonitorRuleRequest(BaseModel):
     target_id: str | None = None
     notify_email: bool = True
     severity: str | None = None             # defaults to the template's suggestion
+    remediation_script_id: str | None = None  # optional: run this script on the device when it alerts
     service: str | None = None              # for the 'service' template: the service name to watch
     process: str | None = None              # for the 'process' template: the process name to watch
     event_log: str | None = None            # eventlog: 'system' | 'application' | 'both'
