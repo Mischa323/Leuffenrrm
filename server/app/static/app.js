@@ -1338,17 +1338,28 @@ function renderMonitorsTab() { renderMonitors(); }
 // Template rules carry their OS support via the template; script policies have
 // no OS restriction we can see here, so they apply to every type.
 let monitorOsFilter = "all";
-function policyOsTypes(p) {
+const OS_LABEL = { windows: "Windows", windows_server: "Windows Server", linux: "Linux", nas: "NAS" };
+const OS_ALL = ["windows", "windows_server", "linux", "nas"];
+// Device types a policy applies to: null = not OS-scoped (script policies apply
+// by target). Template rules carry device_types from their template.
+function policyDeviceTypes(p) {
   if (p.template_id) {
     const t = (state.templates || []).find((x) => x.id === p.template_id);
-    return (t && t.os_support) || null;
+    return (t && t.device_types) || null;
   }
   return null;
 }
 function policyMatchesOs(p) {
   if (monitorOsFilter === "all") return true;
-  const types = policyOsTypes(p);
+  const types = policyDeviceTypes(p);
   return !types || types.includes(monitorOsFilter);
+}
+// Small device-type pills shown on each policy row.
+function osTags(p) {
+  const types = policyDeviceTypes(p);
+  if (!types || !types.length) return "";
+  const labels = OS_ALL.every((x) => types.includes(x)) ? ["All devices"] : types.map((t) => OS_LABEL[t] || t);
+  return labels.map((l) => `<span class="badge" style="text-transform:none;font-weight:600;color:var(--text-dim)">${escapeHtml(l)}</span>`).join(" ");
 }
 function setupMonitorFilter() {
   const sel = $("mon-osfilter");
@@ -1568,7 +1579,7 @@ function ruleRow(r) {
   const row = el("div", "tile"); row.style.marginBottom = "10px";
   row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
     <div class="os-ico">${metricIcon(r.metric)}</div>
-    <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(r.name)} ${kindTag(isPolicy ? "Standard" : "Template rule")} ${severityBadge(r.severity)} ${isGlobal ? globalBadge() : ""}</div>
+    <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(r.name)} ${kindTag(isPolicy ? "Standard" : "Template rule")} ${osTags(r)} ${severityBadge(r.severity)} ${isGlobal ? globalBadge() : ""}</div>
       <div class="h-sub">${ruleValueText(r)} · ${escapeHtml(targetText(r))}</div></div>
     <span class="badge ${r.enabled ? "ok" : "na"}">${r.enabled ? "enabled" : "paused"}</span>
     ${canManage ? `<button class="btn ghost sm edit">${ICON.pencil}</button>
