@@ -93,6 +93,7 @@ async function init() {
   setupScreenshotModal();
   setupDeleteModal();
   setupMonitorMenu();
+  setupMonitorFilter();
   state.templates = await api("/api/monitor-templates").catch(() => []);
   refreshPendingBadge();
   setInterval(refreshPendingBadge, 30000);
@@ -1333,15 +1334,44 @@ function setupMonitorMenu() {
 }
 function openTemplateGallery() { renderMonitorGallery(); $("tmpl-modal").classList.remove("hidden"); }
 function renderMonitorsTab() { renderMonitors(); }
+// Device types a policy applies to: null = all OSes, else a list of os_kinds.
+// Template rules carry their OS support via the template; script policies have
+// no OS restriction we can see here, so they apply to every type.
+let monitorOsFilter = "all";
+function policyOsTypes(p) {
+  if (p.template_id) {
+    const t = (state.templates || []).find((x) => x.id === p.template_id);
+    return (t && t.os_support) || null;
+  }
+  return null;
+}
+function policyMatchesOs(p) {
+  if (monitorOsFilter === "all") return true;
+  const types = policyOsTypes(p);
+  return !types || types.includes(monitorOsFilter);
+}
+function setupMonitorFilter() {
+  const sel = $("mon-osfilter");
+  if (sel) sel.onchange = () => { monitorOsFilter = sel.value; renderMonitors(); };
+}
 // Combined Policies list: script policies AND template rules in one place.
 function renderMonitors() {
-  const mons = state.cache.monitors || [];
-  const rules = state.cache.monitorRules || [];
-  const total = mons.length + rules.length;
-  $("mon-sub").textContent = `${total} polic${total === 1 ? "y" : "ies"}`;
+  const allMons = state.cache.monitors || [];
+  const allRules = state.cache.monitorRules || [];
+  const mons = allMons.filter(policyMatchesOs);
+  const rules = allRules.filter(policyMatchesOs);
+  const total = allMons.length + allRules.length;
+  const shown = mons.length + rules.length;
+  $("mon-sub").textContent = monitorOsFilter === "all"
+    ? `${total} polic${total === 1 ? "y" : "ies"}`
+    : `${shown} of ${total} polic${total === 1 ? "y" : "ies"}`;
   const body = $("mon-body");
   if (!total) {
     body.innerHTML = `<div class="empty"><div class="big">${ICON.shieldCheck}</div>No policies yet.<br><span class="muted">Click <b>New policy</b> to add a standard from a template, or a monitor script with auto-remediation.</span></div>`;
+    return;
+  }
+  if (!shown) {
+    body.innerHTML = `<div class="empty"><div class="big">${ICON.shieldCheck}</div>No policies for this device type.<br><span class="muted">Switch the filter back to <b>All device types</b> to see the other ${total} polic${total === 1 ? "y" : "ies"}.</span></div>`;
     return;
   }
   body.innerHTML = "";

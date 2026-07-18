@@ -8,6 +8,7 @@
 - **Device Overview: Services moved below Applied policies.** The Services list (with "Show services") now sits under the *Applied policies* section instead of above the history charts, grouping the policy/services information together.
 
 ### Added
+- **Filter Policies by device type.** The **Policies** tab now has a **device-type filter** (All / Windows / Windows Server / Linux) so the growing list of default and standard policies is easy to narrow down — pick a type to see only the policies that apply to it. The header shows "*N of M policies*" while filtered. Template/standard policies are matched by the OS support declared on their template; script policies (which have no OS restriction) show under every type.
 - **One-click shareable installer link (Windows).** An organisation's **Downloads → Shareable one-click installer link** now produces a link you can send to anyone **without an RMM login**. The recipient runs a small self-elevating installer that downloads the agent and installs it silently with the **server address and a fresh enrolment key already filled in** — nothing to type — after which the new device lands in your **approval queue** to accept. The link is multi-use (each install mints its own one-time enrolment key), time-limited and revocable. Previously the "shareable" option handed out a raw MSI that still prompted for the server URL and key on the target machine, and the plain Download button required an admin session.
 
 ## [1.5.75] - 2026-07-12
