@@ -1984,6 +1984,12 @@ MONITOR_TEMPLATES = [
                     "minimum level (Error / Critical) and optional event IDs. Windows only.",
      "metric": "eventlog", "unit": None, "default_threshold": 0, "default_duration_minutes": None,
      "default_severity": "warning", "os_support": ["windows", "windows_server"]},
+    {"id": "backup", "name": "Backup health", "category": "Data protection", "kind": "monitor",
+     "description": "Alert when a Synology Active Backup task's last run failed, or a scheduled task "
+                    "has had no successful backup within the window (hours). Off by default — add it "
+                    "to start watching a NAS's Active Backup tasks.",
+     "metric": "backup", "unit": "h", "default_threshold": 48, "default_duration_minutes": None,
+     "default_severity": "warning", "os_support": None},
     {"id": "wol", "name": "Wake-on-LAN", "category": "Power", "kind": "policy",
      "description": "Configure agents' NICs for Wake-on-LAN and disable Fast Startup so they can be "
                     "woken. Windows only.",
@@ -2034,6 +2040,8 @@ def _effective_policies(dev: dict) -> list[dict]:
         unit = tmpl.get("unit") or ("s" if r["metric"] == "offline" else "%")
         if r["template_id"] == "wol":
             value = "Windows only"
+        elif r["metric"] == "backup":
+            value = f"backup failed or no backup in {r['threshold']:.0f}h"
         elif (r["metric"] or "").startswith("service:"):
             value = f"{r['metric'].split(':', 1)[1]} must be running"
         else:

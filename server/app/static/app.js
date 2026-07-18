@@ -1503,6 +1503,7 @@ function metricIcon(metric) {
   if (metric === "gpu_percent") return ICON.gpu;
   if (metric === "cpu_temp" || metric === "gpu_temp") return ICON.thermo;
   if (metric === "wol") return ICON.power;
+  if (metric === "backup") return ICON.save;
   if (metric === "offline") return ICON.zap;
   if (metric === "uptime" || metric === "reboot_pending") return ICON.clock;
   if (metric === "av_health" || metric === "firewall" || metric === "bitlocker" || metric === "failed_logons") return ICON.shieldCheck;
@@ -1515,6 +1516,7 @@ function ruleValueText(r) {
   const m = r.metric || "";
   if (m === "wol") return "Wake-on-LAN · Windows only";
   if (m === "offline") return `unseen for ${Math.round(r.threshold)}s`;
+  if (m === "backup") return `backup failed or stale > ${Math.round(r.threshold)}h`;
   if (m === "disk_health") return "SMART / disk health";
   if (m === "reboot_pending") return "reboot required";
   if (m === "uptime") return `up ≥ ${Math.round(r.threshold)} days`;
@@ -1541,6 +1543,7 @@ function renderMonitorGallery() {
     else if (t.metric === "process") detail = "Watches a named process · " + osNote;
     else if (t.metric === "eventlog") detail = "System / Application errors · " + osNote;
     else if (t.metric === "offline") detail = "Default: " + t.default_threshold + "s unseen";
+    else if (t.metric === "backup") detail = "Synology Active Backup · failed or no backup in " + t.default_threshold + "h";
     else if (t.metric === "uptime") detail = "Default: over " + t.default_threshold + " days";
     else if (t.metric === "failed_logons") detail = "Default: " + t.default_threshold + " / 15 min · " + osNote;
     else detail = "Default: " + t.default_threshold + (t.unit || "%") + " for " + t.default_duration_minutes + " min";
@@ -1608,7 +1611,7 @@ function openRuleForm(tmpl, existing) {
   const m = tmpl.metric;
   const isProcess = m === "process", isEvent = m === "eventlog";
   const isStatus = ["reboot_pending", "firewall", "bitlocker", "disk_health"].includes(m);
-  const noDuration = ["offline", "uptime", "av_health", "failed_logons"].includes(m);
+  const noDuration = ["offline", "uptime", "av_health", "failed_logons", "backup"].includes(m);
   const showThreshold = !isPolicy && !isStatus && !isProcess && !isEvent;
   $("rm-metric-row").classList.toggle("hidden", !showThreshold);
   $("rm-alert-row").classList.toggle("hidden", isPolicy);
@@ -1617,6 +1620,7 @@ function openRuleForm(tmpl, existing) {
   $("rm-name").value = existing ? existing.name : tmpl.name;
   $("rm-threshold-label").textContent =
       m === "offline" ? "Unseen for (seconds)"
+    : m === "backup" ? "Stale after / no backup for (hours)"
     : m === "uptime" ? "Uptime over (days)"
     : m === "av_health" ? "Definitions older than (days)"
     : m === "failed_logons" ? "Failed logons (count / 15 min)"
@@ -1661,7 +1665,7 @@ async function saveRule() {
   const isPolicy = currentTemplate.kind === "policy";
   const m = currentTemplate.metric;
   const noThreshold = isPolicy || ["reboot_pending", "firewall", "bitlocker", "disk_health", "process", "eventlog"].includes(m);
-  const noDuration = noThreshold || ["offline", "uptime", "av_health", "failed_logons"].includes(m);
+  const noDuration = noThreshold || ["offline", "uptime", "av_health", "failed_logons", "backup"].includes(m);
   const body = {
     template_id: currentTemplate.id, name,
     threshold: noThreshold ? (currentTemplate.default_threshold || 0) : parseFloat($("rm-threshold").value),

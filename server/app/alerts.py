@@ -104,20 +104,19 @@ def evaluate_once() -> None:
     online = manager.online_ids()
     for dev in db.all_devices():
         rules = db.list_effective_monitor_rules(dev)
-        has_backups = bool(dev.get("backups_json"))
-        if not rules and not has_backups:
-            continue
-        recipients = db.alert_config(dev["org_id"]).get("recipients") or _default_recipients()
-        # Backup health is not rule-driven — evaluate it for any device reporting it.
-        if has_backups:
-            _evaluate_backups(dev, recipients, now)
         if not rules:
             continue
+        recipients = db.alert_config(dev["org_id"]).get("recipients") or _default_recipients()
+        # Backup health is rule-driven: evaluated only when a "backup" monitor
+        # policy is enabled for this device (off by default — opt in per NAS/org).
+        backup_rule = next((r for r in rules if r["metric"] == "backup"), None)
+        if backup_rule and dev.get("backups_json"):
+            _evaluate_backups(dev, recipients, now, backup_rule)
         metrics = db.get_metrics(dev["id"], limit=200)
         latest = metrics[-1] if metrics else None
         for rule in rules:
-            if rule["metric"] == "wol":
-                continue  # config policy, not an alerting monitor
+            if rule["metric"] in ("wol", "backup"):
+                continue  # wol = config policy; backup handled above
             rule_key = f"rule:{rule['id']}"
             notify = bool(rule.get("notify_email", 1))
             severity = rule.get("severity") or "warning"
@@ -295,12 +294,13 @@ def evaluate_once() -> None:
                    notify, severity, meta)
 
 
-def _evaluate_backups(dev: dict, recipients: list[str], now: float) -> None:
+def _evaluate_backups(dev: dict, recipients: list[str], now: float, rule: dict) -> None:
     """Raise/clear alerts from a device's Synology Active Backup snapshot.
 
-    Reuses the same state machine as monitor rules (cooldown, raise/clear emails,
-    incident on clear) via :func:`_apply`, with synthetic rule keys per task and a
-    ``None`` rule id."""
+    Driven by an enabled "backup" monitor rule: the rule's threshold is the stale
+    window (hours) and its severity / notify flag are used for the alerts. Reuses
+    the same state machine as monitor rules (cooldown, raise/clear emails, incident
+    on clear) via :func:`_apply`, with synthetic per-task rule keys."""
     try:
         bk = json.loads(dev.get("backups_json") or "")
     except (ValueError, TypeError):
@@ -308,7 +308,11 @@ def _evaluate_backups(dev: dict, recipients: list[str], now: float) -> None:
     if not isinstance(bk, dict):
         return
     host = _esc(dev.get("hostname") or dev.get("id") or "device")
-    stale_secs = BACKUP_STALE_HOURS * 3600
+    stale_hours = float(rule.get("threshold") or BACKUP_STALE_HOURS)
+    stale_secs = stale_hours * 3600
+    severity = rule.get("severity") or "warning"
+    notify = bool(rule.get("notify_email", 1))
+    rid = rule.get("id")
 
     # Active Backup for Business (computers & servers). Two independent checks:
     #  (a) FAILED — the most recent run finished with a non-success status
@@ -329,17 +333,17 @@ def _evaluate_backups(dev: dict, recipients: list[str], now: float) -> None:
                f"{dev.get('hostname')}: backup FAILED — {name}",
                f"Active Backup task <b>{_esc(name)}</b> on <b>{host}</b>: the last run did not "
                f"complete successfully (status {status}, {_fmt_ago(last)}).",
-               True, "warning",
-               {"id": None, "name": f"Backup failed: {name}", "metric": "backup_failed",
+               notify, severity,
+               {"id": rid, "name": f"Backup failed: {name}", "metric": "backup_failed",
                 "detail": f"status {status} ({_fmt_ago(last)})"})
         # Stale only when scheduled and not already flagged as failed/running.
         stale = bool(t.get("scheduled")) and not running and not failed and (now - last) > stale_secs
         _apply(dev, f"backup_stale:{name}", stale, recipients,
                f"{dev.get('hostname')}: backup stale — {name}",
                f"Active Backup task <b>{_esc(name)}</b> on <b>{host}</b> has had no backup "
-               f"activity in over {BACKUP_STALE_HOURS:.0f}h (last {_fmt_ago(last)}).",
-               True, "warning",
-               {"id": None, "name": f"Backup stale: {name}", "metric": "backup_stale",
+               f"activity in over {stale_hours:.0f}h (last {_fmt_ago(last)}).",
+               notify, severity,
+               {"id": rid, "name": f"Backup stale: {name}", "metric": "backup_stale",
                 "detail": f"Last activity {_fmt_ago(last)}"})
 
     # M365 / Google Workspace: status-based, opt-in (enum still provisional).
@@ -356,8 +360,8 @@ def _evaluate_backups(dev: dict, recipients: list[str], now: float) -> None:
                    f"{dev.get('hostname')}: {label} backup issue — {name}",
                    f"{label} Active Backup task <b>{_esc(name)}</b> on <b>{host}</b> reports "
                    f"status {status} (expected healthy).",
-                   True, "warning",
-                   {"id": None, "name": f"{label} backup: {name}", "metric": "backup_failed",
+                   notify, severity,
+                   {"id": rid, "name": f"{label} backup: {name}", "metric": "backup_failed",
                     "detail": f"status {status}"})
 
 
