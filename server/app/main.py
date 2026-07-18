@@ -676,8 +676,27 @@ def _audit(device_id: str, user: dict | None, action: str, detail: str = "",
         log.warning("audit: failed to record %r on %s", action, device_id)
 
 
+# A device keeps showing "online" for a short grace period after its socket
+# drops, so a brief server restart (every redeploy empties the in-memory socket
+# registry and emits WS close 1012 to the whole fleet) or a quick reconnect
+# doesn't blink every device to "offline". Control paths (terminal, power,
+# update, wake, …) still require a *live* socket via manager.is_online().
+ONLINE_GRACE = int(os.environ.get("RMM_ONLINE_GRACE", "120") or "120")
+
+
+def _display_online(dev: dict, online: set[str] | None = None) -> bool:
+    """Display-only online state: a live agent socket, or a heartbeat within the
+    last ONLINE_GRACE seconds. Pass a precomputed manager.online_ids() set as
+    ``online`` in loops to avoid re-locking the manager per device."""
+    live = dev["id"] in online if online is not None else manager.is_online(dev["id"])
+    if live:
+        return True
+    ls = dev.get("last_seen")
+    return ls is not None and (time.time() - ls) <= ONLINE_GRACE
+
+
 def _decorate(dev: dict, full: bool = False) -> dict:
-    dev["online"] = manager.is_online(dev["id"])
+    dev["online"] = _display_online(dev)
     # The detail view (full=True) keeps the per-VM / per-task lists the DB layer
     # already parsed into dev["hyperv"] / dev["backups"]; list views get only a
     # compact summary so the full blobs aren't shipped for every device.
@@ -725,7 +744,7 @@ def overview(user: dict = Depends(auth.current_user)):
     out = []
     for o in orgs:
         devs = db.list_devices(o["id"])
-        on = sum(1 for d in devs if d["id"] in online)
+        on = sum(1 for d in devs if _display_online(d, online))
         noncompliant = sum(1 for d in devs if d.get("compliant") == 0)
         out.append({"id": o["id"], "name": o["name"], "devices": len(devs),
                     "online": on, "offline": len(devs) - on,
@@ -779,14 +798,14 @@ def _dashboard_data(user: dict) -> dict:
     versions: dict[str, int] = {}
     for o in orgs:
         devs = db.list_devices(o["id"])
-        on = sum(1 for d in devs if d["id"] in online)
+        on = sum(1 for d in devs if _display_online(d, online))
         nc = sum(1 for d in devs if d.get("compliant") == 0)
         org_cards.append({"id": o["id"], "name": o["name"], "devices": len(devs),
                           "online": on, "offline": len(devs) - on, "noncompliant": nc})
         totals["devices"] += len(devs); totals["online"] += on
         totals["offline"] += len(devs) - on; totals["noncompliant"] += nc
         for d in devs:
-            is_on = d["id"] in online
+            is_on = _display_online(d, online)
             if not is_on or d.get("compliant") == 0:
                 attention.append({"id": d["id"], "hostname": d["hostname"], "org": o["name"],
                                   "org_id": o["id"], "online": is_on, "last_seen": d.get("last_seen"),
