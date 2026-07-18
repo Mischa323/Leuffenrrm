@@ -1338,7 +1338,14 @@ function renderMonitorsTab() { renderMonitors(); }
 // Template rules carry their OS support via the template; script policies have
 // no OS restriction we can see here, so they apply to every type.
 let monitorOsFilter = "all";
-const OS_LABEL = { windows: "Windows", windows_server: "Windows Server", linux: "Linux", nas: "NAS" };
+// One colour per device type (from the design-system accent swatches); "All
+// devices" stays neutral.
+const OS_META = {
+  windows:        { label: "Windows",        color: "#3b82f6" },
+  windows_server: { label: "Windows Server", color: "#6366f1" },
+  linux:          { label: "Linux",          color: "#f59e0b" },
+  nas:            { label: "NAS",            color: "#06b6d4" },
+};
 const OS_ALL = ["windows", "windows_server", "linux", "nas"];
 // Device types a policy applies to: null = not OS-scoped (script policies apply
 // by target). Template rules carry device_types from their template.
@@ -1354,13 +1361,17 @@ function policyMatchesOs(p) {
   const types = policyDeviceTypes(p);
   return !types || types.includes(monitorOsFilter);
 }
-// Small device-type pills shown on each policy row.
-function osTags(p) {
-  const types = policyDeviceTypes(p);
-  if (!types || !types.length) return "";
-  const labels = OS_ALL.every((x) => types.includes(x)) ? ["All devices"] : types.map((t) => OS_LABEL[t] || t);
-  return labels.map((l) => `<span class="badge" style="text-transform:none;font-weight:600;color:var(--text-dim)">${escapeHtml(l)}</span>`).join(" ");
+// A colour-coded device-type pill (tinted like the Global badge).
+function osTag(label, color) {
+  return `<span class="badge" style="text-transform:none;font-weight:600;color:${color};background:color-mix(in srgb,${color} 15%,transparent);border:1px solid color-mix(in srgb,${color} 32%,transparent)">${escapeHtml(label)}</span>`;
 }
+function osTagsFromTypes(types) {
+  if (!types || !types.length) return "";
+  if (OS_ALL.every((x) => types.includes(x))) return osTag("All devices", "var(--text-dim)");
+  return types.map((t) => osTag((OS_META[t] || {}).label || t, (OS_META[t] || {}).color || "var(--text-dim)")).join(" ");
+}
+// Device-type pills for a policy row (script policies aren't OS-scoped → none).
+function osTags(p) { return osTagsFromTypes(policyDeviceTypes(p)); }
 function setupMonitorFilter() {
   const sel = $("mon-osfilter");
   if (sel) sel.onchange = () => { monitorOsFilter = sel.value; renderMonitors(); };
@@ -1563,6 +1574,7 @@ function renderMonitorGallery() {
       <div style="display:flex;align-items:center;gap:10px"><div class="os-ico">${metricIcon(t.metric)}</div><div style="font-weight:650">${escapeHtml(t.name)}</div>${t.kind === "policy" ? `<span class="badge" style="margin-left:auto">policy</span>` : ""}</div>
       <div class="h-sub">${escapeHtml(t.description)}</div>
       <div class="h-sub">${detail}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${osTagsFromTypes(t.device_types)}</div>
       <button class="btn ghost sm add-tmpl" style="align-self:flex-start">${ICON.plus} Add</button>
     </div>`;
   }).join("");
