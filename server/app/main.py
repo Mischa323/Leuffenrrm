@@ -2065,9 +2065,22 @@ async def _push_wol_policy() -> None:
                 pass
 
 
+def _template_device_types(t: dict) -> list[str]:
+    """Device-type tags a template applies to, for the Policies list tags + filter.
+
+    Deliberately distinct from ``os_support`` (which gates agent/OS support): here
+    'nas' is a first-class type even though a Synology is classified os_kind
+    'linux' internally, and the backup check only makes sense on a NAS."""
+    if t["id"] == "backup":
+        return ["nas"]
+    if t.get("os_support"):
+        return list(t["os_support"])
+    return ["windows", "windows_server", "linux", "nas"]
+
+
 @app.get("/api/monitor-templates")
 def get_monitor_templates(user: dict = Depends(auth.current_user)):
-    return MONITOR_TEMPLATES
+    return [{**t, "device_types": _template_device_types(t)} for t in MONITOR_TEMPLATES]
 
 
 def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:
