@@ -28,8 +28,8 @@ from .manager import manager
 from .models import UnifiAccountRequest
 from .models import (AccessGroupMemberRequest, AccessGroupOrgRequest, AccessGroupPermRequest,
                      AccessGroupRequest, GroupRequest, InviteRequest, MonitorRequest,
-                     MonitorRuleRequest, MoveDeviceRequest, MoveOrgRequest, OrgRequest,
-                     OrgUserRequest, PowerRequest, ScheduleRequest, ScriptFileRequest,
+                     MonitorRuleRequest, MoveDeviceRequest, MoveOrgRequest, NotifyRequest,
+                     OrgRequest, OrgUserRequest, PowerRequest, ScheduleRequest, ScriptFileRequest,
                      ScriptRequest, ScriptRunRequest, ShellRequest, SubnetRequest,
                      UserUpdateRequest, WakeRequest)
 
@@ -317,6 +317,14 @@ async def _alert_loop() -> None:
                     if dev and dev.get("mac"):
                         await _wake(dev["org_id"], dev["mac"], None, 9, dev.get("ip"), None)
                         log.info("auto-remediation (Wake-on-LAN) for %r sent to %s",
+                                 r["rule_name"], r["device_id"])
+                    continue
+                if r.get("action") == "notify":
+                    conn = manager.get(r["device_id"])
+                    if conn:
+                        await conn.send({"type": "notify", "title": "Leuffen RMM",
+                                         "body": r["rule_name"]})
+                        log.info("auto-remediation (notify) for %r sent to %s",
                                  r["rule_name"], r["device_id"])
                     continue
                 script = db.get_script(r["script_id"])
@@ -1980,6 +1988,12 @@ MONITOR_TEMPLATES = [
                     "reminder). Threshold is in days.",
      "metric": "uptime", "unit": "d", "default_threshold": 30, "default_duration_minutes": None,
      "default_severity": "info", "os_support": None},
+    {"id": "updates", "name": "Updates available", "category": "Maintenance", "kind": "monitor",
+     "description": "Alert when a device has OS updates ready to install (Windows Update, or Linux "
+                    "apt/dnf). Threshold is the minimum number of pending updates. Pair it with the "
+                    "'Notify signed-in user' remediation to prompt the user. Requires agent v2.2.41+.",
+     "metric": "updates_available", "unit": "", "default_threshold": 1, "default_duration_minutes": None,
+     "default_severity": "info", "os_support": None},
     {"id": "av_health", "name": "Antivirus health", "category": "Security", "kind": "monitor",
      "description": "Alert when Microsoft Defender real-time protection is off, its definitions are "
                     "older than the threshold (days), or an active threat is detected. Windows only.",
@@ -2160,14 +2174,19 @@ def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:
 # Device-offline monitor can auto-wake a machine — it fires while the device is
 # offline and needs no agent on the target.
 REMEDIATION_WOL = "builtin:wol"
+# Sentinel: show a desktop notification to the signed-in user via the agent/tray
+# (kept in sync with the same literal in alerts.py). The toast body is the policy
+# name, so naming the policy sets the message.
+REMEDIATION_NOTIFY = "builtin:notify"
+REMEDIATION_BUILTINS = {REMEDIATION_WOL, REMEDIATION_NOTIFY}
 
 
 def _resolve_remediation(script_id: str | None) -> str | None:
-    """Validate an optional remediation: a library script id, or the built-in
-    Wake-on-LAN action (sentinel). Anything else must be a real script."""
+    """Validate an optional remediation: a library script id, or a built-in action
+    (Wake-on-LAN / notify signed-in user). Anything else must be a real script."""
     if not script_id:
         return None
-    if script_id == REMEDIATION_WOL:
+    if script_id in REMEDIATION_BUILTINS:
         return script_id
     if not db.get_script(script_id):
         raise HTTPException(status_code=400, detail="Unknown remediation script")
@@ -2313,6 +2332,21 @@ async def wake_device(device_id: str, req: WakeRequest | None = None,
         raise HTTPException(status_code=400, detail=str(exc))
     _audit(device_id, user, "Wake-on-LAN")
     return result
+
+
+@app.post("/api/devices/{device_id}/notify")
+async def notify_device(device_id: str, req: NotifyRequest, user: dict = Depends(auth.current_user)):
+    """Show a desktop notification to the signed-in user via the agent/tray."""
+    _device_for_user(device_id, user)
+    body = (req.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="A message is required")
+    conn = manager.get(device_id)
+    if not conn:
+        raise HTTPException(status_code=409, detail="Device is not connected")
+    await conn.send({"type": "notify", "title": (req.title or "Leuffen RMM"), "body": body})
+    _audit(device_id, user, "Notify user", body)
+    return {"ok": True}
 
 
 @app.post("/api/orgs/{org_id}/network/wake")
@@ -2716,6 +2750,8 @@ async def _handle_agent_msg(device_id: str, org_id: str, data: dict) -> None:
             db.set_device_processes(device_id, m.get("processes"))
         if "reboot_pending" in m:
             db.set_device_reboot_pending(device_id, bool(m.get("reboot_pending")))
+        if "updates_available" in m:
+            db.set_device_updates_available(device_id, m.get("updates_available"))
     elif mtype == "ack":
         manager.resolve(data.get("rid", ""), data.get("payload", data))
     elif mtype == "shell_output":

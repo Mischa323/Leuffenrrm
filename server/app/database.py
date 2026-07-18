@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS devices (
     events_json   TEXT,
     processes_json TEXT,
     reboot_pending INTEGER,
+    updates_available INTEGER,
     is_node       INTEGER NOT NULL DEFAULT 0,
     inventory_json TEXT,
     compliant     INTEGER,
@@ -1244,7 +1245,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN services_json TEXT")
     for _col, _type in (("disk_health_json", "TEXT"), ("security_json", "TEXT"),
                         ("events_json", "TEXT"), ("processes_json", "TEXT"),
-                        ("reboot_pending", "INTEGER")):
+                        ("reboot_pending", "INTEGER"), ("updates_available", "INTEGER")):
         if _col not in dcols:
             conn.execute(f"ALTER TABLE devices ADD COLUMN {_col} {_type}")
     if "gpu" not in dcols:
@@ -1829,6 +1830,13 @@ def set_device_reboot_pending(device_id: str, pending: bool) -> None:
     with write() as conn:
         conn.execute("UPDATE devices SET reboot_pending=? WHERE id=?",
                      (1 if pending else 0, device_id))
+
+
+def set_device_updates_available(device_id: str, count: int | None) -> None:
+    """Number of OS updates ready to install, as reported by the agent."""
+    with write() as conn:
+        conn.execute("UPDATE devices SET updates_available=? WHERE id=?",
+                     (int(count) if count is not None else None, device_id))
 
 
 def set_node(device_id: str, is_node: bool) -> None:
