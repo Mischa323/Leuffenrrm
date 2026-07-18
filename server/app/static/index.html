@@ -31,6 +31,8 @@
         <div class="hmenu" id="bell-menu" style="width:300px;right:0;left:auto"><div style="padding:14px 16px;color:var(--text-dim);font-size:13px">No new notifications</div></div>
       </div>
       <button class="org-switch hidden" id="approvals-btn" title="Pending device approvals"><span id="approvals-ico" style="display:inline-flex;width:15px;height:15px"></span><span id="approvals-badge" style="font-weight:700"></span></button>
+      <a class="icon-btn" id="docs-btn" href="https://github.com/Mischa323/Leuffenrrm/wiki" target="_blank" rel="noopener" title="Wiki / documentatie"><span id="docs-ico"></span></a>
+      <button class="icon-btn" id="debug-btn" title="Debug — meld een probleem op GitHub"><span id="debug-ico"></span></button>
       <a class="icon-btn" id="settings-btn" href="settings.html" title="Admin settings"><span id="gear-ico"></span></a>
       <div style="position:relative">
         <div class="userchip" id="userchip"><span class="avatar" id="avatar"></span><span class="who"><span id="user-name"></span><small id="user-email"></small></span></div>
@@ -429,7 +431,15 @@
     document.querySelectorAll(".ni").forEach((s) => s.innerHTML = ICON[s.dataset.i] || "");
     document.querySelectorAll(".hi").forEach((s) => s.innerHTML = ICON[s.dataset.i] || "");
     document.getElementById("gear-ico").innerHTML = ICON.gear;
+    document.getElementById("docs-ico").innerHTML = ICON.file;
+    document.getElementById("debug-ico").innerHTML = ICON.alert;
     document.getElementById("bell-btn").onclick = (e) => { e.stopPropagation(); document.getElementById("bell-menu").classList.toggle("open"); };
+    // Debug: open a pre-filled GitHub issue with basic diagnostics.
+    document.getElementById("debug-btn").onclick = () => {
+      const ver = (function () { const s = document.querySelector('script[src*="app.js"]'); const m = s && s.src.match(/[?&]v=([^&]+)/); return m ? decodeURIComponent(m[1]) : "?"; })();
+      const body = `## Wat ging er mis?\n\n\n## Verwacht gedrag\n\n\n---\n- RMM-versie: ${ver}\n- Pagina: ${location.href}\n- Browser: ${navigator.userAgent}\n- Tijd: ${new Date().toISOString()}\n`;
+      window.open("https://github.com/Mischa323/Leuffenrrm/issues/new?title=" + encodeURIComponent("[Debug] ") + "&body=" + encodeURIComponent(body), "_blank", "noopener");
+    };
     // user dropdown
     (function () {
       const menu = document.getElementById("usermenu");
