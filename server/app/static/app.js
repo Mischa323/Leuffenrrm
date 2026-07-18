@@ -1331,6 +1331,8 @@ function setupMonitorMenu() {
   $("tg-close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
   $("tg-close").onclick = () => $("tmpl-modal").classList.add("hidden");
   $("tmpl-modal").addEventListener("click", (e) => { if (e.target === $("tmpl-modal")) $("tmpl-modal").classList.add("hidden"); });
+  const gf = $("tg-osfilter");
+  if (gf) gf.onchange = () => { galleryOsFilter = gf.value; renderMonitorGallery(); };
 }
 function openTemplateGallery() { renderMonitorGallery(); $("tmpl-modal").classList.remove("hidden"); }
 function renderMonitorsTab() { renderMonitors(); }
@@ -1356,10 +1358,12 @@ function policyDeviceTypes(p) {
   }
   return null;
 }
+function typesMatchFilter(types, f) {
+  if (f === "all") return true;
+  return !types || types.includes(f);   // null = not OS-scoped → matches all
+}
 function policyMatchesOs(p) {
-  if (monitorOsFilter === "all") return true;
-  const types = policyDeviceTypes(p);
-  return !types || types.includes(monitorOsFilter);
+  return typesMatchFilter(policyDeviceTypes(p), monitorOsFilter);
 }
 // A colour-coded device-type pill (tinted like the Global badge).
 function osTag(label, color) {
@@ -1553,11 +1557,14 @@ function ruleValueText(r) {
   const label = m.replace("_percent", "").replace("_temp", " temp");
   return `${label} ≥ ${r.threshold}${unit} for ${r.duration_minutes} min`;
 }
+let galleryOsFilter = "all";
 function renderMonitorGallery() {
   const gallery = $("mon-gallery");
   // "service" is created from a device's Services list (it needs a service name),
   // so it's not offered as a generic gallery template.
-  gallery.innerHTML = (state.templates || []).filter((t) => t.id !== "service").map((t) => {
+  const tmpls = (state.templates || []).filter((t) => t.id !== "service" && typesMatchFilter(t.device_types, galleryOsFilter));
+  if (!tmpls.length) { gallery.innerHTML = `<div class="h-sub" style="grid-column:1/-1;padding:6px 2px">No templates for this device type.</div>`; return; }
+  gallery.innerHTML = tmpls.map((t) => {
     const osNote = t.os_support ? t.os_support.map((o) => o === "windows_server" ? "Windows Server" : "Windows").join(" / ") : "Windows & Linux";
     let detail;
     if (t.kind === "policy") detail = t.os_support ? "Applies to: " + osNote : "All devices";

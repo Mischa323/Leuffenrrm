@@ -376,6 +376,16 @@
         <button class="icon-btn" id="tg-close"><span id="tg-close-ico"></span></button>
       </div>
       <div style="padding:20px 22px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <span class="h-sub">Device type</span>
+          <select id="tg-osfilter" title="Filter templates by device type" style="width:auto">
+            <option value="all">All device types</option>
+            <option value="windows">Windows</option>
+            <option value="windows_server">Windows Server</option>
+            <option value="linux">Linux</option>
+            <option value="nas">NAS</option>
+          </select>
+        </div>
         <div id="mon-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px"></div>
       </div>
     </div>
