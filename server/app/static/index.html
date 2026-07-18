@@ -150,6 +150,12 @@
             <div id="tab-monitors" class="hidden">
               <div class="panel">
                 <div class="panel-head"><h2>Policies</h2><span class="sub" id="mon-sub">Add monitors or standards</span><div class="spacer"></div>
+                  <select id="mon-osfilter" title="Filter policies by device type" style="width:auto;margin-right:10px">
+                    <option value="all">All device types</option>
+                    <option value="windows">Windows</option>
+                    <option value="windows_server">Windows Server</option>
+                    <option value="linux">Linux</option>
+                  </select>
                   <div style="position:relative">
                     <button class="btn sm" id="mon-new"><span class="hi" data-i="shieldCheck"></span> New policy <span class="hi" data-i="chevD" style="display:inline-flex;margin-left:2px"></span></button>
                     <div class="hmenu" id="mon-new-menu" style="right:0;left:auto;min-width:264px"></div>
