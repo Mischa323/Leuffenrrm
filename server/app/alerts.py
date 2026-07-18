@@ -99,14 +99,19 @@ def _disk_ok(d: dict) -> bool:
     return not any(bad in status for bad in _DISK_BAD)
 
 
-def evaluate_once() -> None:
+def evaluate_once() -> list[dict]:
+    """Evaluate every rule against every device. Returns auto-remediation triggers
+    — newly-raised alerts whose rule has a remediation script, on online devices —
+    for the caller (the async alert loop) to actually run."""
     now = time.time()
     online = manager.online_ids()
+    remediations: list[dict] = []
     for dev in db.all_devices():
         rules = db.list_effective_monitor_rules(dev)
         if not rules:
             continue
         recipients = db.alert_config(dev["org_id"]).get("recipients") or _default_recipients()
+        prev_raised = db.raised_alert_keys(dev["id"])
         # Backup health is rule-driven: evaluated only when a "backup" monitor
         # policy is enabled for this device (off by default — opt in per NAS/org).
         backup_rule = next((r for r in rules if r["metric"] == "backup"), None)
@@ -292,6 +297,21 @@ def evaluate_once() -> None:
                    f"{rule['metric']} averaged {avg:.0f}{unit} over {dur:.0f} min "
                    f"(threshold {rule['threshold']:.0f}{unit})." if avg is not None else "",
                    notify, severity, meta)
+        # Auto-remediation: for each rule that just flipped to 'raised' this cycle
+        # and carries a remediation script, queue a run on the (online) device.
+        # Backup rules use 'backup_*' alert keys; every other rule uses 'rule:<id>'.
+        newly = db.raised_alert_keys(dev["id"]) - prev_raised
+        if newly and dev["id"] in online:
+            for rule in rules:
+                sid = rule.get("remediation_script_id")
+                if not sid:
+                    continue
+                hit = (any(k.startswith("backup_") for k in newly)
+                       if rule["metric"] == "backup" else f"rule:{rule['id']}" in newly)
+                if hit:
+                    remediations.append({"device_id": dev["id"], "script_id": sid,
+                                         "rule_name": rule["name"]})
+    return remediations
 
 
 def _evaluate_backups(dev: dict, recipients: list[str], now: float, rule: dict) -> None:

@@ -304,9 +304,22 @@ async def _alert_loop() -> None:
     while True:
         await asyncio.sleep(ALERT_INTERVAL)
         try:
-            alerts.evaluate_once()
+            remediations = alerts.evaluate_once()
         except Exception as exc:  # pragma: no cover
             log.warning("alert loop error: %s", exc)
+            continue
+        # Run any auto-remediation scripts the evaluation queued (a policy alerted
+        # on an online device and carries a remediation script).
+        for r in remediations or []:
+            script = db.get_script(r["script_id"])
+            if not script or not manager.is_online(r["device_id"]):
+                continue
+            try:
+                await _exec_script_on_device(script, r["device_id"],
+                                             run_name=f"auto-remediation: {r['rule_name']}")
+                log.info("auto-remediation for %r ran on %s", r["rule_name"], r["device_id"])
+            except Exception as exc:  # pragma: no cover
+                log.warning("auto-remediation on %s failed: %s", r["device_id"], exc)
 
 
 async def _poll_unifi_account(acct: dict) -> None:
@@ -2130,7 +2143,17 @@ def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:
         _lbl = f"{log} {level}" + (f" #{ids}" if ids else "")
         name = (req.name or f"Event log: {_lbl}").strip() or f"Event log: {_lbl}"
     return db.create_monitor_rule(org_id, tmpl["id"], name, metric, threshold, duration,
-                                  req.target_type, req.target_id, req.notify_email, severity)
+                                  req.target_type, req.target_id, req.notify_email, severity,
+                                  remediation_script_id=_resolve_remediation(req.remediation_script_id))
+
+
+def _resolve_remediation(script_id: str | None) -> str | None:
+    """Validate an optional remediation script id (any script in the library)."""
+    if not script_id:
+        return None
+    if not db.get_script(script_id):
+        raise HTTPException(status_code=400, detail="Unknown remediation script")
+    return script_id
 
 
 @app.get("/api/orgs/{org_id}/monitor-rules")
@@ -2179,7 +2202,8 @@ def update_monitor_rule(rule_id: str, req: MonitorRuleRequest, user: dict = Depe
                 else tmpl["default_duration_minutes"])
     name = (req.name or tmpl["name"]).strip() or tmpl["name"]
     return db.update_monitor_rule(rule_id, name, threshold, duration, req.target_type,
-                                  req.target_id, req.notify_email, severity)
+                                  req.target_id, req.notify_email, severity,
+                                  remediation_script_id=_resolve_remediation(req.remediation_script_id))
 
 
 @app.post("/api/monitor-rules/{rule_id}/toggle")

@@ -430,6 +430,7 @@ CREATE TABLE IF NOT EXISTS monitor_rules (
     enabled          INTEGER NOT NULL DEFAULT 1,
     notify_email     INTEGER NOT NULL DEFAULT 1,
     severity         TEXT NOT NULL DEFAULT 'warning',
+    remediation_script_id TEXT,          -- optional: run this script on the device when the rule alerts
     created_at       REAL NOT NULL,
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
@@ -1101,16 +1102,18 @@ def delete_monitor(monitor_id: str) -> None:
 def create_monitor_rule(org_id: str | None, template_id: str, name: str, metric: str,
                         threshold: float, duration_minutes: float | None,
                         target_type: str, target_id: str | None,
-                        notify_email: bool = True, severity: str = "warning") -> dict:
+                        notify_email: bool = True, severity: str = "warning",
+                        remediation_script_id: str | None = None) -> dict:
     rid = uuid.uuid4().hex
     with write() as conn:
         conn.execute(
             """INSERT INTO monitor_rules (id, org_id, template_id, name, metric, threshold,
                    duration_minutes, target_type, target_id, enabled, notify_email, severity,
-                   created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?)""",
+                   remediation_script_id, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?,?)""",
             (rid, org_id, template_id, name, metric, threshold, duration_minutes,
-             target_type, target_id, 1 if notify_email else 0, severity, _now()),
+             target_type, target_id, 1 if notify_email else 0, severity,
+             remediation_script_id, _now()),
         )
     return get_monitor_rule(rid)
 
@@ -1118,14 +1121,16 @@ def create_monitor_rule(org_id: str | None, template_id: str, name: str, metric:
 def update_monitor_rule(rule_id: str, name: str, threshold: float,
                         duration_minutes: float | None, target_type: str,
                         target_id: str | None, notify_email: bool = True,
-                        severity: str = "warning") -> dict | None:
+                        severity: str = "warning",
+                        remediation_script_id: str | None = None) -> dict | None:
     with write() as conn:
         conn.execute(
             """UPDATE monitor_rules SET name=?, threshold=?, duration_minutes=?,
-                   target_type=?, target_id=?, notify_email=?, severity=?
+                   target_type=?, target_id=?, notify_email=?, severity=?,
+                   remediation_script_id=?
                WHERE id=?""",
             (name, threshold, duration_minutes, target_type, target_id,
-             1 if notify_email else 0, severity, rule_id),
+             1 if notify_email else 0, severity, remediation_script_id, rule_id),
         )
     return get_monitor_rule(rule_id)
 
@@ -1305,6 +1310,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE monitor_rules ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 1")
     if "severity" not in mrcols:
         conn.execute("ALTER TABLE monitor_rules ADD COLUMN severity TEXT NOT NULL DEFAULT 'warning'")
+    if "remediation_script_id" not in mrcols:
+        conn.execute("ALTER TABLE monitor_rules ADD COLUMN remediation_script_id TEXT")
     # GPU + temperature metrics (added later; backfill columns on old databases).
     metcols = {r[1] for r in conn.execute("PRAGMA table_info(metrics)")}
     for col in ("gpu_percent", "gpu_temp", "gpu_mem_percent", "cpu_temp"):
@@ -2269,6 +2276,15 @@ def set_alert_state(device_id: str, rule: str, state: str,
                VALUES (?,?,?,?,?)""",
             (device_id, rule, state, since, last_email),
         )
+
+
+def raised_alert_keys(device_id: str) -> set[str]:
+    """The set of alert rule-keys currently in the 'raised' state for a device.
+    Used to detect *newly* raised alerts (for auto-remediation)."""
+    rows = get_conn().execute(
+        "SELECT rule FROM alert_state WHERE device_id=? AND state='raised'", (device_id,)
+    ).fetchall()
+    return {r["rule"] for r in rows}
 
 
 def list_raised_rule_alerts(org_id: str) -> list[dict]:
