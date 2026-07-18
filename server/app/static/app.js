@@ -1314,6 +1314,7 @@ function severityBadge(sev) {
   return `<span class="badge ${cls}">${s}</span>`;
 }
 function scriptName(id) { const s = (state.cache.scripts || []).find((x) => x.id === id); return s ? s.name : "—"; }
+function remediationName(id) { return id === "builtin:wol" ? "Wake-on-LAN" : scriptName(id); }
 function kindTag(label) {
   return `<span class="badge na" style="text-transform:none;font-weight:600">${label}</span>`;
 }
@@ -1599,7 +1600,7 @@ function ruleRow(r) {
   const tmpl = (state.templates || []).find((t) => t.id === r.template_id);
   const isPolicy = tmpl && tmpl.kind === "policy";
   const row = el("div", "tile"); row.style.marginBottom = "10px";
-  const rem = r.remediation_script_id ? ` · fix: ${escapeHtml(scriptName(r.remediation_script_id))}` : "";
+  const rem = r.remediation_script_id ? ` · fix: ${escapeHtml(remediationName(r.remediation_script_id))}` : "";
   row.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
     <div class="os-ico">${metricIcon(r.metric)}</div>
     <div style="flex:1"><div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(r.name)} ${kindTag(isPolicy ? "Standard" : "Template rule")} ${osTags(r)} ${severityBadge(r.severity)} ${isGlobal ? globalBadge() : ""}</div>
@@ -1625,33 +1626,49 @@ function policyTargetDevices(p) {
   if (p.target_type === "group") return devs.filter((d) => d.group_id === p.target_id);
   return devs;   // "all"
 }
+let _remTargets = [];
 function openRemediate(p) {
   const scripts = state.cache.scripts || [];
-  const targets = policyTargetDevices(p);
-  const online = targets.filter((d) => d.online);
+  _remTargets = policyTargetDevices(p);
   $("rem-sub").textContent = "Policy: " + p.name;
-  $("rem-device").innerHTML = online.map((d) => `<option value="${d.id}">${escapeHtml(d.hostname)}</option>`).join("");
-  $("rem-script").innerHTML = scripts.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
-  if (p.remediation_script_id) $("rem-script").value = p.remediation_script_id;
-  const offlineN = targets.length - online.length;
-  $("rem-note").textContent = !scripts.length ? "Create a script first (Scripts tab)."
-    : !online.length ? "No online target devices — a script can only run on a connected device."
-    : offlineN ? offlineN + " target device(s) offline and hidden." : "";
-  $("rem-run").disabled = !scripts.length || !online.length;
+  // Wake-on-LAN is a built-in remediation (magic packet); scripts run on a live agent.
+  $("rem-script").innerHTML = `<option value="builtin:wol">Wake-on-LAN (send magic packet)</option>`
+    + scripts.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
+  $("rem-script").value = p.remediation_script_id || (scripts[0] ? scripts[0].id : "builtin:wol");
+  _remRepopulateDevices();
   $("remediate-modal").classList.remove("hidden");
+}
+// WoL can target offline devices; a script needs the device online.
+function _remRepopulateDevices() {
+  const isWol = $("rem-script").value === "builtin:wol";
+  const online = _remTargets.filter((d) => d.online);
+  const list = isWol ? _remTargets : online;
+  $("rem-device").innerHTML = list.map((d) => `<option value="${d.id}">${escapeHtml(d.hostname)}${d.online ? "" : " (offline)"}</option>`).join("");
+  const offlineN = _remTargets.length - online.length;
+  $("rem-note").textContent = !list.length
+    ? (isWol ? "This policy has no target devices." : "No online target devices — a script can only run on a connected device.")
+    : isWol ? "Wake-on-LAN sends a magic packet — the device can be offline."
+    : offlineN ? `${offlineN} offline device(s) hidden.` : "";
+  $("rem-run").disabled = !list.length;
 }
 function setupRemediateModal() {
   $("rem-close-ico").innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="M18 6 6 18M6 6l12 12"');
   const close = () => $("remediate-modal").classList.add("hidden");
   $("rem-close").onclick = close; $("rem-cancel").onclick = close;
   $("remediate-modal").addEventListener("click", (e) => { if (e.target === $("remediate-modal")) close(); });
+  $("rem-script").onchange = _remRepopulateDevices;
   $("rem-run").onclick = async () => {
     const sid = $("rem-script").value, did = $("rem-device").value;
-    if (!sid || !did) return toast("Pick a device and a script");
+    if (!did) return toast("Pick a device");
     $("rem-run").disabled = true;
     try {
-      const r = await api(`/api/scripts/${sid}/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_id: did }) });
-      toast("Remediation " + (r.status || "started") + (r.exit_code != null ? " (exit " + r.exit_code + ")" : ""));
+      if (sid === "builtin:wol") {
+        await api(`/api/devices/${did}/wake`, { method: "POST" });
+        toast("Wake-on-LAN sent");
+      } else {
+        const r = await api(`/api/scripts/${sid}/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_id: did }) });
+        toast("Remediation " + (r.status || "started") + (r.exit_code != null ? " (exit " + r.exit_code + ")" : ""));
+      }
       close();
     } catch (e) { toast(e.message); } finally { $("rem-run").disabled = false; }
   };
@@ -1721,8 +1738,9 @@ function openRuleForm(tmpl, existing) {
   }
   $("rm-target").disabled = ruleScope === "global";
   $("rm-severity").value = (existing && existing.severity) || tmpl.default_severity || "warning";
-  $("rm-remediation").innerHTML = `<option value="">— None —</option>` +
-    (state.cache.scripts || []).map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
+  $("rm-remediation").innerHTML = `<option value="">— None —</option>`
+    + `<option value="builtin:wol">Wake-on-LAN (send magic packet)</option>`
+    + (state.cache.scripts || []).map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
   $("rm-remediation").value = existing ? (existing.remediation_script_id || "") : "";
   $("rm-notify-switch").classList.toggle("on", !existing || (existing.notify_email !== 0 && existing.notify_email !== false));
   document.querySelectorAll("#rm-scope-seg button").forEach((b) => b.classList.toggle("active", b.dataset.scope === ruleScope));

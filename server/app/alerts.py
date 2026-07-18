@@ -301,16 +301,24 @@ def evaluate_once() -> list[dict]:
         # and carries a remediation script, queue a run on the (online) device.
         # Backup rules use 'backup_*' alert keys; every other rule uses 'rule:<id>'.
         newly = db.raised_alert_keys(dev["id"]) - prev_raised
-        if newly and dev["id"] in online:
+        if newly:
             for rule in rules:
                 sid = rule.get("remediation_script_id")
                 if not sid:
                     continue
                 hit = (any(k.startswith("backup_") for k in newly)
                        if rule["metric"] == "backup" else f"rule:{rule['id']}" in newly)
-                if hit:
-                    remediations.append({"device_id": dev["id"], "script_id": sid,
+                if not hit:
+                    continue
+                if sid == "builtin:wol":
+                    # Wake-on-LAN fires precisely when the device is *offline*; it
+                    # sends a magic packet and needs no agent on the target.
+                    remediations.append({"device_id": dev["id"], "action": "wol",
                                          "rule_name": rule["name"]})
+                elif dev["id"] in online:
+                    # Script remediations need a live agent to run on.
+                    remediations.append({"device_id": dev["id"], "action": "script",
+                                         "script_id": sid, "rule_name": rule["name"]})
     return remediations
 
 
