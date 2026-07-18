@@ -12,6 +12,12 @@ class WakeRequest(BaseModel):
     node_id: str | None = None
 
 
+class NotifyRequest(BaseModel):
+    """Show a desktop notification to the signed-in user via the agent/tray."""
+    body: str
+    title: str | None = None
+
+
 class PowerRequest(BaseModel):
     action: str  # reboot | shutdown | lock | logoff
 

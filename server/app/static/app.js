@@ -1314,7 +1314,7 @@ function severityBadge(sev) {
   return `<span class="badge ${cls}">${s}</span>`;
 }
 function scriptName(id) { const s = (state.cache.scripts || []).find((x) => x.id === id); return s ? s.name : "—"; }
-function remediationName(id) { return id === "builtin:wol" ? "Wake-on-LAN" : scriptName(id); }
+function remediationName(id) { return id === "builtin:wol" ? "Wake-on-LAN" : id === "builtin:notify" ? "Notify user" : scriptName(id); }
 function kindTag(label) {
   return `<span class="badge na" style="text-transform:none;font-weight:600">${label}</span>`;
 }
@@ -1627,27 +1627,32 @@ function policyTargetDevices(p) {
   return devs;   // "all"
 }
 let _remTargets = [];
+let _remPolicyName = "";
 function openRemediate(p) {
   const scripts = state.cache.scripts || [];
   _remTargets = policyTargetDevices(p);
+  _remPolicyName = p.name || "";
   $("rem-sub").textContent = "Policy: " + p.name;
-  // Wake-on-LAN is a built-in remediation (magic packet); scripts run on a live agent.
+  // Built-in remediations (magic packet / user notification) + library scripts.
   $("rem-script").innerHTML = `<option value="builtin:wol">Wake-on-LAN (send magic packet)</option>`
+    + `<option value="builtin:notify">Notify the signed-in user</option>`
     + scripts.map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
   $("rem-script").value = p.remediation_script_id || (scripts[0] ? scripts[0].id : "builtin:wol");
   _remRepopulateDevices();
   $("remediate-modal").classList.remove("hidden");
 }
-// WoL can target offline devices; a script needs the device online.
+// Only Wake-on-LAN can target an offline device; notify + scripts need it online.
 function _remRepopulateDevices() {
-  const isWol = $("rem-script").value === "builtin:wol";
+  const val = $("rem-script").value;
+  const isWol = val === "builtin:wol", isNotify = val === "builtin:notify";
   const online = _remTargets.filter((d) => d.online);
   const list = isWol ? _remTargets : online;
   $("rem-device").innerHTML = list.map((d) => `<option value="${d.id}">${escapeHtml(d.hostname)}${d.online ? "" : " (offline)"}</option>`).join("");
   const offlineN = _remTargets.length - online.length;
   $("rem-note").textContent = !list.length
-    ? (isWol ? "This policy has no target devices." : "No online target devices — a script can only run on a connected device.")
+    ? (isWol ? "This policy has no target devices." : "No online target devices — the device must be connected.")
     : isWol ? "Wake-on-LAN sends a magic packet — the device can be offline."
+    : isNotify ? "Shows a desktop toast to the signed-in user (the policy name is the message)."
     : offlineN ? `${offlineN} offline device(s) hidden.` : "";
   $("rem-run").disabled = !list.length;
 }
@@ -1665,6 +1670,9 @@ function setupRemediateModal() {
       if (sid === "builtin:wol") {
         await api(`/api/devices/${did}/wake`, { method: "POST" });
         toast("Wake-on-LAN sent");
+      } else if (sid === "builtin:notify") {
+        await api(`/api/devices/${did}/notify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: _remPolicyName || "Attention required" }) });
+        toast("Notification sent");
       } else {
         const r = await api(`/api/scripts/${sid}/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_id: did }) });
         toast("Remediation " + (r.status || "started") + (r.exit_code != null ? " (exit " + r.exit_code + ")" : ""));
@@ -1740,6 +1748,7 @@ function openRuleForm(tmpl, existing) {
   $("rm-severity").value = (existing && existing.severity) || tmpl.default_severity || "warning";
   $("rm-remediation").innerHTML = `<option value="">— None —</option>`
     + `<option value="builtin:wol">Wake-on-LAN (send magic packet)</option>`
+    + `<option value="builtin:notify">Notify the signed-in user</option>`
     + (state.cache.scripts || []).map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join("");
   $("rm-remediation").value = existing ? (existing.remediation_script_id || "") : "";
   $("rm-notify-switch").classList.toggle("on", !existing || (existing.notify_email !== 0 && existing.notify_email !== false));

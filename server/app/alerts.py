@@ -173,6 +173,17 @@ def evaluate_once() -> list[dict]:
                        f"<b>{_esc(dev['hostname'])}</b> is waiting on a reboot to finish applying updates.",
                        notify, severity, meta)
                 continue
+            if rule["metric"] == "updates_available":
+                n = dev.get("updates_available")
+                raised = isinstance(n, int) and n >= rule["threshold"]
+                meta = {"id": rule["id"], "name": rule["name"], "metric": rule["metric"],
+                        "detail": f"{n} update(s) available" if isinstance(n, int) else "unknown"}
+                _apply(dev, rule_key, raised, recipients,
+                       f"{dev['hostname']}: {rule['name']}",
+                       (f"<b>{_esc(dev['hostname'])}</b> has <b>{n}</b> update(s) ready to install "
+                        f"(threshold {int(rule['threshold'])})." if isinstance(n, int) else ""),
+                       notify, severity, meta)
+                continue
             if rule["metric"] == "av_health":
                 av = (_json_obj(dev.get("security_json")) or {}).get("av") or {}
                 reasons = []
@@ -315,8 +326,12 @@ def evaluate_once() -> list[dict]:
                     # sends a magic packet and needs no agent on the target.
                     remediations.append({"device_id": dev["id"], "action": "wol",
                                          "rule_name": rule["name"]})
-                elif dev["id"] in online:
-                    # Script remediations need a live agent to run on.
+                elif dev["id"] not in online:
+                    continue  # notify + script both need a live agent to reach
+                elif sid == "builtin:notify":
+                    remediations.append({"device_id": dev["id"], "action": "notify",
+                                         "rule_name": rule["name"]})
+                else:
                     remediations.append({"device_id": dev["id"], "action": "script",
                                          "script_id": sid, "rule_name": rule["name"]})
     return remediations
