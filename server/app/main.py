@@ -2643,6 +2643,7 @@ async def poll_unifi_account(account_id: int, user: dict = Depends(auth.current_
 async def agent_ws(ws: WebSocket, key: str = Query(...)):
     await ws.accept()
     device_id: str | None = None
+    conn = None
     try:
         # First message must be a register.
         first = await ws.receive_json()
@@ -2688,7 +2689,7 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
             await ws.close(code=4401)
             return
         db.upsert_device(org["id"], first, require_approval=require_approval())
-        await manager.register(device_id, org["id"], ws)
+        conn = await manager.register(device_id, org["id"], ws)
         if _issue:
             await ws.send_json({"type": "device_secret", "secret": _issue})
         # Push admin-controlled device policy (Wake-on-LAN), per the policies that
@@ -2719,8 +2720,10 @@ async def agent_ws(ws: WebSocket, key: str = Query(...)):
     except Exception as exc:  # pragma: no cover
         log.warning("agent ws error: %s", exc)
     finally:
-        if device_id:
-            await manager.unregister(device_id)
+        # Only tear down if *this* handler actually registered — and pass our conn
+        # so a stale handler can't evict a newer reconnection of the same device.
+        if conn is not None:
+            await manager.unregister(device_id, conn)
             log.info("Agent disconnected: %s", device_id)
 
 

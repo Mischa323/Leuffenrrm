@@ -42,9 +42,15 @@ class ConnectionManager:
             self._agents[device_id] = conn
             return conn
 
-    async def unregister(self, device_id: str) -> None:
+    async def unregister(self, device_id: str, conn: "AgentConn | None" = None) -> None:
+        """Remove a device's connection. When ``conn`` is given, only remove it if
+        it is still the *current* connection — a newer reconnect (e.g. right after
+        an agent self-update) may have already replaced it, and the stale handler's
+        cleanup must not evict the live one (which would show the device offline
+        while it's actually connected)."""
         async with self._lock:
-            self._agents.pop(device_id, None)
+            if conn is None or self._agents.get(device_id) is conn:
+                self._agents.pop(device_id, None)
 
     def get(self, device_id: str) -> AgentConn | None:
         return self._agents.get(device_id)
