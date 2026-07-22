@@ -27,7 +27,6 @@ def _default_recipients() -> list[str]:
 
 log = logging.getLogger("rmm.alerts")
 
-EMAIL_COOLDOWN = 3600  # seconds between repeat emails for a still-raised rule
 
 # Synology Active Backup health (not rule-driven — evaluated whenever a device
 # reports backup data). "Stale" = a scheduled task that has run before but has no
@@ -424,15 +423,8 @@ def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
                 mailer.send_mail(f"[RMM] {tag}{subject}",
                                  mailer.status_block(subject, f"<p style='margin:0'>{body}</p>", kind),
                                  recipients)
-        else:
-            last = (state or {}).get("last_email") or 0
-            if now - last > EMAIL_COOLDOWN:
-                db.set_alert_state(dev["id"], rule, "raised", state.get("since"), now)
-                if notify:
-                    mailer.send_mail(f"[RMM] {tag}{subject} (still active)",
-                                     mailer.status_block(f"{subject} (still active)",
-                                                         f"<p style='margin:0'>{body}</p>", kind),
-                                     recipients)
+        # Already raised: send nothing more. One email when a policy raises, one
+        # when it clears — no periodic "still active" reminders.
     else:
         if cur == "raised":
             db.set_alert_state(dev["id"], rule, "ok", None, None)
