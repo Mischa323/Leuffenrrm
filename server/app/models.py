@@ -63,8 +63,18 @@ class ScriptRequest(BaseModel):
 class InstallProgramsRequest(BaseModel):
     """Install one or more catalog programs (via Chocolatey) on a target."""
     packages: list[str]
-    target_type: str = "all"          # all | group | device
+    target_type: str = "all"          # all | desktops | servers | group | device
     target_id: str | None = None
+
+
+class UpdateProgramsRequest(BaseModel):
+    """Update all Chocolatey-managed apps on a target."""
+    target_type: str = "all"
+    target_id: str | None = None
+
+
+class ProgramSettingsRequest(BaseModel):
+    autoupdate: bool = False
 
 
 class ScriptRunRequest(BaseModel):
