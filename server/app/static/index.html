@@ -171,7 +171,9 @@
             <div id="tab-programs" class="hidden">
               <div class="panel">
                 <div class="panel-head"><h2>Programs</h2><span class="sub" id="prog-sub">Install standard apps via Chocolatey</span><div class="spacer"></div>
+                  <label title="Nightly: keep Chocolatey apps up to date on this organisation's Windows devices" style="display:flex;align-items:center;gap:7px;margin-right:12px;font-size:13px;color:var(--text-dim);cursor:pointer"><input type="checkbox" id="prog-autoupdate" style="width:15px;height:15px"> Auto-update</label>
                   <select id="prog-target" style="width:auto;margin-right:10px"></select>
+                  <button class="btn ghost sm" id="prog-update" style="margin-right:8px"><span class="hi" data-i="refresh"></span> Update all</button>
                   <button class="btn sm" id="prog-install" disabled><span class="hi" data-i="download"></span> Install selected</button>
                 </div>
                 <div style="padding:18px"><div id="prog-body"></div></div>

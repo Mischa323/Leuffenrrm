@@ -1127,21 +1127,48 @@ async function renderPrograms() {
   try { status = await api(`/api/orgs/${state.org}/program-status`); } catch {}
   state.cache.programStatus = status;
   const devs = status.devices || [];
+  const onWin = devs.filter((d) => d.online);
+  const onDesk = onWin.filter((d) => d.os_kind === "windows").length;
+  const onSrv = onWin.filter((d) => d.os_kind === "windows_server").length;
+  const grps = state.cache.groups || [];
   const sel = $("prog-target");
   const prev = sel.value;
-  const onlineN = devs.filter((d) => d.online).length;
-  sel.innerHTML = `<option value="all">All Windows devices (${onlineN} online)</option>`
-    + devs.map((d) => `<option value="dev:${d.id}">${escapeHtml(d.hostname)}${d.online ? "" : " (offline)"}</option>`).join("");
+  sel.innerHTML =
+    `<option value="all">All Windows devices (${onWin.length} online)</option>`
+    + `<option value="desktops">Windows desktops (${onDesk} online)</option>`
+    + `<option value="servers">Windows servers (${onSrv} online)</option>`
+    + (grps.length ? `<optgroup label="Groups">` + grps.map((g) => `<option value="grp:${g.id}">${escapeHtml(g.name)}</option>`).join("") + `</optgroup>` : "")
+    + `<optgroup label="Devices">` + devs.map((d) => `<option value="dev:${d.id}">${escapeHtml(d.hostname)}${d.online ? "" : " (offline)"}</option>`).join("") + `</optgroup>`;
   if (prev) sel.value = prev;
   sel.onchange = _renderProgramGrid;
   $("prog-install").onclick = _installPrograms;
+  $("prog-update").onclick = _updateAllPrograms;
+  // Auto-update toggle (per org)
+  try {
+    const st = await api(`/api/orgs/${state.org}/program-settings`);
+    $("prog-autoupdate").checked = !!st.autoupdate;
+  } catch {}
+  $("prog-autoupdate").onchange = async (e) => {
+    try { await api(`/api/orgs/${state.org}/program-settings`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoupdate: e.target.checked }) });
+      toast(e.target.checked ? "Auto-update on — apps updated nightly" : "Auto-update off"); }
+    catch (err) { toast(err.message); e.target.checked = !e.target.checked; }
+  };
   _renderProgramGrid();
 }
+function _progSelToTarget(sel) {
+  if (sel.startsWith("dev:")) return { target_type: "device", target_id: sel.slice(4) };
+  if (sel.startsWith("grp:")) return { target_type: "group", target_id: sel.slice(4) };
+  if (sel === "desktops" || sel === "servers") return { target_type: sel, target_id: null };
+  return { target_type: "all", target_id: null };
+}
 function _programTargetDevices() {
-  const status = state.cache.programStatus || { devices: [] };
+  const devs = (state.cache.programStatus || { devices: [] }).devices || [];
   const sel = ($("prog-target").value) || "all";
-  if (sel.startsWith("dev:")) return status.devices.filter((d) => d.id === sel.slice(4));
-  return status.devices;
+  if (sel.startsWith("dev:")) return devs.filter((d) => d.id === sel.slice(4));
+  if (sel.startsWith("grp:")) return devs.filter((d) => d.group_id === sel.slice(4));
+  if (sel === "desktops") return devs.filter((d) => d.os_kind === "windows");
+  if (sel === "servers") return devs.filter((d) => d.os_kind === "windows_server");
+  return devs;
 }
 function _renderProgramGrid() {
   const cat = state.cache.programs || [];
@@ -1173,16 +1200,25 @@ function _renderProgramGrid() {
 async function _installPrograms() {
   const pkgs = [...$("prog-body").querySelectorAll(".prog-check:checked")].map((c) => c.value);
   if (!pkgs.length) return;
-  const sel = ($("prog-target").value) || "all";
-  let target_type = "all", target_id = null;
-  if (sel.startsWith("dev:")) { target_type = "device"; target_id = sel.slice(4); }
   const n = _programTargetDevices().filter((d) => d.online).length;
+  if (!n) return toast("No online Windows devices in this target");
   if (!confirm(`Install ${pkgs.length} program(s) on ${n} online Windows device(s)?`)) return;
   try {
-    const r = await api(`/api/orgs/${state.org}/install-programs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ packages: pkgs, target_type, target_id }) });
+    const t = _progSelToTarget($("prog-target").value || "all");
+    const r = await api(`/api/orgs/${state.org}/install-programs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ packages: pkgs, ...t }) });
     toast(`Installing ${r.programs} on ${r.started} device(s) — see the device's History/Runs`);
     $("prog-body").querySelectorAll(".prog-check:checked").forEach((c) => c.checked = false);
     $("prog-install").disabled = true;
+  } catch (e) { toast(e.message); }
+}
+async function _updateAllPrograms() {
+  const n = _programTargetDevices().filter((d) => d.online).length;
+  if (!n) return toast("No online Windows devices in this target");
+  if (!confirm(`Update all Chocolatey apps on ${n} online Windows device(s)?`)) return;
+  try {
+    const t = _progSelToTarget($("prog-target").value || "all");
+    const r = await api(`/api/orgs/${state.org}/update-programs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(t) });
+    toast(`Updating apps on ${r.started} device(s) — see run history`);
   } catch (e) { toast(e.message); }
 }
 async function renderDownloads() {

@@ -29,9 +29,10 @@ from .models import UnifiAccountRequest
 from .models import (AccessGroupMemberRequest, AccessGroupOrgRequest, AccessGroupPermRequest,
                      AccessGroupRequest, GroupRequest, InstallProgramsRequest, InviteRequest,
                      MonitorRequest, MonitorRuleRequest, MoveDeviceRequest, MoveOrgRequest,
-                     NotifyRequest, OrgRequest, OrgUserRequest, PowerRequest, ScheduleRequest,
-                     ScriptFileRequest, ScriptRequest, ScriptRunRequest, ShellRequest, SubnetRequest,
-                     UserUpdateRequest, WakeRequest)
+                     NotifyRequest, OrgRequest, OrgUserRequest, PowerRequest, ProgramSettingsRequest,
+                     ScheduleRequest, ScriptFileRequest, ScriptRequest, ScriptRunRequest,
+                     ShellRequest, SubnetRequest, UpdateProgramsRequest, UserUpdateRequest,
+                     WakeRequest)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
@@ -242,6 +243,7 @@ async def _startup() -> None:
     asyncio.create_task(_auto_update_loop())
     asyncio.create_task(_unifi_loop())
     asyncio.create_task(_selfcheck_loop())
+    asyncio.create_task(_programs_autoupdate_loop())
 
 
 def _resolve_setup_state() -> None:
@@ -2124,22 +2126,34 @@ def get_monitor_templates(user: dict = Depends(auth.current_user)):
 # detect the app in a device's reported installed software.
 # --------------------------------------------------------------------------- #
 PROGRAM_CATALOG = [
+    # Browsers
     {"id": "googlechrome", "name": "Google Chrome", "publisher": "Google", "category": "Browsers", "match": ["google chrome"]},
     {"id": "firefox", "name": "Mozilla Firefox", "publisher": "Mozilla", "category": "Browsers", "match": ["mozilla firefox"]},
     {"id": "microsoft-edge", "name": "Microsoft Edge", "publisher": "Microsoft", "category": "Browsers", "match": ["microsoft edge"]},
-    {"id": "adobereader", "name": "Adobe Acrobat Reader", "publisher": "Adobe", "category": "Documents", "match": ["adobe acrobat reader", "adobe reader", "acrobat reader"]},
-    {"id": "foxitreader", "name": "Foxit PDF Reader", "publisher": "Foxit", "category": "Documents", "match": ["foxit"]},
-    {"id": "libreoffice-fresh", "name": "LibreOffice", "publisher": "The Document Foundation", "category": "Productivity", "match": ["libreoffice"]},
+    # PDF & office
+    {"id": "adobereader", "name": "Adobe Acrobat Reader", "publisher": "Adobe", "category": "PDF & Office", "match": ["adobe acrobat reader", "adobe reader", "acrobat reader"]},
+    {"id": "foxitreader", "name": "Foxit PDF Reader", "publisher": "Foxit", "category": "PDF & Office", "match": ["foxit"]},
+    {"id": "libreoffice-fresh", "name": "LibreOffice", "publisher": "The Document Foundation", "category": "PDF & Office", "match": ["libreoffice"]},
+    # Communication
+    {"id": "microsoft-teams", "name": "Microsoft Teams", "publisher": "Microsoft", "category": "Communication", "match": ["teams machine-wide", "microsoft teams"]},
+    {"id": "zoom", "name": "Zoom", "publisher": "Zoom", "category": "Communication", "match": ["zoom"]},
+    {"id": "slack", "name": "Slack", "publisher": "Slack", "category": "Communication", "match": ["slack"]},
+    {"id": "discord", "name": "Discord", "publisher": "Discord", "category": "Communication", "match": ["discord"]},
+    # Developer
+    {"id": "vscode", "name": "Visual Studio Code", "publisher": "Microsoft", "category": "Developer", "match": ["visual studio code"]},
+    {"id": "git", "name": "Git", "publisher": "The Git Development Community", "category": "Developer", "match": ["git version"]},
+    # Utilities
     {"id": "7zip", "name": "7-Zip", "publisher": "Igor Pavlov", "category": "Utilities", "match": ["7-zip"]},
     {"id": "notepadplusplus", "name": "Notepad++", "publisher": "Notepad++ Team", "category": "Utilities", "match": ["notepad++"]},
     {"id": "greenshot", "name": "Greenshot", "publisher": "Greenshot", "category": "Utilities", "match": ["greenshot"]},
     {"id": "powertoys", "name": "Microsoft PowerToys", "publisher": "Microsoft", "category": "Utilities", "match": ["powertoys"]},
+    # Media
     {"id": "vlc", "name": "VLC media player", "publisher": "VideoLAN", "category": "Media", "match": ["vlc media player"]},
-    {"id": "zoom", "name": "Zoom", "publisher": "Zoom", "category": "Communication", "match": ["zoom"]},
-    {"id": "microsoft-teams", "name": "Microsoft Teams", "publisher": "Microsoft", "category": "Communication", "match": ["teams machine-wide", "microsoft teams"]},
-    {"id": "googledrive", "name": "Google Drive", "publisher": "Google", "category": "Productivity", "match": ["google drive"]},
-    {"id": "teamviewer", "name": "TeamViewer", "publisher": "TeamViewer", "category": "Remote", "match": ["teamviewer"]},
-    {"id": "anydesk", "name": "AnyDesk", "publisher": "AnyDesk", "category": "Remote", "match": ["anydesk"]},
+    # Remote support
+    {"id": "teamviewer", "name": "TeamViewer", "publisher": "TeamViewer", "category": "Remote support", "match": ["teamviewer"]},
+    {"id": "anydesk", "name": "AnyDesk", "publisher": "AnyDesk", "category": "Remote support", "match": ["anydesk"]},
+    # Cloud storage
+    {"id": "googledrive", "name": "Google Drive", "publisher": "Google", "category": "Cloud storage", "match": ["google drive"]},
 ]
 _PROGRAM_IDS = {p["id"] for p in PROGRAM_CATALOG}
 
@@ -2191,22 +2205,36 @@ def program_status(org_id: str, user: dict = Depends(auth.current_user)):
         if d.get("os_kind") not in ("windows", "windows_server"):
             continue  # Chocolatey is Windows-only
         names = _installed_names(d)
-        out.append({"id": d["id"], "hostname": d["hostname"],
+        out.append({"id": d["id"], "hostname": d["hostname"], "os_kind": d.get("os_kind"),
+                    "group_id": d.get("group_id"),
                     "online": _display_online(d, online),
                     "installed": {p["id"]: _program_installed(p, names) for p in PROGRAM_CATALOG}})
     return {"devices": out}
 
 
 def _install_targets(org_id: str, target_type: str, target_id: str | None) -> list[str]:
-    """Online Windows device ids for an install target (device | group | all)."""
+    """Online Windows device ids for an install target.
+
+    target_type: all | desktops | servers | group | device (desktops =
+    os_kind 'windows', servers = 'windows_server')."""
     online = manager.online_ids()
     if target_type == "device":
         d = db.get_device(target_id) if target_id else None
         cand = [d] if d and d.get("org_id") == org_id else []
     else:
         cand = db.list_devices(org_id, target_id if target_type == "group" else None)
-    return [d["id"] for d in cand
-            if d and d.get("os_kind") in ("windows", "windows_server") and d["id"] in online]
+
+    def _match(d: dict) -> bool:
+        if not d or d["id"] not in online:
+            return False
+        kind = d.get("os_kind")
+        if target_type == "desktops":
+            return kind == "windows"
+        if target_type == "servers":
+            return kind == "windows_server"
+        return kind in ("windows", "windows_server")
+
+    return [d["id"] for d in cand if _match(d)]
 
 
 @app.post("/api/orgs/{org_id}/install-programs")
@@ -2228,6 +2256,80 @@ async def install_programs(org_id: str, req: InstallProgramsRequest,
         asyncio.create_task(_exec_script_on_device(script, did, timeout=1800, run_name=run_name))
         _audit(did, user, "Install programs", names)
     return {"started": len(targets), "programs": names}
+
+
+def _choco_update_all_script() -> str:
+    """Upgrade every Chocolatey-managed app that has an update available."""
+    return ("if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) { exit 0 }\n"
+            "choco upgrade all -y --no-progress\n"
+            "exit $LASTEXITCODE\n")
+
+
+@app.post("/api/orgs/{org_id}/update-programs")
+async def update_programs(org_id: str, req: UpdateProgramsRequest,
+                          user: dict = Depends(auth.current_user)):
+    """Run `choco upgrade all` on the online Windows devices in the target."""
+    auth.require_org(user, org_id)
+    targets = _install_targets(org_id, req.target_type, req.target_id)
+    if not targets:
+        raise HTTPException(status_code=409, detail="No online Windows devices in the target")
+    for did in targets:
+        script = {"id": None, "org_id": org_id, "name": "Update apps (Chocolatey)",
+                  "content": _choco_update_all_script(), "shell": "powershell"}
+        asyncio.create_task(_exec_script_on_device(script, did, timeout=3600, run_name="Update apps"))
+        _audit(did, user, "Update programs", "choco upgrade all")
+    return {"started": len(targets)}
+
+
+def _org_programs_autoupdate(org_id: str) -> bool:
+    return (db.get_setting(f"programs_autoupdate:{org_id}") or "0") == "1"
+
+
+@app.get("/api/orgs/{org_id}/program-settings")
+def get_program_settings(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return {"autoupdate": _org_programs_autoupdate(org_id)}
+
+
+@app.post("/api/orgs/{org_id}/program-settings")
+def set_program_settings(org_id: str, req: ProgramSettingsRequest,
+                         user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    db.set_setting(f"programs_autoupdate:{org_id}", "1" if req.autoupdate else "0")
+    return {"autoupdate": req.autoupdate}
+
+
+# Per-device throttle so an org's nightly auto-update runs each device ~once/day.
+_PROGRAMS_AUTOUPDATE_EVERY = 24 * 3600
+_programs_last_update: dict = {}
+
+
+async def _programs_autoupdate_loop() -> None:
+    """For orgs with 'keep apps updated' on, run `choco upgrade all` on each online
+    Windows device about once a day (only upgrades what actually has updates)."""
+    await asyncio.sleep(120)  # let startup settle
+    while True:
+        try:
+            now = time.time()
+            online = manager.online_ids()
+            for org in db.list_orgs():
+                if not _org_programs_autoupdate(org["id"]):
+                    continue
+                for d in db.list_devices(org["id"]):
+                    if d.get("os_kind") not in ("windows", "windows_server"):
+                        continue
+                    if d["id"] not in online:
+                        continue
+                    if now - _programs_last_update.get(d["id"], 0) < _PROGRAMS_AUTOUPDATE_EVERY:
+                        continue
+                    _programs_last_update[d["id"]] = now
+                    script = {"id": None, "org_id": org["id"], "name": "Auto-update apps (Chocolatey)",
+                              "content": _choco_update_all_script(), "shell": "powershell"}
+                    asyncio.create_task(_exec_script_on_device(
+                        script, d["id"], timeout=3600, run_name="Auto-update apps"))
+        except Exception as exc:  # pragma: no cover
+            log.warning("programs auto-update loop error: %s", exc)
+        await asyncio.sleep(3600)  # re-check hourly
 
 
 def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:
