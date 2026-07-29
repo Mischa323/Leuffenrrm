@@ -27,10 +27,10 @@ from . import wol as wol_local
 from .manager import manager
 from .models import UnifiAccountRequest
 from .models import (AccessGroupMemberRequest, AccessGroupOrgRequest, AccessGroupPermRequest,
-                     AccessGroupRequest, GroupRequest, InviteRequest, MonitorRequest,
-                     MonitorRuleRequest, MoveDeviceRequest, MoveOrgRequest, NotifyRequest,
-                     OrgRequest, OrgUserRequest, PowerRequest, ScheduleRequest, ScriptFileRequest,
-                     ScriptRequest, ScriptRunRequest, ShellRequest, SubnetRequest,
+                     AccessGroupRequest, GroupRequest, InstallProgramsRequest, InviteRequest,
+                     MonitorRequest, MonitorRuleRequest, MoveDeviceRequest, MoveOrgRequest,
+                     NotifyRequest, OrgRequest, OrgUserRequest, PowerRequest, ScheduleRequest,
+                     ScriptFileRequest, ScriptRequest, ScriptRunRequest, ShellRequest, SubnetRequest,
                      UserUpdateRequest, WakeRequest)
 
 logging.basicConfig(level=logging.INFO)
@@ -2116,6 +2116,118 @@ def _template_device_types(t: dict) -> list[str]:
 @app.get("/api/monitor-templates")
 def get_monitor_templates(user: dict = Depends(auth.current_user)):
     return [{**t, "device_types": _template_device_types(t)} for t in MONITOR_TEMPLATES]
+
+
+# --------------------------------------------------------------------------- #
+# Programs — install standard apps on Windows agents via Chocolatey.
+# `id` is the Chocolatey package id; `match` are lowercase substrings used to
+# detect the app in a device's reported installed software.
+# --------------------------------------------------------------------------- #
+PROGRAM_CATALOG = [
+    {"id": "googlechrome", "name": "Google Chrome", "publisher": "Google", "category": "Browsers", "match": ["google chrome"]},
+    {"id": "firefox", "name": "Mozilla Firefox", "publisher": "Mozilla", "category": "Browsers", "match": ["mozilla firefox"]},
+    {"id": "microsoft-edge", "name": "Microsoft Edge", "publisher": "Microsoft", "category": "Browsers", "match": ["microsoft edge"]},
+    {"id": "adobereader", "name": "Adobe Acrobat Reader", "publisher": "Adobe", "category": "Documents", "match": ["adobe acrobat reader", "adobe reader", "acrobat reader"]},
+    {"id": "foxitreader", "name": "Foxit PDF Reader", "publisher": "Foxit", "category": "Documents", "match": ["foxit"]},
+    {"id": "libreoffice-fresh", "name": "LibreOffice", "publisher": "The Document Foundation", "category": "Productivity", "match": ["libreoffice"]},
+    {"id": "7zip", "name": "7-Zip", "publisher": "Igor Pavlov", "category": "Utilities", "match": ["7-zip"]},
+    {"id": "notepadplusplus", "name": "Notepad++", "publisher": "Notepad++ Team", "category": "Utilities", "match": ["notepad++"]},
+    {"id": "greenshot", "name": "Greenshot", "publisher": "Greenshot", "category": "Utilities", "match": ["greenshot"]},
+    {"id": "powertoys", "name": "Microsoft PowerToys", "publisher": "Microsoft", "category": "Utilities", "match": ["powertoys"]},
+    {"id": "vlc", "name": "VLC media player", "publisher": "VideoLAN", "category": "Media", "match": ["vlc media player"]},
+    {"id": "zoom", "name": "Zoom", "publisher": "Zoom", "category": "Communication", "match": ["zoom"]},
+    {"id": "microsoft-teams", "name": "Microsoft Teams", "publisher": "Microsoft", "category": "Communication", "match": ["teams machine-wide", "microsoft teams"]},
+    {"id": "googledrive", "name": "Google Drive", "publisher": "Google", "category": "Productivity", "match": ["google drive"]},
+    {"id": "teamviewer", "name": "TeamViewer", "publisher": "TeamViewer", "category": "Remote", "match": ["teamviewer"]},
+    {"id": "anydesk", "name": "AnyDesk", "publisher": "AnyDesk", "category": "Remote", "match": ["anydesk"]},
+]
+_PROGRAM_IDS = {p["id"] for p in PROGRAM_CATALOG}
+
+
+def _program(pid: str) -> dict | None:
+    return next((p for p in PROGRAM_CATALOG if p["id"] == pid), None)
+
+
+def _choco_script(pkgs: list[str]) -> str:
+    """PowerShell: bootstrap Chocolatey if needed, then install/upgrade packages."""
+    joined = " ".join(pkgs)
+    return (
+        "if (-not (Get-Command choco.exe -ErrorAction SilentlyContinue)) {\n"
+        "  Set-ExecutionPolicy Bypass -Scope Process -Force\n"
+        "  [Net.ServicePointManager]::SecurityProtocol = 3072\n"
+        "  iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))\n"
+        "}\n"
+        f"choco upgrade {joined} -y --no-progress\n"
+        "exit $LASTEXITCODE\n"
+    )
+
+
+def _installed_names(dev: dict) -> list[str]:
+    """Lowercased installed-software names the device last reported."""
+    import json
+    try:
+        sw = json.loads(dev.get("software_json") or "[]")
+    except (ValueError, TypeError):
+        return []
+    return [str((s or {}).get("name") or "").lower() for s in sw if isinstance(s, dict)]
+
+
+def _program_installed(prog: dict, names: list[str]) -> bool:
+    return any(m in n for n in names for m in prog["match"])
+
+
+@app.get("/api/programs")
+def list_programs(user: dict = Depends(auth.current_user)):
+    return PROGRAM_CATALOG
+
+
+@app.get("/api/orgs/{org_id}/program-status")
+def program_status(org_id: str, user: dict = Depends(auth.current_user)):
+    """Per (Windows) device: which catalog programs are already installed."""
+    auth.require_org(user, org_id)
+    online = manager.online_ids()
+    out = []
+    for d in db.list_devices(org_id):
+        if d.get("os_kind") not in ("windows", "windows_server"):
+            continue  # Chocolatey is Windows-only
+        names = _installed_names(d)
+        out.append({"id": d["id"], "hostname": d["hostname"],
+                    "online": _display_online(d, online),
+                    "installed": {p["id"]: _program_installed(p, names) for p in PROGRAM_CATALOG}})
+    return {"devices": out}
+
+
+def _install_targets(org_id: str, target_type: str, target_id: str | None) -> list[str]:
+    """Online Windows device ids for an install target (device | group | all)."""
+    online = manager.online_ids()
+    if target_type == "device":
+        d = db.get_device(target_id) if target_id else None
+        cand = [d] if d and d.get("org_id") == org_id else []
+    else:
+        cand = db.list_devices(org_id, target_id if target_type == "group" else None)
+    return [d["id"] for d in cand
+            if d and d.get("os_kind") in ("windows", "windows_server") and d["id"] in online]
+
+
+@app.post("/api/orgs/{org_id}/install-programs")
+async def install_programs(org_id: str, req: InstallProgramsRequest,
+                           user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    pkgs = [p for p in (req.packages or []) if p in _PROGRAM_IDS]
+    if not pkgs:
+        raise HTTPException(status_code=400, detail="No valid programs selected")
+    names = ", ".join(_program(p)["name"] for p in pkgs)
+    targets = _install_targets(org_id, req.target_type, req.target_id)
+    if not targets:
+        raise HTTPException(status_code=409, detail="No online Windows devices in the target")
+    run_name = f"Install: {names}"
+    for did in targets:
+        script = {"id": None, "org_id": org_id, "name": run_name,
+                  "content": _choco_script(pkgs), "shell": "powershell"}
+        # Fire-and-forget: choco installs are slow; the result lands in run history.
+        asyncio.create_task(_exec_script_on_device(script, did, timeout=1800, run_name=run_name))
+        _audit(did, user, "Install programs", names)
+    return {"started": len(targets), "programs": names}
 
 
 def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:

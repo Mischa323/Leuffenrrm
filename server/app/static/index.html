@@ -74,6 +74,7 @@
               <button data-tab="unifi"><span class="ni" data-i="wifi"></span> UniFi <span class="count" id="nav-unifi-count">0</span></button>
               <button data-tab="scripts"><span class="ni" data-i="terminal"></span> Scripts <span class="count" id="nav-scripts-count">0</span></button>
               <button data-tab="monitors"><span class="ni" data-i="shieldCheck"></span> Policies <span class="count" id="nav-monitors-count">0</span></button>
+              <button data-tab="programs"><span class="ni" data-i="package"></span> Programs</button>
               <button data-tab="downloads"><span class="ni" data-i="download"></span> Downloads</button>
             </nav>
             <div class="side-label">Groups</div>
@@ -164,6 +165,16 @@
                     <div class="hmenu" id="mon-new-menu" style="right:0;left:auto;min-width:264px"></div>
                   </div></div>
                 <div style="padding:18px"><div id="mon-body"></div></div>
+              </div>
+            </div>
+            <!-- Programs -->
+            <div id="tab-programs" class="hidden">
+              <div class="panel">
+                <div class="panel-head"><h2>Programs</h2><span class="sub" id="prog-sub">Install standard apps via Chocolatey</span><div class="spacer"></div>
+                  <select id="prog-target" style="width:auto;margin-right:10px"></select>
+                  <button class="btn sm" id="prog-install" disabled><span class="hi" data-i="download"></span> Install selected</button>
+                </div>
+                <div style="padding:18px"><div id="prog-body"></div></div>
               </div>
             </div>
             <!-- Downloads -->

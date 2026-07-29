@@ -406,7 +406,7 @@ function buildGroups() {
 function selectTab(tab) {
   state.tab = tab;
   document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  ["devices", "approvals", "network", "nodes", "snmp", "unifi", "scripts", "monitors", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  ["devices", "approvals", "network", "nodes", "snmp", "unifi", "scripts", "monitors", "programs", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
   clearRefresh();
   saveView();
   if (tab === "devices") renderDevices();
@@ -417,9 +417,10 @@ function selectTab(tab) {
   else if (tab === "unifi") { renderUnifi(); refreshTab("unifi"); }
   else if (tab === "scripts") renderScripts();
   else if (tab === "monitors") renderMonitorsTab();
+  else if (tab === "programs") renderPrograms();
   else if (tab === "downloads") renderDownloads();
-  // Keep the active view live in the background (skip the static Downloads tab).
-  if (tab !== "downloads") {
+  // Keep the active view live in the background (skip the static/selection tabs).
+  if (tab !== "downloads" && tab !== "programs") {
     const every = tab === "devices" ? 5000 : 8000;
     state.refresh = setInterval(() => { if (!document.hidden && state.org && state.tab === tab) refreshTab(tab); }, every);
   }
@@ -1117,6 +1118,73 @@ function openUnifiForm(a) {
   };
 }
 
+// ---- Programs: install standard apps (Chocolatey) on Windows agents --------- //
+async function renderPrograms() {
+  const body = $("prog-body");
+  body.innerHTML = `<div class="muted" style="padding:8px">Loading…</div>`;
+  if (!state.cache.programs) state.cache.programs = await api("/api/programs").catch(() => []);
+  let status = { devices: [] };
+  try { status = await api(`/api/orgs/${state.org}/program-status`); } catch {}
+  state.cache.programStatus = status;
+  const devs = status.devices || [];
+  const sel = $("prog-target");
+  const prev = sel.value;
+  const onlineN = devs.filter((d) => d.online).length;
+  sel.innerHTML = `<option value="all">All Windows devices (${onlineN} online)</option>`
+    + devs.map((d) => `<option value="dev:${d.id}">${escapeHtml(d.hostname)}${d.online ? "" : " (offline)"}</option>`).join("");
+  if (prev) sel.value = prev;
+  sel.onchange = _renderProgramGrid;
+  $("prog-install").onclick = _installPrograms;
+  _renderProgramGrid();
+}
+function _programTargetDevices() {
+  const status = state.cache.programStatus || { devices: [] };
+  const sel = ($("prog-target").value) || "all";
+  if (sel.startsWith("dev:")) return status.devices.filter((d) => d.id === sel.slice(4));
+  return status.devices;
+}
+function _renderProgramGrid() {
+  const cat = state.cache.programs || [];
+  const body = $("prog-body");
+  const targets = _programTargetDevices();
+  const online = targets.filter((d) => d.online);
+  const single = targets.length === 1;
+  if (!cat.length) { body.innerHTML = `<div class="empty">No programs available.</div>`; return; }
+  body.innerHTML = cat.map((p) => {
+    const inst = targets.filter((d) => d.installed && d.installed[p.id]).length;
+    const badge = single
+      ? (targets[0].installed && targets[0].installed[p.id] ? `<span class="badge ok">Installed</span>` : `<span class="badge na">Not installed</span>`)
+      : (targets.length ? `<span class="badge ${inst === targets.length ? "ok" : "na"}">${inst}/${targets.length} installed</span>` : "");
+    return `<label class="tile" style="display:flex;align-items:center;gap:12px;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" class="prog-check" value="${p.id}" style="width:16px;height:16px;flex:none">
+      <div class="os-ico">${ICON.package}</div>
+      <div style="flex:1"><div style="font-weight:650">${escapeHtml(p.name)}</div>
+        <div class="h-sub">${escapeHtml(p.publisher || "")}${p.category ? " · " + escapeHtml(p.category) : ""} · <span class="mono">${escapeHtml(p.id)}</span></div></div>
+      ${badge}</label>`;
+  }).join("");
+  const btn = $("prog-install");
+  const upd = () => { btn.disabled = !body.querySelectorAll(".prog-check:checked").length || !online.length; };
+  body.querySelectorAll(".prog-check").forEach((c) => c.onchange = upd);
+  upd();
+  $("prog-sub").textContent = online.length
+    ? `${online.length} online Windows target${online.length === 1 ? "" : "s"} · Chocolatey`
+    : "No online Windows devices in this target";
+}
+async function _installPrograms() {
+  const pkgs = [...$("prog-body").querySelectorAll(".prog-check:checked")].map((c) => c.value);
+  if (!pkgs.length) return;
+  const sel = ($("prog-target").value) || "all";
+  let target_type = "all", target_id = null;
+  if (sel.startsWith("dev:")) { target_type = "device"; target_id = sel.slice(4); }
+  const n = _programTargetDevices().filter((d) => d.online).length;
+  if (!confirm(`Install ${pkgs.length} program(s) on ${n} online Windows device(s)?`)) return;
+  try {
+    const r = await api(`/api/orgs/${state.org}/install-programs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ packages: pkgs, target_type, target_id }) });
+    toast(`Installing ${r.programs} on ${r.started} device(s) — see the device's History/Runs`);
+    $("prog-body").querySelectorAll(".prog-check:checked").forEach((c) => c.checked = false);
+    $("prog-install").disabled = true;
+  } catch (e) { toast(e.message); }
+}
 async function renderDownloads() {
   const base = location.origin;
   let info = { tokens: [], insecure_tls: location.protocol === "https:" };

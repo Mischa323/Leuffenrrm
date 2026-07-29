@@ -60,6 +60,13 @@ class ScriptRequest(BaseModel):
     category: str = "Script"      # Monitoring | Installation | Maintenance | ...
 
 
+class InstallProgramsRequest(BaseModel):
+    """Install one or more catalog programs (via Chocolatey) on a target."""
+    packages: list[str]
+    target_type: str = "all"          # all | group | device
+    target_id: str | None = None
+
+
 class ScriptRunRequest(BaseModel):
     device_id: str
     timeout: float = 120
