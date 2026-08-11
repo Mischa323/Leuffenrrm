@@ -3533,7 +3533,12 @@ def synology_icon(org_id: str, token: str, size: int = 72):
 
 
 @app.get("/api/health")
+@app.get("/health")
 def health():
+    # Public, unauthenticated reachability check. The agent's Settings dialog
+    # probes `<server-url>/health` to verify connectivity before saving — it must
+    # return 200 (a 404/redirect made "Save settings" fail with "cannot reach
+    # server"). Kept identical to /api/health.
     return {"status": "ok"}
 
 
