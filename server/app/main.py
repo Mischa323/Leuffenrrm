@@ -3241,10 +3241,17 @@ async def agent_release(user: dict = Depends(auth.current_user)):
 @app.get("/api/orgs/{org_id}/install.msi")
 async def install_msi(org_id: str, token: str | None = Query(None),
                       user: dict | None = Depends(auth.optional_user)):
-    """Stream the latest Windows MSI from the release, fresh each time.
+    """Redirect to the latest published Windows MSI on the (public) release.
 
     Accepts: a one-time enrolment/internal token, a multi-use download-link
     token, or an authenticated admin session.
+
+    We 302-redirect to the GitHub release download rather than proxy the file:
+    buffering the whole ~60 MB MSI in the server's memory and streaming it back
+    through the reverse proxy was slow/heavy enough that the connection dropped
+    before the client got a response ("remote end closed connection without
+    response"). The release repo is public, so the client fetches it directly
+    from GitHub's CDN. (Override MSI_URL for a private/self-hosted build.)
     """
     authed = False
     if token:
@@ -3255,17 +3262,7 @@ async def install_msi(org_id: str, token: str | None = Query(None),
             raise HTTPException(status_code=401,
                                 detail="A valid token (?token=) or an admin session is required")
         _org_from_request(org_id, user)
-    import httpx
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
-            r = await client.get(MSI_URL)
-        r.raise_for_status()
-    except Exception:
-        raise HTTPException(status_code=502,
-                            detail="MSI not available yet — build/publish a release first.")
-    return Response(r.content, media_type="application/x-msdownload",
-                    headers={"Content-Disposition": "attachment; filename=leuffen-rmm-agent.msi",
-                             "Cache-Control": "no-store"})
+    return RedirectResponse(MSI_URL, status_code=302)
 
 
 @app.get("/api/orgs/{org_id}/install.cmd")
