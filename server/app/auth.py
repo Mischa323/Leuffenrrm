@@ -389,3 +389,110 @@ def _bearer(request: Request) -> str | None:
     header = request.headers.get("authorization") or ""
     scheme, _, value = header.partition(" ")
     return value.strip() if scheme.lower() == "bearer" and value.strip() else None
+
+
+# --------------------------------------------------------------------------- #
+# Where a person may sign in from
+#
+# Two lists, both live at once, with the usual precedence: a deny rule always
+# wins, and a non-empty allow list means *only* those addresses get in. Both
+# accept single addresses and CIDR ranges, one per line, with `#` comments.
+#
+# This never touches agent connections. A mistyped rule should cost someone a
+# sign-in, not take the whole fleet offline -- and a blocked agent cannot
+# re-enrol itself to recover.
+# --------------------------------------------------------------------------- #
+def _ip_rules(raw: str) -> list:
+    """Parse a rule list, skipping anything malformed.
+
+    An unparseable line is dropped rather than treated as a wildcard: a typo
+    must never silently widen access."""
+    import ipaddress
+    out = []
+    for line in (raw or "").replace(",", "\n").splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if not entry:
+            continue
+        try:
+            out.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            continue
+    return out
+
+
+def ip_rules_invalid(raw: str) -> list[str]:
+    """The lines of `raw` that are not a valid address or range, for the UI."""
+    import ipaddress
+    bad = []
+    for line in (raw or "").replace(",", "\n").splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if not entry:
+            continue
+        try:
+            ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            bad.append(entry)
+    return bad
+
+
+def client_ip(request: Request) -> str:
+    """The caller's address.
+
+    `X-Forwarded-For` is honoured only when RMM_TRUST_PROXY is set: taking it on
+    faith would let anyone put whatever address they like in front of an allow
+    list. Only the left-most entry is used -- the client as seen by the first
+    proxy in the chain.
+    """
+    if os.environ.get("RMM_TRUST_PROXY", "0") == "1":
+        first = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else ""
+
+
+def ip_filtering_on() -> bool:
+    return bool(os.environ.get("RMM_IP_ALLOW", "").strip()
+                or os.environ.get("RMM_IP_DENY", "").strip())
+
+
+def ip_allowed(address: str) -> bool:
+    """True if `address` may sign in / use the API."""
+    import ipaddress
+    deny = _ip_rules(os.environ.get("RMM_IP_DENY", ""))
+    allow = _ip_rules(os.environ.get("RMM_IP_ALLOW", ""))
+    if not deny and not allow:
+        return True
+    try:
+        ip = ipaddress.ip_address((address or "").strip())
+    except ValueError:
+        # No usable address (a malformed header, a unix socket). Refuse only
+        # when an allow list is in force, since that list is meant to be the
+        # complete set of places access can come from.
+        return not allow
+    if any(ip in net for net in deny):
+        return False
+    return not allow or any(ip in net for net in allow)
+
+
+# --------------------------------------------------------------------------- #
+# Two-factor enforcement
+# --------------------------------------------------------------------------- #
+def enforce_2fa() -> bool:
+    return os.environ.get("RMM_ENFORCE_2FA", "").lower() in ("1", "true", "yes")
+
+
+def needs_2fa_enrolment(identity: str) -> bool:
+    """True when the policy is on and this person has no authenticator yet.
+
+    Microsoft 365 identities are included: the workspace can require its own
+    second factor on top of the tenant's. An SSO identity that has never had a
+    local account gets one created when they enrol, purely to hold the secret
+    and the recovery codes -- they still sign in through Microsoft.
+    """
+    if not enforce_2fa() or not identity:
+        return False
+    try:
+        u = db.get_user(identity)
+    except Exception:
+        return False
+    return not (u and u.get("totp_enabled"))

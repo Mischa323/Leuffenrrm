@@ -555,6 +555,7 @@ def _sso_redirect(remember: bool = False) -> RedirectResponse:
 
 @app.get("/auth/login")
 def auth_login(request: Request):
+    _guard_ip(request)
     if auth.AUTH_MODE == "dev":
         return RedirectResponse("/")
     # SSO-only: go straight to Microsoft. Otherwise show the sign-in page
@@ -565,7 +566,8 @@ def auth_login(request: Request):
 
 
 @app.get("/auth/sso")
-def auth_sso(remember: int = 0):
+def auth_sso(request: Request, remember: int = 0):
+    _guard_ip(request)
     if not auth.SSO_ENABLED:
         raise HTTPException(status_code=404, detail="SSO is not enabled")
     return _sso_redirect(bool(remember))
@@ -584,8 +586,87 @@ _login_fails: dict[str, list[float]] = {}
 
 
 def _login_key(request: Request, username: str) -> str:
-    ip = request.client.host if request.client else "?"
-    return f"{ip}|{(username or '').lower()}"
+    return f"{auth.client_ip(request)}|{(username or '').lower()}"
+
+
+def _guard_ip(request: Request) -> None:
+    """Refuse a sign-in or API call from an address the rules exclude.
+
+    Deliberately not applied to agent connections: a mistyped rule should cost
+    someone a sign-in, not take the fleet offline. Sessions already signed in
+    are not cut off either -- the rules decide where you may sign in *from*.
+    """
+    if not auth.ip_filtering_on():
+        return
+    address = auth.client_ip(request)
+    if auth.ip_allowed(address):
+        return
+    log.warning("Blocked sign-in attempt from %s (IP rules)", address or "unknown")
+    raise HTTPException(status_code=403,
+                        detail="Sign-in is not allowed from this network.")
+
+
+# Failed sign-ins worth telling an admin about. Keyed like the throttle above
+# (address|username) so one noisy source cannot mail repeatedly: after an alert
+# that source stays quiet for RMM_LOGIN_ALERT_QUIET minutes.
+_login_alerted: dict[str, float] = {}
+
+
+def _security_recipients() -> list[str]:
+    """Who hears about a suspicious sign-in: the configured alert addresses,
+    otherwise every global admin we can put an address to."""
+    configured = {e.strip() for e in os.environ.get("RMM_ALERT_RECIPIENTS", "").split(",")
+                  if e.strip()}
+    if configured:
+        return sorted(configured)
+    people = set(auth.BOOTSTRAP_ADMINS)
+    try:
+        for u in db.list_users():
+            if u.get("is_admin") and u.get("email"):
+                people.add(u["email"])
+    except Exception:
+        pass
+    return sorted(people)
+
+
+def _maybe_alert_login_failures(request: Request, username: str, key: str) -> None:
+    """Mail the admins once a source crosses the configured failure threshold."""
+    if os.environ.get("RMM_LOGIN_ALERT", "0") != "1":
+        return
+    try:
+        threshold = max(int(os.environ.get("RMM_LOGIN_ALERT_FAILS", "5")), 1)
+        quiet = max(float(os.environ.get("RMM_LOGIN_ALERT_QUIET", "15")), 0) * 60
+    except ValueError:
+        threshold, quiet = 5, 900
+    now = time.time()
+    if len(_login_fails.get(key, [])) < threshold:
+        return
+    if now - _login_alerted.get(key, 0.0) < quiet:
+        return                      # already reported this source recently
+    _login_alerted[key] = now
+    for stale in [k for k, t in _login_alerted.items() if now - t > 86400]:
+        _login_alerted.pop(stale, None)
+    recipients = _security_recipients()
+    if not recipients:
+        return
+    address = auth.client_ip(request) or "unknown"
+    attempts = len(_login_fails.get(key, []))
+    window = int(LOGIN_WINDOW / 60)
+    from html import escape as _esc
+    body = mailer.shell(
+        mailer.status_block(
+            "Repeated failed sign-ins",
+            f"<p><b>{attempts}</b> failed sign-in attempts for "
+            f"<b>{_esc(username or 'an unknown account')}</b> "
+            f"from <b>{_esc(address)}</b> within {window} minutes.</p>"
+            "<p>Further attempts from this source are being throttled. If this "
+            "wasn't someone in your team mistyping a password, consider adding "
+            "the address to the block list in <b>Settings &rarr; Security</b>.</p>",
+            kind="warn"))
+    try:
+        mailer.send_mail("[RMM] Repeated failed sign-ins", body, recipients)
+    except Exception as exc:  # noqa: BLE001 -- a mail failure must not break login
+        log.warning("Could not send the failed-sign-in alert: %r", exc)
 
 
 def _login_throttled(key: str) -> bool:
@@ -595,12 +676,16 @@ def _login_throttled(key: str) -> bool:
     return len(arr) >= LOGIN_MAX_FAILS
 
 
-def _record_login_fail(key: str) -> None:
+def _record_login_fail(key: str, request: Request | None = None,
+                       username: str = "") -> None:
     _login_fails.setdefault(key, []).append(time.time())
+    if request is not None:
+        _maybe_alert_login_failures(request, username, key)
 
 
 @app.post("/api/auth/local-login")
 async def local_login(request: Request):
+    _guard_ip(request)
     if not auth.LOCAL_ENABLED:
         raise HTTPException(status_code=403, detail="Local sign-in is disabled")
     data = await request.json()
@@ -612,7 +697,7 @@ async def local_login(request: Request):
     try:
         u = auth.verify_local(username, data.get("password") or "")
     except HTTPException:
-        _record_login_fail(key)
+        _record_login_fail(key, request, username)
         raise
     # Second factor (TOTP, or a single-use recovery code) if enabled.
     if u.get("totp_enabled"):
@@ -623,7 +708,7 @@ async def local_login(request: Request):
         ok = totp.verify(u.get("totp_secret") or "", code) or \
             db.consume_recovery_code(u["username"], code)
         if not ok:
-            _record_login_fail(key)
+            _record_login_fail(key, request, username)
             raise HTTPException(status_code=401, detail="Invalid authentication or recovery code")
     _login_fails.pop(key, None)
     db.touch_user(u["username"])
@@ -713,6 +798,7 @@ def me(user: dict = Depends(auth.current_user)):
 @app.post("/api/auth/app-token")
 async def app_token(request: Request):
     """Exchange credentials (or a hand-off ticket) for a desktop-console token."""
+    _guard_ip(request)
     data = await request.json()
     ticket = (data.get("ticket") or "").strip()
     if ticket:
@@ -736,7 +822,7 @@ async def app_token(request: Request):
         try:
             u = auth.verify_local(username, data.get("password") or "")
         except HTTPException:
-            _record_login_fail(key)
+            _record_login_fail(key, request, username)
             raise
         if u.get("totp_enabled"):
             code = (data.get("code") or "").strip()
@@ -744,7 +830,7 @@ async def app_token(request: Request):
                 return JSONResponse({"mfa_required": True}, status_code=200)
             ok = totp.verify(u.get("totp_secret") or "", code) or                 db.consume_recovery_code(u["username"], code)
             if not ok:
-                _record_login_fail(key)
+                _record_login_fail(key, request, username)
                 raise HTTPException(status_code=401,
                                     detail="Invalid authentication or recovery code")
         _login_fails.pop(key, None)
@@ -2426,6 +2512,7 @@ def api_auth(request: Request) -> dict:
     raw = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
     if not raw:
         raw = (request.headers.get("x-api-key") or "").strip()
+    _guard_ip(request)
     key = db.resolve_api_key(raw) if raw else None
     if not key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
@@ -3980,12 +4067,11 @@ def index(request: Request):
         data = auth.read_cookie(raw) if raw else None
         if not data:
             return RedirectResponse("/auth/login")
-        # Enforce 2FA enrolment for local accounts when the policy is on.
-        if auth.LOCAL_ENABLED and \
-                os.environ.get("RMM_ENFORCE_2FA", "").lower() in ("1", "true", "yes"):
-            u = db.get_user(data.get("email", ""))
-            if u and not u.get("totp_enabled"):
-                return RedirectResponse("/account.html#enroll-2fa")
+        # Enforce enrolment when the policy is on. This covers Microsoft 365
+        # identities as well as password accounts -- the workspace can require
+        # its own second factor on top of the tenant's.
+        if auth.needs_2fa_enrolment(data.get("email", "")):
+            return RedirectResponse("/account.html#enroll-2fa")
     return _serve_html("index.html")
 
 
@@ -4139,6 +4225,8 @@ SETTINGS_KEYS = [
     "GRAPH_FROM", "RMM_SERVER_NAME", "RMM_SECURE_COOKIES", "RMM_ENFORCE_2FA",
     "RMM_REQUIRE_APPROVAL", "RMM_REQUIRE_DEVICE_SECRET", "RMM_AUTO_UPDATE_AGENTS",
     "RMM_CPU_TEMP_DRIVER", "RMM_SYNOLOGY_SOURCE", "RMM_UNIFI", "RMM_ALERT_RECIPIENTS",
+    "RMM_IP_ALLOW", "RMM_IP_DENY", "RMM_TRUST_PROXY",
+    "RMM_LOGIN_ALERT", "RMM_LOGIN_ALERT_FAILS", "RMM_LOGIN_ALERT_QUIET",
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS",
     "MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_REDIRECT_URI",
 ]
@@ -4154,6 +4242,23 @@ def get_settings(user: dict = Depends(auth.current_user)):
     out["RMM_AUTH_MODE"] = auth.AUTH_MODE
     out["RMM_VERSION"] = SERVER_VERSION
     return out
+
+
+@app.get("/api/my-ip")
+def my_ip(request: Request, user: dict = Depends(auth.current_user)):
+    """The address this admin is arriving from, as the IP rules see it.
+
+    Behind a proxy the answer is the giveaway that RMM_TRUST_PROXY needs to be
+    on: without it every caller looks like the proxy, and an allow list written
+    against real client addresses would refuse everyone.
+    """
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Global admin required")
+    return {"ip": auth.client_ip(request),
+            "direct": request.client.host if request.client else "",
+            "forwarded_for": request.headers.get("x-forwarded-for", ""),
+            "trust_proxy": os.environ.get("RMM_TRUST_PROXY", "0") == "1",
+            "filtering": auth.ip_filtering_on()}
 
 
 @app.get("/api/server-fingerprint")
@@ -4274,6 +4379,26 @@ async def save_settings(request: Request, user: dict = Depends(auth.current_user
     if not user["is_global_admin"]:
         raise HTTPException(status_code=403, detail="Global admin required")
     data = await request.json()
+    # An allow list that leaves out the address you are sitting at would lock
+    # you out of the very page that could undo it.
+    if "RMM_IP_ALLOW" in data or "RMM_IP_DENY" in data:
+        pending_allow = str(data.get("RMM_IP_ALLOW", os.environ.get("RMM_IP_ALLOW", "")))
+        pending_deny = str(data.get("RMM_IP_DENY", os.environ.get("RMM_IP_DENY", "")))
+        bad = auth.ip_rules_invalid(pending_allow) + auth.ip_rules_invalid(pending_deny)
+        if bad:
+            raise HTTPException(status_code=400,
+                                detail="Not a valid address or range: " + ", ".join(bad[:4]))
+        here = auth.client_ip(request)
+        saved_allow, saved_deny = os.environ.get("RMM_IP_ALLOW", ""), os.environ.get("RMM_IP_DENY", "")
+        os.environ["RMM_IP_ALLOW"], os.environ["RMM_IP_DENY"] = pending_allow, pending_deny
+        locked_out = not auth.ip_allowed(here)
+        os.environ["RMM_IP_ALLOW"], os.environ["RMM_IP_DENY"] = saved_allow, saved_deny
+        if locked_out:
+            where = here or "an unknown address"
+            raise HTTPException(
+                status_code=400,
+                detail="These rules would lock you out: you are connecting from "
+                       f"{where}, which they do not allow.")
     saved = {}
     for key, value in data.items():
         if key in SETTINGS_KEYS and value is not None:
@@ -4322,11 +4447,21 @@ def account(user: dict = Depends(auth.current_user)):
 
 
 def _local_self(user: dict) -> dict:
-    if not auth.LOCAL_ENABLED:
-        raise HTTPException(status_code=400, detail="Two-factor applies to local accounts only")
+    u = db.get_user(user["email"])
+    if u:
+        return u
+    if not auth.enforce_2fa():
+        raise HTTPException(status_code=404, detail="No local account for this identity")
+    # Enforced 2FA for an identity that has only ever signed in through
+    # Microsoft: create the row that holds its secret and recovery codes. The
+    # password is random and never used -- sign-in still goes through the
+    # identity provider.
+    import secrets as _secrets
+    db.create_user(user["email"], _secrets.token_urlsafe(32),
+                   is_admin=user.get("is_global_admin", False), email=user["email"])
     u = db.get_user(user["email"])
     if not u:
-        raise HTTPException(status_code=404, detail="No local account for this identity")
+        raise HTTPException(status_code=500, detail="Could not prepare the account for 2FA")
     return u
 
 

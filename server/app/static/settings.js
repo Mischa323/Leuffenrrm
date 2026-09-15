@@ -239,9 +239,9 @@ function render() {
          <div class="frow"><label>Client secret</label><input class="inp mono" type="password" id="ms-secret" value="${esc(cfg.MS_CLIENT_SECRET || "")}" /></div>
          <div class="frow"><label>Redirect URI</label><input class="inp mono" id="ms-redirect" value="${esc(cfg.MS_REDIRECT_URI || (location.origin + "/auth/callback"))}" /><div class="hint">Must match the redirect URI registered in your Entra app.</div></div>
          <div id="sso-validation-msg" style="display:none;color:var(--bad);font-size:12.5px;margin-top:8px"></div>`, "auth-sso")}
-      ${block("Two-factor authentication", "Time-based one-time codes (TOTP) for local accounts.",
-        `${toggle("enforce2fa", "Require 2FA for local accounts", "Local users are prompted to set up an authenticator before they can use the dashboard.", (cfg.RMM_ENFORCE_2FA ?? "0") === "1")}
-         <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Per-user enrolment</div><div class="cd">Each user enables 2FA under <b>Account → Password</b>. ${authMethod === "local" ? "" : "Switch to local accounts to use this — SSO 2FA is managed in your identity provider."}</div></div></div>`, "auth-mfa")}
+      ${block("Two-factor authentication", "Time-based one-time codes (TOTP), on top of whatever the sign-in method already asks for.",
+        `${toggle("enforce2fa", "Require two-factor for everyone", "Nobody reaches the dashboard until they have set up an authenticator — Microsoft 365 users included.", (cfg.RMM_ENFORCE_2FA ?? "0") === "1")}
+         <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">How enrolment works</div><div class="cd">Anyone without an authenticator is sent to <b>Account → Password</b> to set one up before they can go further; they can enable it there at any time themselves. ${authMethod === "local" ? "" : "This applies to <b>Microsoft 365</b> sign-ins as well, so those people enter a code here in addition to your tenant's own MFA. Turn it off if the tenant already covers you."}</div></div></div>`, "auth-mfa")}
     </section>
 
     <section class="sec" data-sec="alerts">
@@ -286,6 +286,23 @@ function render() {
         `<div class="segmented" id="tls-seg"></div><div id="tls-extra" style="margin-top:4px"></div>`, "security-tls")}
       ${block("Session & access", "",
         `${toggle("secureCookies", "Secure cookies", "Only send session cookies over HTTPS. Disable only behind a TLS-terminating proxy on a trusted network.", secure)}`, "security-session")}
+      ${block("Sign-in from these networks", "Which addresses may reach the sign-in page, the desktop console and the /api/v1 integration API.",
+        `<div class="frow"><label>Allow list</label>
+           <textarea class="inp mono" id="ip-allow" rows="4" spellcheck="false" placeholder="203.0.113.0/24&#10;198.51.100.7   # thuiswerkplek">${esc(cfg.RMM_IP_ALLOW || "")}</textarea>
+           <div class="hint">One address or range (CIDR) per line; <code>#</code> starts a comment. <b>Empty means everywhere is allowed.</b> As soon as it has one entry, only those addresses can sign in.</div></div>
+         <div class="frow"><label>Block list</label>
+           <textarea class="inp mono" id="ip-deny" rows="3" spellcheck="false" placeholder="203.0.113.66">${esc(cfg.RMM_IP_DENY || "")}</textarea>
+           <div class="hint">Always refused, even when the allow list would let them in.</div></div>
+         ${toggle("trustProxy", "This server sits behind a reverse proxy", "Take the caller's address from X-Forwarded-For. Only turn this on if a proxy you control sets that header \u2014 otherwise anyone can claim any address.", (cfg.RMM_TRUST_PROXY ?? "0") === "1")}
+         <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">You are connecting from <b class="mono" id="my-ip">\u2026</b></div><div class="cd"><b>Agents are never filtered</b>, so a mistyped rule cannot take your fleet offline. Rules that would shut you out are refused when you save. Sessions already signed in are not cut off \u2014 this decides where someone may sign in <i>from</i>.</div></div></div>`, "security-ip")}
+      ${block("Failed sign-in alerts", "Mail the administrators when someone keeps failing to sign in.",
+        `${toggle("loginAlert", "Email on repeated failures", "Sent to your alert recipients, or to every global admin if none are configured.", (cfg.RMM_LOGIN_ALERT ?? "0") === "1")}
+         <div class="frow"><label>Alert after</label>
+           <input class="inp" id="la-fails" type="number" min="1" max="50" style="max-width:120px" value="${esc(cfg.RMM_LOGIN_ALERT_FAILS || "5")}" />
+           <div class="hint">Counted per address <i>and</i> account, within the same window sign-in throttling uses — so one person mistyping their password twice never mails anyone.</div></div>
+         <div class="frow"><label>Then stay quiet for</label>
+           <input class="inp" id="la-quiet" type="number" min="0" max="1440" style="max-width:120px" value="${esc(cfg.RMM_LOGIN_ALERT_QUIET || "15")}" />
+           <div class="hint">Minutes before that same source can trigger another email, so a sustained attack does not fill your inbox.</div></div>`, "security-alerts")}
       ${block("Agent certificate pinning", "Pin this server's TLS certificate on agents so even a self-signed deployment is safe against man-in-the-middle.",
         `<div id="cert-fp" class="muted">Loading fingerprint…</div>`, null)}
       ${block("Device identity", "On by default for new installs. Safe to enable once your whole fleet runs an agent that supports it (v2.2.x+) — older agents that can't present a secret will be rejected.",
@@ -384,6 +401,22 @@ POST /api/v1/devices/{id}/reboot</div>
   buildAppearance();
   wire();
   loadIntegrations();
+  showMyIp();
+}
+
+// The rules are only useful if you can see which address you are judged by --
+// especially behind a proxy, where the wrong answer here is the giveaway that
+// "behind a reverse proxy" needs turning on.
+async function showMyIp() {
+  const el = $("my-ip");
+  if (!el) return;
+  try {
+    const r = await api("/api/my-ip");
+    el.textContent = r.ip || "an unknown address";
+    el.title = r.trust_proxy ? "Taken from X-Forwarded-For" : "The direct connection's address";
+  } catch {
+    el.textContent = "unknown";
+  }
 }
 
 /* ---- integrations: API keys + webhooks (global admin) ---------------------
@@ -1074,6 +1107,20 @@ function onSave(which) {
     }
     msg.style.display = "none";
     return saveKeys({ MS_TENANT_ID: $("ms-tenant").value, MS_CLIENT_ID: $("ms-client").value, MS_CLIENT_SECRET: $("ms-secret").value, MS_REDIRECT_URI: $("ms-redirect").value }, "SSO credentials saved — restart to apply");
+  }
+  if (which === "security-ip") {
+    return saveKeys({
+      RMM_IP_ALLOW: $("ip-allow").value,
+      RMM_IP_DENY: $("ip-deny").value,
+      RMM_TRUST_PROXY: document.querySelector('[data-toggle="trustProxy"]').classList.contains("on") ? "1" : "0",
+    }, "Network rules saved");
+  }
+  if (which === "security-alerts") {
+    return saveKeys({
+      RMM_LOGIN_ALERT: document.querySelector('[data-toggle="loginAlert"]').classList.contains("on") ? "1" : "0",
+      RMM_LOGIN_ALERT_FAILS: $("la-fails").value || "5",
+      RMM_LOGIN_ALERT_QUIET: $("la-quiet").value || "15",
+    }, "Failed sign-in alerts saved");
   }
   if (which === "auth-mfa") return saveKeys({ RMM_ENFORCE_2FA: document.querySelector('[data-toggle="enforce2fa"]').classList.contains("on") ? "1" : "0" }, "Two-factor policy saved");
   if (which === "alerts-delivery") {
