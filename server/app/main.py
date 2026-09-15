@@ -3488,89 +3488,86 @@ Write-Host "Leuffen RMM agent installed."
 """
 
 
-# The agent (incl. the MSI) is built and released from the dedicated agent repo;
-# the server only proxies the latest release. Override with RMM_MSI_URL /
-# RMM_GH_REPO if you fork or self-host the agent build.
-MSI_URL = os.environ.get(
-    "RMM_MSI_URL",
-    "https://github.com/Mischa323/leuffen-rmm-agent/releases/latest/download/leuffen-rmm-agent.msi")
+# The agent and the desktop console are both built and released from the agent
+# repo, but under separate tag prefixes (`v*` and `console-v*`). "The latest
+# release" is therefore NOT necessarily the latest *agent* release: publishing a
+# console build used to make `releases/latest/download/leuffen-rmm-agent.msi`
+# point at a release that has no such asset, 404-ing every agent download and
+# auto-update. Each download is now resolved by **asset name** instead — the
+# newest release that actually carries it.
+#
+# Override with RMM_MSI_URL / RMM_CONSOLE_MSI_URL / RMM_GH_REPO for a fork or a
+# private/self-hosted build.
 GH_REPO = os.environ.get("RMM_GH_REPO", "Mischa323/leuffen-rmm-agent")
-_release_cache: dict = {"t": 0.0, "data": None}
+AGENT_MSI_NAME = "leuffen-rmm-agent.msi"
+CONSOLE_MSI_NAME = "leuffen-rmm-console.msi"
+MSI_URL = os.environ.get("RMM_MSI_URL", "")
+CONSOLE_MSI_URL = os.environ.get("RMM_CONSOLE_MSI_URL", "")
+# Last resort when the GitHub API can't be reached. It is only correct while the
+# newest release happens to be the one being asked for — the very case the
+# resolver exists to handle — so it is a fallback, never the primary path.
+_LATEST_FALLBACK = "https://github.com/{repo}/releases/latest/download/{asset}"
+_release_cache: dict[str, dict] = {}
+
+
+async def _release_with_asset(asset_name: str) -> dict:
+    """Newest published release carrying ``asset_name``, plus its download URL."""
+    cached = _release_cache.get(asset_name)
+    if cached and time.time() - cached["t"] < 120:
+        return cached["data"]
+    out: dict = {"available": False}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(f"https://api.github.com/repos/{GH_REPO}/releases",
+                                 params={"per_page": 30},
+                                 headers={"Accept": "application/vnd.github+json"})
+        if r.status_code == 200:
+            for rel in r.json():
+                if rel.get("draft"):
+                    continue
+                asset = next((a for a in rel.get("assets", [])
+                              if a.get("name") == asset_name), None)
+                if not asset:
+                    continue
+                tag = rel.get("tag_name") or ""
+                out = {"available": True,
+                       "url": asset["browser_download_url"],
+                       "name": rel.get("name") or tag,
+                       "tag": tag,
+                       # `v2.2.42` and `console-v1.0.1` both reduce to the number.
+                       "version": tag.split("-v")[-1].lstrip("v"),
+                       "published_at": rel.get("published_at"),
+                       "size": asset.get("size")}
+                break
+    except Exception:
+        pass
+    _release_cache[asset_name] = {"t": time.time(), "data": out}
+    return out
+
+
+def _download_url(resolved: dict, override: str, asset_name: str) -> str:
+    return override or resolved.get("url") or         _LATEST_FALLBACK.format(repo=GH_REPO, asset=asset_name)
 
 
 @app.get("/api/agent-release")
 async def agent_release(user: dict = Depends(auth.current_user)):
     """Latest published Windows agent build (name/version, size, date) for the UI."""
-    if not (_release_cache["data"] and time.time() - _release_cache["t"] < 60):
-        import httpx
-        out = {"available": False, "agent_version": AGENT_VERSION}
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                r = await client.get(f"https://api.github.com/repos/{GH_REPO}/releases/latest",
-                                     headers={"Accept": "application/vnd.github+json"})
-            if r.status_code == 200:
-                d = r.json()
-                asset = next((a for a in d.get("assets", []) if a["name"].endswith(".msi")), None)
-                out = {"available": bool(asset), "agent_version": AGENT_VERSION,
-                       "name": d.get("name") or d.get("tag_name"),
-                       "tag": d.get("tag_name"), "published_at": d.get("published_at"),
-                       "size": asset["size"] if asset else None}
-        except Exception:
-            pass
-        _release_cache.update(t=time.time(), data=out)
-       # Always report the current agent version (re-resolved each request) so the
+    data = {k: v for k, v in (await _release_with_asset(AGENT_MSI_NAME)).items()
+            if k != "url"}
+    # Always report the current agent version (re-resolved each request) so the
     # UI's "Latest" never goes stale between releases, even without a restart.
-    data = dict(_release_cache["data"] or {})
     data["agent_version"] = _resolve_agent_version()
     return JSONResponse(data, headers={"Cache-Control": "no-store"})
 
 
 # --------------------------------------------------------------------------- #
 # Desktop console download
-#
-# The technician-side console ships from the same agent repo, but under its own
-# `console-v*` tags — so "latest release" may well be an agent build. Walk the
-# recent releases and take the newest one that actually carries the console MSI.
 # --------------------------------------------------------------------------- #
-CONSOLE_MSI_URL = os.environ.get("RMM_CONSOLE_MSI_URL", "")
-CONSOLE_MSI_NAME = "leuffen-rmm-console.msi"
-_console_cache: dict = {"t": 0.0, "data": None}
-
-
 async def _console_release() -> dict:
-    if _console_cache["data"] and time.time() - _console_cache["t"] < 120:
-        return _console_cache["data"]
-    out: dict = {"available": False}
     if CONSOLE_MSI_URL:                      # self-hosted / private build
-        out = {"available": True, "url": CONSOLE_MSI_URL, "name": "Leuffen RMM Console"}
-    else:
-        import httpx
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                r = await client.get(f"https://api.github.com/repos/{GH_REPO}/releases",
-                                     params={"per_page": 30},
-                                     headers={"Accept": "application/vnd.github+json"})
-            if r.status_code == 200:
-                for rel in r.json():
-                    if rel.get("draft"):
-                        continue
-                    asset = next((a for a in rel.get("assets", [])
-                                  if a.get("name") == CONSOLE_MSI_NAME), None)
-                    if not asset:
-                        continue
-                    tag = rel.get("tag_name") or ""
-                    out = {"available": True,
-                           "url": asset["browser_download_url"],
-                           "name": rel.get("name") or tag,
-                           "tag": tag,
-                           "version": tag[len("console-v"):] if tag.startswith("console-v") else tag.lstrip("v"),
-                           "published_at": rel.get("published_at"),
-                           "size": asset.get("size")}
-                    break
-        except Exception:
-            pass
-    _console_cache.update(t=time.time(), data=out)
-    return out
+        return {"available": True, "url": CONSOLE_MSI_URL, "name": "Leuffen RMM Console"}
+    return await _release_with_asset(CONSOLE_MSI_NAME)
 
 
 @app.get("/api/console-release")
@@ -3604,7 +3601,7 @@ async def install_msi(org_id: str, token: str | None = Query(None),
     through the reverse proxy was slow/heavy enough that the connection dropped
     before the client got a response ("remote end closed connection without
     response"). The release repo is public, so the client fetches it directly
-    from GitHub's CDN. (Override MSI_URL for a private/self-hosted build.)
+    from GitHub's CDN. (Override RMM_MSI_URL for a private/self-hosted build.)
     """
     authed = False
     if token:
@@ -3615,7 +3612,9 @@ async def install_msi(org_id: str, token: str | None = Query(None),
             raise HTTPException(status_code=401,
                                 detail="A valid token (?token=) or an admin session is required")
         _org_from_request(org_id, user)
-    return RedirectResponse(MSI_URL, status_code=302)
+    rel = await _release_with_asset(AGENT_MSI_NAME)
+    return RedirectResponse(_download_url(rel, MSI_URL, AGENT_MSI_NAME),
+                            status_code=302)
 
 
 @app.get("/api/orgs/{org_id}/install.cmd")
