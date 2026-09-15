@@ -77,6 +77,22 @@ class ProgramSettingsRequest(BaseModel):
     autoupdate: bool = False
 
 
+# -- Integrations (ticketing / external tools) ------------------------------- #
+class ApiKeyCreateRequest(BaseModel):
+    name: str
+
+
+class WebhookCreateRequest(BaseModel):
+    name: str
+    url: str
+    events: str = "*"          # comma list (alert.raised, alert.cleared) or '*'
+
+
+class ApiRunScriptRequest(BaseModel):
+    script_id: str
+    timeout: float = 300
+
+
 class ScriptRunRequest(BaseModel):
     device_id: str
     timeout: float = 120

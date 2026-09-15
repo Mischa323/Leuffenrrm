@@ -21,6 +21,25 @@ from html import escape as _esc
 from . import database as db, mailer
 from .manager import manager
 
+# Alert events queued during evaluate_once() for the async alert loop to deliver
+# to outbound webhooks (_apply is sync and can't do the HTTP itself).
+_webhook_events: list = []
+
+
+def _queue_webhook(event: str, dev: dict, rule: str, severity: str, meta: dict | None) -> None:
+    _webhook_events.append({
+        "event": event, "device_id": dev.get("id"), "org_id": dev.get("org_id"),
+        "hostname": dev.get("hostname"), "rule": rule, "severity": severity,
+        "name": (meta or {}).get("name"), "metric": (meta or {}).get("metric"),
+        "detail": (meta or {}).get("detail"), "ts": time.time(),
+    })
+
+
+def drain_webhook_events() -> list:
+    global _webhook_events
+    out, _webhook_events = _webhook_events, []
+    return out
+
 
 def _default_recipients() -> list[str]:
     return [e.strip() for e in os.environ.get("RMM_ALERT_RECIPIENTS", "").split(",") if e.strip()]
@@ -419,6 +438,7 @@ def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
         if cur != "raised":
             db.set_alert_state(dev["id"], rule, "raised", now, now)
             log.info("ALERT raised: %s %s", dev["hostname"], rule)
+            _queue_webhook("alert.raised", dev, rule, severity, meta)
             if notify:
                 mailer.send_mail(f"[RMM] {tag}{subject}",
                                  mailer.status_block(subject, f"<p style='margin:0'>{body}</p>", kind),
@@ -429,6 +449,7 @@ def _apply(dev: dict, rule: str, raised: bool, recipients: list[str],
         if cur == "raised":
             db.set_alert_state(dev["id"], rule, "ok", None, None)
             log.info("ALERT cleared: %s %s", dev["hostname"], rule)
+            _queue_webhook("alert.cleared", dev, rule, severity, meta)
             if meta:
                 db.add_incident(dev["id"], dev.get("org_id"), meta.get("id"),
                                 meta.get("name") or subject, meta.get("metric"),

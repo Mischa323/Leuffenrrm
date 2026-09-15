@@ -27,12 +27,13 @@ from . import wol as wol_local
 from .manager import manager
 from .models import UnifiAccountRequest
 from .models import (AccessGroupMemberRequest, AccessGroupOrgRequest, AccessGroupPermRequest,
-                     AccessGroupRequest, GroupRequest, InstallProgramsRequest, InviteRequest,
+                     AccessGroupRequest, ApiKeyCreateRequest, ApiRunScriptRequest,
+                     GroupRequest, InstallProgramsRequest, InviteRequest,
                      MonitorRequest, MonitorRuleRequest, MoveDeviceRequest, MoveOrgRequest,
                      NotifyRequest, OrgRequest, OrgUserRequest, PowerRequest, ProgramSettingsRequest,
                      ScheduleRequest, ScriptFileRequest, ScriptRequest, ScriptRunRequest,
                      ShellRequest, SubnetRequest, UpdateProgramsRequest, UserUpdateRequest,
-                     WakeRequest)
+                     WakeRequest, WebhookCreateRequest)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("rmm")
@@ -337,6 +338,11 @@ async def _alert_loop() -> None:
                 log.info("auto-remediation for %r ran on %s", r["rule_name"], r["device_id"])
             except Exception as exc:  # pragma: no cover
                 log.warning("auto-remediation on %s failed: %s", r["device_id"], exc)
+        # Deliver the alert events this evaluation queued to any webhooks.
+        try:
+            await _deliver_webhooks(alerts.drain_webhook_events())
+        except Exception as exc:  # pragma: no cover
+            log.warning("webhook delivery error: %s", exc)
 
 
 async def _poll_unifi_account(acct: dict) -> None:
@@ -2399,6 +2405,206 @@ async def _programs_autoupdate_loop() -> None:
         except Exception as exc:  # pragma: no cover
             log.warning("programs auto-update loop error: %s", exc)
         await asyncio.sleep(3600)  # re-check hourly
+
+
+# --------------------------------------------------------------------------- #
+# Integrations — inbound REST API (key-authed, /api/v1) + outbound webhooks.
+# Lets any ticket system pull devices/alerts, act (run script / reboot), and
+# receive signed event webhooks to open/close tickets.
+# --------------------------------------------------------------------------- #
+def api_auth(request: Request) -> dict:
+    """Authenticate an inbound integration call: `Authorization: Bearer <key>` or
+    `X-API-Key: <key>`. Returns the key record (org_id scope; None = all orgs)."""
+    hdr = request.headers.get("authorization") or ""
+    raw = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
+    if not raw:
+        raw = (request.headers.get("x-api-key") or "").strip()
+    key = db.resolve_api_key(raw) if raw else None
+    if not key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    return key
+
+
+def _api_scope_orgs(key: dict) -> list[str]:
+    return [key["org_id"]] if key.get("org_id") else [o["id"] for o in db.list_orgs()]
+
+
+def _api_device(device_id: str, key: dict) -> dict:
+    dev = db.get_device(device_id)
+    if not dev or (key.get("org_id") and dev["org_id"] != key["org_id"]):
+        raise HTTPException(status_code=404, detail="Device not found")
+    return dev
+
+
+def _api_device_public(d: dict, org: dict | None, online: set[str]) -> dict:
+    return {"id": d["id"], "hostname": d["hostname"], "online": _display_online(d, online),
+            "os": d.get("os"), "os_kind": d.get("os_kind"), "ip": d.get("ip"),
+            "mac": d.get("mac"), "agent_version": d.get("agent_version"),
+            "last_seen": d.get("last_seen"),
+            "org": {"id": org["id"], "name": org["name"]} if org else None}
+
+
+@app.get("/api/v1/devices")
+def api_v1_devices(key: dict = Depends(api_auth)):
+    online = manager.online_ids()
+    out = []
+    for oid in _api_scope_orgs(key):
+        org = db.get_org(oid)
+        for d in db.list_devices(oid):
+            out.append(_api_device_public(d, org, online))
+    return {"devices": out}
+
+
+@app.get("/api/v1/devices/{device_id}")
+def api_v1_device(device_id: str, key: dict = Depends(api_auth)):
+    dev = _api_device(device_id, key)
+    return _api_device_public(dev, db.get_org(dev["org_id"]), manager.online_ids())
+
+
+@app.get("/api/v1/alerts")
+def api_v1_alerts(key: dict = Depends(api_auth)):
+    out = []
+    for oid in _api_scope_orgs(key):
+        for a in db.list_raised_rule_alerts(oid):
+            out.append({"device_id": a["device_id"], "hostname": a.get("hostname"),
+                        "rule": a["rule"], "name": a.get("rule_name"),
+                        "severity": a.get("severity"), "since": a.get("since"), "org_id": oid})
+    return {"alerts": out}
+
+
+@app.post("/api/v1/devices/{device_id}/run-script")
+async def api_v1_run_script(device_id: str, req: ApiRunScriptRequest, key: dict = Depends(api_auth)):
+    dev = _api_device(device_id, key)
+    script = db.get_script(req.script_id)
+    if not script or script.get("org_id") not in (None, dev["org_id"]):
+        raise HTTPException(status_code=404, detail="Script not found")
+    if not manager.is_online(device_id):
+        raise HTTPException(status_code=409, detail="Device not connected")
+    return await _exec_script_on_device(script, device_id, timeout=req.timeout,
+                                        run_name=f"API: {script['name']}")
+
+
+@app.post("/api/v1/devices/{device_id}/reboot")
+async def api_v1_reboot(device_id: str, key: dict = Depends(api_auth)):
+    _api_device(device_id, key)
+    if not manager.is_online(device_id):
+        raise HTTPException(status_code=409, detail="Device not connected")
+    try:
+        return await manager.request(device_id, {"type": "power", "action": "reboot"})
+    except Exception as exc:
+        raise HTTPException(status_code=504, detail=str(exc))
+
+
+# ---- Management (cookie-authed, from the dashboard) ------------------------ #
+@app.get("/api/orgs/{org_id}/api-keys")
+def list_org_api_keys(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return db.list_api_keys(org_id)
+
+
+@app.post("/api/orgs/{org_id}/api-keys")
+def create_org_api_key(org_id: str, req: ApiKeyCreateRequest, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    import secrets as _secrets
+    raw = "lrmm_api_" + _secrets.token_urlsafe(30)
+    k = db.create_api_key(org_id, (req.name or "API key").strip() or "API key", raw)
+    k.pop("key_hash", None)
+    return {**k, "key": raw}   # the full key is returned ONCE, on creation
+
+
+@app.delete("/api/orgs/{org_id}/api-keys/{key_id}")
+def delete_org_api_key(org_id: str, key_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    db.delete_api_key(key_id, org_id)
+    return {"ok": True}
+
+
+@app.get("/api/orgs/{org_id}/webhooks")
+def list_org_webhooks(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return db.list_webhooks(org_id)
+
+
+@app.post("/api/orgs/{org_id}/webhooks")
+def create_org_webhook(org_id: str, req: WebhookCreateRequest, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    url = (req.url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="A valid http(s) URL is required")
+    import secrets as _secrets
+    return db.create_webhook(org_id, (req.name or "Webhook").strip() or "Webhook", url,
+                             "whsec_" + _secrets.token_urlsafe(24), (req.events or "*").strip() or "*")
+
+
+def _webhook_for_user(wid: str, user: dict) -> dict:
+    h = db.get_webhook(wid)
+    if not h:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    auth.require_org(user, h["org_id"])
+    return h
+
+
+@app.post("/api/webhooks/{wid}/toggle")
+def toggle_webhook(wid: str, user: dict = Depends(auth.current_user)):
+    h = _webhook_for_user(wid, user)
+    db.set_webhook_enabled(wid, not h["enabled"])
+    return {"enabled": not h["enabled"]}
+
+
+@app.delete("/api/webhooks/{wid}")
+def del_webhook(wid: str, user: dict = Depends(auth.current_user)):
+    _webhook_for_user(wid, user)
+    db.delete_webhook(wid)
+    return {"ok": True}
+
+
+@app.post("/api/webhooks/{wid}/test")
+async def test_webhook(wid: str, user: dict = Depends(auth.current_user)):
+    import hashlib, hmac, json, httpx
+    h = _webhook_for_user(wid, user)
+    payload = {"event": "test", "timestamp": time.time(),
+               "message": "Leuffen RMM webhook test", "organisation": {"id": h["org_id"]}}
+    body = json.dumps(payload).encode()
+    sig = hmac.new(h["secret"].encode(), body, hashlib.sha256).hexdigest()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(h["url"], content=body, headers={
+                "Content-Type": "application/json", "X-RMM-Event": "test",
+                "X-RMM-Signature": "sha256=" + sig})
+        return {"status": r.status_code, "ok": r.status_code < 400}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Delivery failed: {exc}")
+
+
+async def _deliver_webhooks(events: list[dict]) -> None:
+    """POST signed event JSON to matching webhooks (best-effort). Called by the
+    alert loop with the events drained from the last evaluation."""
+    if not events:
+        return
+    import hashlib, hmac, json, httpx
+    async with httpx.AsyncClient(timeout=10) as client:
+        for ev in events:
+            hooks = db.webhooks_for_event(ev.get("org_id"), ev["event"])
+            if not hooks:
+                continue
+            org = db.get_org(ev["org_id"]) if ev.get("org_id") else None
+            payload = {
+                "event": ev["event"], "timestamp": ev.get("ts"),
+                "organisation": {"id": ev.get("org_id"), "name": org["name"] if org else None},
+                "device": {"id": ev.get("device_id"), "hostname": ev.get("hostname")},
+                "alert": {"rule": ev.get("rule"), "name": ev.get("name"),
+                          "metric": ev.get("metric"), "severity": ev.get("severity"),
+                          "detail": ev.get("detail")},
+            }
+            body = json.dumps(payload).encode()
+            for h in hooks:
+                sig = hmac.new(h["secret"].encode(), body, hashlib.sha256).hexdigest()
+                try:
+                    await client.post(h["url"], content=body, headers={
+                        "Content-Type": "application/json", "X-RMM-Event": ev["event"],
+                        "X-RMM-Signature": "sha256=" + sig})
+                except Exception as exc:  # pragma: no cover
+                    log.warning("webhook delivery to %s failed: %s", h.get("url"), exc)
 
 
 def _build_monitor_rule(org_id: str | None, req: MonitorRuleRequest) -> dict:

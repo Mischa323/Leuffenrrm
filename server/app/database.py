@@ -435,6 +435,34 @@ CREATE TABLE IF NOT EXISTS monitor_rules (
     created_at       REAL NOT NULL,
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
+
+-- Integration API keys: a ticket system / external tool authenticates inbound
+-- REST calls with these (Bearer / X-API-Key). Only the SHA-256 hash is stored.
+CREATE TABLE IF NOT EXISTS api_keys (
+    id          TEXT PRIMARY KEY,
+    org_id      TEXT,               -- scope; NULL = all organisations (global)
+    name        TEXT NOT NULL,
+    key_hash    TEXT NOT NULL,      -- sha256 of the raw key
+    prefix      TEXT NOT NULL,      -- first chars, shown in the UI to identify it
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  REAL NOT NULL,
+    last_used   REAL,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+
+-- Outbound webhooks: RMM POSTs signed event JSON here (alert.raised/cleared, …)
+-- so a ticket system can open/close tickets.
+CREATE TABLE IF NOT EXISTS webhooks (
+    id          TEXT PRIMARY KEY,
+    org_id      TEXT,               -- scope; NULL = all organisations (global)
+    name        TEXT NOT NULL,
+    url         TEXT NOT NULL,
+    secret      TEXT NOT NULL,      -- HMAC-SHA256 signing secret
+    events      TEXT NOT NULL DEFAULT '*',   -- comma list, or '*' for all
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  REAL NOT NULL,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
 """
 
 
@@ -2293,6 +2321,108 @@ def raised_alert_keys(device_id: str) -> set[str]:
         "SELECT rule FROM alert_state WHERE device_id=? AND state='raised'", (device_id,)
     ).fetchall()
     return {r["rule"] for r in rows}
+
+
+# --------------------------------------------------------------------------- #
+# Integrations — API keys (inbound) + webhooks (outbound)
+# --------------------------------------------------------------------------- #
+def _hash_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def create_api_key(org_id: str | None, name: str, raw_key: str) -> dict:
+    kid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO api_keys (id, org_id, name, key_hash, prefix, enabled, created_at) "
+            "VALUES (?,?,?,?,?,1,?)",
+            (kid, org_id, name, _hash_key(raw_key), raw_key[:12], _now()))
+    return get_api_key(kid)
+
+
+def get_api_key(kid: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM api_keys WHERE id=?", (kid,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_api_keys(org_id: str) -> list[dict]:
+    rows = get_conn().execute(
+        "SELECT * FROM api_keys WHERE org_id=? ORDER BY created_at DESC", (org_id,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d.pop("key_hash", None)  # never expose the hash
+        out.append(d)
+    return out
+
+
+def delete_api_key(kid: str, org_id: str | None = None) -> None:
+    with write() as conn:
+        if org_id is None:
+            conn.execute("DELETE FROM api_keys WHERE id=?", (kid,))
+        else:
+            conn.execute("DELETE FROM api_keys WHERE id=? AND org_id=?", (kid, org_id))
+
+
+def resolve_api_key(raw: str) -> dict | None:
+    """Resolve an enabled API key by its raw value; bumps last_used. None if invalid."""
+    if not raw:
+        return None
+    row = get_conn().execute(
+        "SELECT * FROM api_keys WHERE key_hash=? AND enabled=1", (_hash_key(raw),)).fetchone()
+    if not row:
+        return None
+    with write() as conn:
+        conn.execute("UPDATE api_keys SET last_used=? WHERE id=?", (_now(), row["id"]))
+    return dict(row)
+
+
+def create_webhook(org_id: str | None, name: str, url: str, secret: str, events: str = "*") -> dict:
+    wid = uuid.uuid4().hex
+    with write() as conn:
+        conn.execute(
+            "INSERT INTO webhooks (id, org_id, name, url, secret, events, enabled, created_at) "
+            "VALUES (?,?,?,?,?,?,1,?)",
+            (wid, org_id, name, url, secret, events or "*", _now()))
+    return get_webhook(wid)
+
+
+def get_webhook(wid: str) -> dict | None:
+    row = get_conn().execute("SELECT * FROM webhooks WHERE id=?", (wid,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_webhooks(org_id: str) -> list[dict]:
+    rows = get_conn().execute(
+        "SELECT * FROM webhooks WHERE org_id=? ORDER BY created_at DESC", (org_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_webhook_enabled(wid: str, enabled: bool, org_id: str | None = None) -> None:
+    with write() as conn:
+        conn.execute("UPDATE webhooks SET enabled=? WHERE id=?" + ("" if org_id is None else " AND org_id=?"),
+                     ((1 if enabled else 0, wid) if org_id is None else (1 if enabled else 0, wid, org_id)))
+
+
+def delete_webhook(wid: str, org_id: str | None = None) -> None:
+    with write() as conn:
+        if org_id is None:
+            conn.execute("DELETE FROM webhooks WHERE id=?", (wid,))
+        else:
+            conn.execute("DELETE FROM webhooks WHERE id=? AND org_id=?", (wid, org_id))
+
+
+def webhooks_for_event(org_id: str | None, event: str) -> list[dict]:
+    """Enabled webhooks that should receive ``event`` for ``org_id`` (its own +
+    any global org_id IS NULL hooks), honouring each hook's event filter."""
+    rows = get_conn().execute(
+        "SELECT * FROM webhooks WHERE enabled=1 AND (org_id=? OR org_id IS NULL)", (org_id,)).fetchall()
+    out = []
+    for r in rows:
+        ev = (r["events"] or "*").strip()
+        if ev == "*" or event in [e.strip() for e in ev.split(",") if e.strip()]:
+            out.append(dict(r))
+    return out
 
 
 def list_raised_rule_alerts(org_id: str) -> list[dict]:
