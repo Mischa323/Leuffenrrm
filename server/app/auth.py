@@ -14,7 +14,8 @@ import logging
 import os
 
 from fastapi import HTTPException, Request
-from itsdangerous import BadData, URLSafeSerializer
+from itsdangerous import (BadData, SignatureExpired, URLSafeSerializer,
+                          URLSafeTimedSerializer)
 
 from . import database as db
 
@@ -183,7 +184,18 @@ def is_global_admin(identifier: str) -> bool:
 
 
 def current_user(request: Request) -> dict:
-    """FastAPI dependency: resolve the signed-in user or 401."""
+    """FastAPI dependency: resolve the signed-in user or 401.
+
+    Two credentials are accepted: the browser's signed session cookie, and the
+    desktop console's `Authorization: Bearer <app token>` (see "Desktop console
+    tokens" below)."""
+    raw_token = _bearer(request)
+    if raw_token:
+        as_token = user_from_token(raw_token)
+        if as_token:
+            return as_token
+        if not DEV_AUTH:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
     if DEV_AUTH:
         # Single-admin evaluation mode: the auto-signed-in user is a global admin.
         return {"email": DEV_USER, "is_global_admin": True}
@@ -245,3 +257,104 @@ def require_scope(user: dict, org_id: str | None) -> str:
         require_global(user)
         return "admin"
     return require_org(user, org_id)
+
+
+# --------------------------------------------------------------------------- #
+# Desktop console tokens
+#
+# The Windows desktop console (a native app, not a browser) can't carry the
+# signed session *cookie*, so it authenticates with a **bearer token**:
+#
+#   * `make_app_token()` mints a long-lived signed token. The console stores it
+#     and sends it as `Authorization: Bearer …` on REST calls and as `?token=`
+#     on the interactive WebSockets (browsers can't set WS headers, and neither
+#     can every WS client, so both forms are accepted).
+#   * `make_app_ticket()` mints a **short-lived, single-use** ticket that the
+#     signed-in dashboard hands to the `leuffenrmm://` deep link. The console
+#     exchanges it for a real token — which is how a Microsoft 365 SSO user signs
+#     the app in without ever typing a password into it.
+#
+# Both are signed with the same SESSION_SECRET, under their own salts, so a
+# session cookie can never be replayed as an app token (or vice versa).
+# --------------------------------------------------------------------------- #
+APP_TOKEN_DAYS = int(os.environ.get("RMM_APP_TOKEN_DAYS", "30"))
+APP_TICKET_SECONDS = int(os.environ.get("RMM_APP_TICKET_SECONDS", "120"))
+
+_app_serializer = URLSafeTimedSerializer(SESSION_SECRET, salt="rmm-app-token")
+_ticket_serializer = URLSafeTimedSerializer(SESSION_SECRET, salt="rmm-app-ticket")
+
+# Tickets are single-use: a redeemed nonce is remembered until it would have
+# expired anyway, so a deep-link URL captured from a log or shell history can't
+# be replayed. In-memory is enough (same single-process assumption as the
+# login rate limiter above).
+_used_tickets: dict[str, float] = {}
+
+
+def make_app_token(identity: str) -> str:
+    """Mint a desktop-console bearer token for ``identity`` (a local username or
+    an SSO email — whatever the session cookie would carry)."""
+    return _app_serializer.dumps({"u": identity})
+
+
+def read_app_token(raw: str) -> str | None:
+    """Return the identity carried by a bearer token, or None if it is invalid,
+    expired, or forged."""
+    try:
+        data = _app_serializer.loads(raw, max_age=APP_TOKEN_DAYS * 86400)
+    except (BadData, SignatureExpired):
+        return None
+    return data.get("u") if isinstance(data, dict) else None
+
+
+def make_app_ticket(identity: str) -> str:
+    """Mint a short-lived single-use ticket for the `leuffenrmm://` hand-off."""
+    import secrets as _secrets
+    return _ticket_serializer.dumps({"u": identity, "n": _secrets.token_urlsafe(9)})
+
+
+def read_app_ticket(raw: str) -> str | None:
+    """Redeem a hand-off ticket, returning the identity. Each ticket works once."""
+    import time as _time
+    try:
+        data = _ticket_serializer.loads(raw, max_age=APP_TICKET_SECONDS)
+    except (BadData, SignatureExpired):
+        return None
+    if not isinstance(data, dict):
+        return None
+    nonce = data.get("n") or ""
+    now = _time.monotonic()
+    for k, exp in list(_used_tickets.items()):       # prune
+        if exp < now:
+            _used_tickets.pop(k, None)
+    if nonce in _used_tickets:
+        return None                                   # already redeemed
+    _used_tickets[nonce] = now + APP_TICKET_SECONDS
+    return data.get("u")
+
+
+def _identity_still_valid(identity: str) -> bool:
+    """A token outlives the account it was minted for unless we check: a deleted
+    (or renamed) user's token must stop working immediately."""
+    if identity.lower() in BOOTSTRAP_ADMINS:
+        return True
+    try:
+        return db.get_user(identity) is not None
+    except Exception:
+        return False
+
+
+def user_from_token(raw: str | None) -> dict | None:
+    """Resolve a bearer token into the same user dict `current_user` returns."""
+    if not raw:
+        return None
+    identity = read_app_token(raw)
+    if not identity or not _identity_still_valid(identity):
+        return None
+    return {"email": identity, "is_global_admin": is_global_admin(identity)}
+
+
+def _bearer(request: Request) -> str | None:
+    """Pull the token out of an `Authorization: Bearer …` header."""
+    header = request.headers.get("authorization") or ""
+    scheme, _, value = header.partition(" ")
+    return value.strip() if scheme.lower() == "bearer" and value.strip() else None

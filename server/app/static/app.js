@@ -1228,12 +1228,17 @@ async function renderDownloads() {
   const ins = info.insecure_tls ? 1 : 0;
   let rel = { available: false };
   try { rel = await api(`/api/agent-release`); } catch {}
+  let con = { available: false };
+  try { con = await api(`/api/console-release`); } catch {}
   let au = { mode: "inherit", default: false, effective: false };
   try { au = await api(`/api/orgs/${state.org}/auto-update`); } catch {}
   let ctd = { mode: "inherit", default: false, effective: false };
   try { ctd = await api(`/api/orgs/${state.org}/cpu-temp-driver`); } catch {}
   let syno = { url: "", enabled: true };
   try { syno = await api(`/api/orgs/${state.org}/synology-source`); } catch {}
+  const conLabel = con.available
+    ? `<span class="badge ok" style="margin-left:8px">${escapeHtml(con.version || con.tag || "latest")}</span>${con.size ? ` <span class="h-sub">${(con.size / 1048576).toFixed(1)} MB${con.published_at ? " · " + new Date(con.published_at).toLocaleDateString() : ""}</span>` : ""}`
+    : `<span class="badge na" style="margin-left:8px">no build published yet</span>`;
   const relLabel = rel.available
     ? `<span class="badge ok" style="margin-left:8px">${escapeHtml(rel.name || rel.tag || "latest")}</span>${rel.size ? ` <span class="h-sub">${(rel.size / 1048576).toFixed(1)} MB${rel.published_at ? " · " + new Date(rel.published_at).toLocaleDateString() : ""}</span>` : ""}`
     : `<span class="badge na" style="margin-left:8px">no build published yet</span>`;
@@ -1245,6 +1250,11 @@ async function renderDownloads() {
     <div class="dl-block"><div class="lab">${ICON.windows} Windows — MSI installer ${relLabel}</div>
       <div style="margin:6px 0 8px"><a class="btn sm" href="${base}/api/orgs/${state.org}/install.msi">${ICON.download} Download MSI</a> <span class="h-sub">then install with the generated key</span></div>
       <div class="code">msiexec /i leuffen-rmm-agent.msi /qn RMM_SERVER_URL=${base} RMM_API_KEY=&lt;enrolment-key&gt; RMM_INSECURE_TLS=${ins}</div></div>
+    <div class="dl-block"><div class="lab">${ICON.desktop} Desktop console — for technicians ${conLabel}</div>
+      <div class="h-sub" style="margin:4px 0 10px">The native Windows app for remote control, terminal and file transfer. Install it on <b>your own</b> machine (not on managed devices) — the browser viewer keeps working either way, and each device's <b>Remote control</b> button can then open a session in the app instead.</div>
+      <div style="margin:6px 0 0">${con.available
+        ? `<a class="btn sm" href="${base}/api/console/install.msi">${ICON.download} Download the console</a> <span class="h-sub">signs in with your own account</span>`
+        : `<span class="h-sub">Publish the console workflow in the agent repo to make this download available.</span>`}</div></div>
     <div class="dl-block"><div class="lab">${ICON.refresh} Update installed agents</div>
       <div class="h-sub" style="margin:4px 0 10px">Push the latest build to every online agent in this organisation. Each updates in place and reconnects automatically.</div>
       <button class="btn sm" id="update-all">${ICON.download} Update all online agents</button>
@@ -2389,7 +2399,14 @@ function renderActions(d) {
   ];
   let html = `<div class="actions-grid">${acts.map((a, i) => `<button class="action ${a.c}" data-i="${i}"><span class="ai">${a.i}</span><span><span class="at">${a.t}</span><br><span class="ad">${a.d}</span></span></button>`).join("")}</div>`;
   if (d.online) html = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-      <button class="btn" style="justify-content:center;gap:8px" id="remote-btn">${ICON.monitor} Remote control</button>
+      <div style="display:flex;gap:2px;position:relative">
+        <button class="btn" style="flex:1;justify-content:center;gap:8px;border-top-right-radius:0;border-bottom-right-radius:0" id="remote-btn">${ICON.monitor} Remote control</button>
+        <button class="btn" style="padding:0 9px;border-top-left-radius:0;border-bottom-left-radius:0" id="remote-where" title="Choose where to open the session">${ICON.chevD}</button>
+        <div class="remote-menu hidden" id="remote-menu">
+          <button data-mode="browser">${ICON.monitor} In this browser</button>
+          <button data-mode="app">${ICON.desktop} In the desktop app</button>
+        </div>
+      </div>
       <button class="btn subtle" style="justify-content:center;gap:8px" id="shot-btn">${ICON.camera} Screenshot</button>
     </div>` + html;
   html += `<div class="sec-label">Agent</div><div class="tile"><div class="field" style="align-items:center">
@@ -2425,7 +2442,18 @@ function renderActions(d) {
       </div></div>`;
   $("dtab-actions").innerHTML = html;
   const remBtn = $("remote-btn");
-  if (remBtn) remBtn.onclick = () => window.open(`/remote/${d.id}`, "_blank");
+  if (remBtn) remBtn.onclick = () => openRemote(d.id);
+  const remWhere = $("remote-where"), remMenu = $("remote-menu");
+  if (remWhere && remMenu) {
+    remWhere.onclick = (e) => { e.stopPropagation(); remMenu.classList.toggle("hidden"); };
+    remMenu.querySelectorAll("button").forEach((b) => b.onclick = () => {
+      // Picking a target also makes it the default for the main button.
+      setRemoteMode(b.dataset.mode);
+      remMenu.classList.add("hidden");
+      openRemote(d.id, b.dataset.mode);
+    });
+    document.addEventListener("click", () => remMenu.classList.add("hidden"), { once: true });
+  }
   const shotBtn = $("shot-btn");
   if (shotBtn) shotBtn.onclick = () => openScreenshot();
   const delBtn = $("del-device-btn");
@@ -2494,6 +2522,42 @@ function cmpVer(a, b) {
   return 0;
 }
 function closeDrawer() { closeTerminal(); closeFiles(); closeScreenshot(); closeDeleteModal(); const d = $("drawer"); d.style.transform = "translateX(100%)"; setTimeout(() => d.classList.add("hidden"), 280); $("scrim").classList.add("hidden"); state.device = null; }
+
+/* ---------- remote control: browser viewer or desktop console ----------
+   Both drive the same `/api/devices/{id}/screen` bridge on the same server —
+   they are two front-ends for one session, not two features. The browser opens
+   /remote/{id} with its session cookie; the desktop console has no cookie jar,
+   so it is handed a **single-use ticket** through the `leuffenrmm://` scheme
+   the console's MSI registers. That also covers Microsoft 365 sign-in: the
+   browser did the authenticating, so no password is typed into the app. */
+const REMOTE_MODE_KEY = "rmm:remote-mode";
+function remoteMode() {
+  try { return localStorage.getItem(REMOTE_MODE_KEY) === "app" ? "app" : "browser"; }
+  catch { return "browser"; }
+}
+function setRemoteMode(mode) {
+  try { localStorage.setItem(REMOTE_MODE_KEY, mode === "app" ? "app" : "browser"); } catch {}
+}
+function openRemote(deviceId, mode) {
+  if ((mode || remoteMode()) === "app") openRemoteInApp(deviceId);
+  else window.open(`/remote/${deviceId}`, "_blank");
+}
+async function openRemoteInApp(deviceId) {
+  let ticket;
+  try {
+    ({ ticket } = await api("/api/auth/app-ticket", { method: "POST" }));
+  } catch (e) {
+    toast(e.message || "Could not start the desktop console");
+    return;
+  }
+  const link = `leuffenrmm://connect?server=${encodeURIComponent(location.origin)}`
+             + `&device=${encodeURIComponent(deviceId)}&ticket=${encodeURIComponent(ticket)}`;
+  // An anchor click hands the URL to Windows without navigating this page away.
+  const a = document.createElement("a");
+  a.href = link; a.style.display = "none";
+  document.body.appendChild(a); a.click(); a.remove();
+  toast("Opening the desktop console… (not installed? get it from Settings → General)");
+}
 
 /* ---------- screenshot (one-shot screen preview) ----------
    Reuses the live screen-capture WebSocket: connect, keep the first JPEG frame,

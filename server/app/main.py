@@ -685,6 +685,75 @@ def me(user: dict = Depends(auth.current_user)):
 
 
 # --------------------------------------------------------------------------- #
+# Desktop console sign-in
+#
+# The Windows console app is a first-class client alongside the browser: same
+# server, same permissions, different credential — a bearer token instead of the
+# session cookie. There are two ways in:
+#
+#   1. **Password (+ TOTP)** typed into the app, for local accounts.
+#   2. A **single-use ticket** minted by an already signed-in dashboard and
+#      handed over through the `leuffenrmm://` deep link. That is how a Microsoft
+#      365 SSO user signs the app in — the browser did the authenticating, so no
+#      password is ever typed into the desktop app.
+# --------------------------------------------------------------------------- #
+@app.post("/api/auth/app-token")
+async def app_token(request: Request):
+    """Exchange credentials (or a hand-off ticket) for a desktop-console token."""
+    data = await request.json()
+    ticket = (data.get("ticket") or "").strip()
+    if ticket:
+        identity = auth.read_app_ticket(ticket)
+        if not identity:
+            raise HTTPException(status_code=401,
+                                detail="This sign-in link has expired or was already used — "
+                                       "start it again from the dashboard")
+    elif auth.DEV_AUTH and not (data.get("username") or "").strip():
+        identity = auth.DEV_USER          # evaluation mode: no credentials to check
+    else:
+        if not auth.LOCAL_ENABLED:
+            raise HTTPException(status_code=403,
+                                detail="Password sign-in is disabled here — open the console "
+                                       "from the dashboard instead")
+        username = (data.get("username") or "").strip()
+        key = _login_key(request, username)
+        if _login_throttled(key):
+            raise HTTPException(status_code=429,
+                                detail="Too many attempts. Wait a few minutes and try again.")
+        try:
+            u = auth.verify_local(username, data.get("password") or "")
+        except HTTPException:
+            _record_login_fail(key)
+            raise
+        if u.get("totp_enabled"):
+            code = (data.get("code") or "").strip()
+            if not code:
+                return JSONResponse({"mfa_required": True}, status_code=200)
+            ok = totp.verify(u.get("totp_secret") or "", code) or                 db.consume_recovery_code(u["username"], code)
+            if not ok:
+                _record_login_fail(key)
+                raise HTTPException(status_code=401,
+                                    detail="Invalid authentication or recovery code")
+        _login_fails.pop(key, None)
+        db.touch_user(u["username"])
+        identity = u["username"]
+    return JSONResponse({"token": auth.make_app_token(identity),
+                         "email": identity,
+                         "is_global_admin": auth.is_global_admin(identity),
+                         "expires_in": auth.APP_TOKEN_DAYS * 86400,
+                         "server_version": SERVER_VERSION},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/auth/app-ticket")
+def app_ticket(user: dict = Depends(auth.current_user)):
+    """Mint the single-use ticket behind the dashboard's 'Open in desktop app'."""
+    return JSONResponse({"ticket": auth.make_app_ticket(user["email"]),
+                         "expires_in": auth.APP_TICKET_SECONDS},
+                        headers={"Cache-Control": "no-store"})
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 def _device_for_user(device_id: str, user: dict) -> dict:
@@ -3004,12 +3073,24 @@ async def screen_ws(ws: WebSocket, device_id: str):
     await _bridge_ws(ws, device_id, "screen", purpose=purpose)
 
 
+def _ws_token(ws: WebSocket) -> str | None:
+    """The desktop console's bearer token off an interactive WebSocket."""
+    tok = (ws.query_params.get("token") or "").strip()
+    if tok:
+        return tok
+    header = ws.headers.get("authorization") or ""
+    scheme, _, value = header.partition(" ")
+    return value.strip() if scheme.lower() == "bearer" and value.strip() else None
+
+
 async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
                      purpose: str = "control") -> None:
-    # Cookie auth (browser sends it automatically); dev mode is always allowed.
-    # Authenticate the operator via the signed session cookie ...
-    user = None
-    if not auth.DEV_AUTH:
+    # Authenticate the operator. Browsers send the signed session cookie
+    # automatically; the desktop console has no cookie jar, so it presents its
+    # bearer token instead (query string or Authorization header — WebSocket
+    # clients vary in whether they can set headers). Dev mode is always allowed.
+    user = auth.user_from_token(_ws_token(ws))
+    if user is None and not auth.DEV_AUTH:
         raw = ws.cookies.get(auth.COOKIE)
         data = auth.read_cookie(raw) if raw else None
         if not data:
@@ -3236,6 +3317,72 @@ async def agent_release(user: dict = Depends(auth.current_user)):
     data = dict(_release_cache["data"] or {})
     data["agent_version"] = _resolve_agent_version()
     return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+
+# --------------------------------------------------------------------------- #
+# Desktop console download
+#
+# The technician-side console ships from the same agent repo, but under its own
+# `console-v*` tags — so "latest release" may well be an agent build. Walk the
+# recent releases and take the newest one that actually carries the console MSI.
+# --------------------------------------------------------------------------- #
+CONSOLE_MSI_URL = os.environ.get("RMM_CONSOLE_MSI_URL", "")
+CONSOLE_MSI_NAME = "leuffen-rmm-console.msi"
+_console_cache: dict = {"t": 0.0, "data": None}
+
+
+async def _console_release() -> dict:
+    if _console_cache["data"] and time.time() - _console_cache["t"] < 120:
+        return _console_cache["data"]
+    out: dict = {"available": False}
+    if CONSOLE_MSI_URL:                      # self-hosted / private build
+        out = {"available": True, "url": CONSOLE_MSI_URL, "name": "Leuffen RMM Console"}
+    else:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(f"https://api.github.com/repos/{GH_REPO}/releases",
+                                     params={"per_page": 30},
+                                     headers={"Accept": "application/vnd.github+json"})
+            if r.status_code == 200:
+                for rel in r.json():
+                    if rel.get("draft"):
+                        continue
+                    asset = next((a for a in rel.get("assets", [])
+                                  if a.get("name") == CONSOLE_MSI_NAME), None)
+                    if not asset:
+                        continue
+                    tag = rel.get("tag_name") or ""
+                    out = {"available": True,
+                           "url": asset["browser_download_url"],
+                           "name": rel.get("name") or tag,
+                           "tag": tag,
+                           "version": tag[len("console-v"):] if tag.startswith("console-v") else tag.lstrip("v"),
+                           "published_at": rel.get("published_at"),
+                           "size": asset.get("size")}
+                    break
+        except Exception:
+            pass
+    _console_cache.update(t=time.time(), data=out)
+    return out
+
+
+@app.get("/api/console-release")
+async def console_release(user: dict = Depends(auth.current_user)):
+    """Latest published desktop-console build, for the download card in the UI."""
+    data = {k: v for k, v in (await _console_release()).items() if k != "url"}
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/console/install.msi")
+async def console_install_msi(user: dict = Depends(auth.current_user)):
+    """Redirect to the published console MSI (same reasoning as the agent MSI:
+    redirect rather than proxy ~70 MB through the server)."""
+    rel = await _console_release()
+    if not rel.get("available"):
+        raise HTTPException(status_code=404,
+                            detail="No desktop console build has been published yet")
+    return RedirectResponse(rel["url"], status_code=302)
 
 
 @app.get("/api/orgs/{org_id}/install.msi")

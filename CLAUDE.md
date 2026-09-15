@@ -15,7 +15,7 @@ gone stale before — this is the checklist to prevent that).
 | Repo | What lives here |
 |---|---|
 | **`Mischa323/Leuffenrrm`** (this repo) | FastAPI server (`server/app/`), the vanilla-JS dashboard (`server/app/static/`), the **vendored** copy of the agent (`agent/`), the Synology packaging the server assembles (`packaging/synology/`), and `CHANGELOG.md` + `VERSION`. |
-| **`Mischa323/leuffen-rmm-agent`** | The **canonical** cross-platform agent (`agent/`) and packaging (`packaging/windows` WiX MSI, `packaging/synology` SPK) + release workflows. |
+| **`Mischa323/leuffen-rmm-agent`** | The **canonical** cross-platform agent (`agent/`), the **desktop console** (`console/`), and packaging (`packaging/windows` WiX MSIs for both, `packaging/synology` SPK) + release workflows. |
 
 The `agent/` code is duplicated in both repos and must stay **byte-identical**
 (copy canonical → vendored) **except** the `AGENT_VERSION` constant, which lags
@@ -64,6 +64,31 @@ in the vendored copy (see "The auto-update loop" below).
 - **`syno_agent.py` + `syno_inventory.py`** — the slim, stdlib-only Synology DSM
   agent. It carries its **own** `AGENT_VERSION` copy (the `.spk` doesn't bundle
   `inventory.py`) — kept in lockstep with `inventory.py`.
+
+## Desktop console (`leuffen-rmm-agent/console/`)
+
+The **technician-side** Windows app (Python + Tk, PyInstaller → its own MSI) —
+installed on *your* machine, not on managed devices. It is a second front-end
+onto the **same** server endpoints the dashboard uses, never a second protocol:
+
+- `main.py` — entry point, `leuffenrmm://` deep-link parsing, single-instance
+  hand-off over loopback. `main_window.py` — sign-in ↔ device browser.
+- `remote_view.py` / `terminal_view.py` / `files_view.py` — the three session
+  windows. `remote_view` is the native twin of `static/remote.js` and speaks the
+  identical `screen_start` / input / `video_info` protocol.
+- `api.py` (REST + TLS pinning), `wsbridge.py` (one background asyncio loop; Tk
+  is fed through a `queue.Queue`), `video.py` (JPEG + H.264 via PyAV),
+  `config.py` (settings + **DPAPI**-encrypted token), `theme.py` (the design
+  tokens from `styles.css`, ported to Tk), `tasks.py` (off-thread REST calls).
+- **`CONSOLE_VERSION` lives in `console/version.py`** — its own version line,
+  released under `console-v*` tags (see below).
+
+> ⚠️ **Auth is the one thing the console needs that the browser doesn't.** It has
+> no cookie jar, so it carries a **bearer token** from `POST /api/auth/app-token`
+> (`Authorization: Bearer …`, or `?token=` on the interactive WebSockets — see
+> `_ws_token` / `auth.user_from_token`). Server-side, that means **`auth.current_user`
+> accepts a bearer token as well as the cookie** — anything new that authenticates
+> by hand rather than through that dependency will silently lock the console out.
 
 ---
 
@@ -116,6 +141,7 @@ invent new colours/spacing.
 |---|---|---|---|
 | **Server** | `Leuffenrrm/VERSION` | `1.5.63` | app version; the agent-versions widget; **cache-busting** — `_serve_html` appends `?v=<SERVER_VERSION>` to every local asset URL. |
 | **Agent** | `agent/inventory.py` `AGENT_VERSION` (mirror in `syno_inventory.py`) | `2.2.34` | stamped into the MSI/SPK. The **server advertises the vendored** `Leuffenrrm/agent/inventory.py` value. |
+| **Console** | `leuffen-rmm-agent/console/version.py` `CONSOLE_VERSION` | `1.0.0` | stamped into the console MSI. Nothing auto-updates to it — the server only links the download — so it has none of the agent's rollout hazards. |
 
 > **Cache-busting depends on `VERSION`.** Static JS/CSS is served with
 > `?v=<SERVER_VERSION>`. If `VERSION` doesn't change, browsers keep serving the
@@ -184,6 +210,21 @@ vendored `AGENT_VERSION` is **higher than the newest published MSI**, agents
 > Order matters: **publish the MSI *before* bumping the vendored version**, or
 > you hit the loop above. Building the MSI early is safe (no rollout); the
 > vendored bump + deploy is the actual go-live.
+
+### C. Desktop console change (touches `console/`)
+
+Far simpler than the agent, because nothing auto-updates to it:
+
+1. Change `leuffen-rmm-agent/console/…`. PR → merge. `auto-version.yml` bumps
+   `CONSOLE_VERSION` in `console/version.py`.
+2. Build + publish: `gh workflow run windows-console-msi.yml --ref main
+   -R Mischa323/leuffen-rmm-agent`. It releases under **`console-v<version>`**
+   (its own tag prefix, so agent releases don't shadow it) with
+   `leuffen-rmm-console.msi` attached.
+3. Nothing to vendor and nothing to deploy for the rollout itself: the server
+   finds the newest release carrying that asset (`_console_release`) and serves
+   it at **Downloads → Desktop console**. Technicians re-install to update.
+4. Add a `CHANGELOG.md` entry here if the change is user-visible.
 
 ## Changelog (keep-a-changelog)
 
