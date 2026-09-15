@@ -540,11 +540,16 @@ async def _schedule_loop() -> None:
 # --------------------------------------------------------------------------- #
 # Auth routes
 # --------------------------------------------------------------------------- #
-def _sso_redirect() -> RedirectResponse:
+def _sso_redirect(remember: bool = False) -> RedirectResponse:
     state = secrets.token_urlsafe(16)
     resp = RedirectResponse(auth.login_url(state))
     resp.set_cookie("oauth_state", state, httponly=True, max_age=600,
                     samesite="lax", secure=auth.SECURE_COOKIES)
+    # "Keep me signed in" is ticked before we hand the browser to Microsoft, and
+    # only matters once it comes back — park it for the length of the round trip.
+    if remember:
+        resp.set_cookie("oauth_remember", "1", httponly=True, max_age=600,
+                        samesite="lax", secure=auth.SECURE_COOKIES)
     return resp
 
 
@@ -560,15 +565,16 @@ def auth_login(request: Request):
 
 
 @app.get("/auth/sso")
-def auth_sso():
+def auth_sso(remember: int = 0):
     if not auth.SSO_ENABLED:
         raise HTTPException(status_code=404, detail="SSO is not enabled")
-    return _sso_redirect()
+    return _sso_redirect(bool(remember))
 
 
 @app.get("/api/auth/config")
 def auth_config():
-    return {"mode": auth.AUTH_MODE, "local": auth.LOCAL_ENABLED, "sso": auth.SSO_ENABLED}
+    return {"mode": auth.AUTH_MODE, "local": auth.LOCAL_ENABLED, "sso": auth.SSO_ENABLED,
+            "session_days": auth.SESSION_DAYS}
 
 
 # --- Login rate limiting (in-memory; single-process server) ------------------ #
@@ -622,8 +628,8 @@ async def local_login(request: Request):
     _login_fails.pop(key, None)
     db.touch_user(u["username"])
     resp = Response(status_code=204)
-    resp.set_cookie(auth.COOKIE, auth.make_cookie(u["username"]), httponly=True,
-                    samesite="lax", secure=auth.SECURE_COOKIES)
+    resp.set_cookie(auth.COOKIE, auth.make_cookie(u["username"]),
+                    **auth.cookie_kwargs(bool(data.get("remember"))))
     return resp
 
 
@@ -637,9 +643,10 @@ def auth_callback(request: Request, code: str = "", state: str = ""):
     # In hybrid mode, fold the SSO user onto a matching local account (by email).
     identity = auth.resolve_sso_identity(email)
     resp = RedirectResponse("/")
-    resp.set_cookie(auth.COOKIE, auth.make_cookie(identity), httponly=True,
-                    samesite="lax", secure=auth.SECURE_COOKIES)
+    resp.set_cookie(auth.COOKIE, auth.make_cookie(identity),
+                    **auth.cookie_kwargs(request.cookies.get("oauth_remember") == "1"))
     resp.delete_cookie("oauth_state")
+    resp.delete_cookie("oauth_remember")
     return resp
 
 

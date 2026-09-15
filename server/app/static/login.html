@@ -26,6 +26,10 @@
         <input id="c" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" style="width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 12px;color:var(--text);font-size:14px;letter-spacing:.25em;font-family:var(--font-mono)" />
         <div style="color:var(--text-dim);font-size:12px;margin-top:6px">Enter the 6-digit code from your authenticator app, or a recovery code.</div>
       </div>
+      <label for="remember" style="display:flex;align-items:center;gap:9px;margin:14px 0 4px;font-size:13px;color:var(--text-dim);cursor:pointer">
+        <input type="checkbox" id="remember" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer" />
+        <span id="remember-label">Keep me signed in for 30 days</span>
+      </label>
       <div id="err" style="color:var(--bad);font-size:12.5px;min-height:18px;margin-bottom:10px"></div>
       <button class="btn" id="submit" type="submit" style="width:100%;justify-content:center;padding:11px">Sign in</button>
       <div id="ssobox" class="hidden" style="margin-top:16px">
@@ -41,16 +45,32 @@
     // Show the Microsoft 365 option in hybrid mode; hide the local form if SSO-only.
     fetch("/api/auth/config").then((r) => r.json()).then((c) => {
       if (c.sso) document.getElementById("ssobox").classList.remove("hidden");
+      if (c.session_days) {
+        document.getElementById("remember-label").textContent =
+          `Keep me signed in for ${c.session_days} days`;
+      }
       if (!c.local) {
         ["u", "p", "submit"].forEach((id) => document.getElementById(id).classList.add("hidden"));
         document.querySelectorAll("#login label").forEach((l) => l.classList.add("hidden"));
       }
     }).catch(() => {});
+    // The Microsoft button navigates away before the form is ever submitted, so
+    // the checkbox has to travel on its URL instead.
+    const ssoLink = document.querySelector('#ssobox a');
+    const syncSso = () => {
+      if (ssoLink) ssoLink.href = document.getElementById("remember").checked
+        ? "/auth/sso?remember=1" : "/auth/sso";
+    };
+    document.getElementById("remember").addEventListener("change", syncSso);
+    syncSso();
+
     let mfaStep = false;
     document.getElementById("login").onsubmit = async (e) => {
       e.preventDefault();
       const err = document.getElementById("err"); err.textContent = "";
-      const body = { username: document.getElementById("u").value, password: document.getElementById("p").value };
+      const body = { username: document.getElementById("u").value,
+                     password: document.getElementById("p").value,
+                     remember: document.getElementById("remember").checked };
       if (mfaStep) body.code = document.getElementById("c").value;
       try {
         const r = await fetch("/api/auth/local-login", {

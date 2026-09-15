@@ -106,7 +106,14 @@ SESSION_SECRET = _resolve_session_secret()
 SECURE_COOKIES = os.environ.get("RMM_SECURE_COOKIES",
                                 "0" if os.environ.get("RMM_TLS_MODE") == "none" else "1") == "1"
 
+# How long a "keep me signed in" session lasts, in days. It is enforced twice:
+# the browser is told to drop the cookie after this long, and the cookie itself
+# carries a timestamp so the server refuses it after the same period even if the
+# browser hangs on to it.
+SESSION_DAYS = int(os.environ.get("RMM_SESSION_DAYS", "30"))
+
 _serializer = URLSafeSerializer(SESSION_SECRET, salt="rmm-session")
+_timed_serializer = URLSafeTimedSerializer(SESSION_SECRET, salt="rmm-session")
 
 
 def resolve_sso_identity(email: str) -> str:
@@ -158,14 +165,38 @@ def exchange_code(code: str) -> str:
 
 
 def make_cookie(email: str) -> str:
-    return _serializer.dumps({"email": email})
+    """Mint a session cookie value, stamped with the time it was issued."""
+    return _timed_serializer.dumps({"email": email})
 
 
 def read_cookie(value: str) -> dict | None:
     try:
+        return _timed_serializer.loads(value, max_age=SESSION_DAYS * 86400)
+    except SignatureExpired:
+        return None                     # older than SESSION_DAYS: sign in again
+    except BadData:                     # BadSignature + malformed payloads
+        pass
+    # Sessions issued before cookies carried a timestamp have no age to check.
+    # They are still accepted so that deploying this doesn't sign everyone out;
+    # each is replaced by a timestamped one at that person's next sign-in. Drop
+    # this fallback once the fleet has rolled over to force the rotation.
+    try:
         return _serializer.loads(value)
-    except BadData:  # BadSignature + malformed/undecodable payloads
+    except BadData:
         return None
+
+
+def cookie_kwargs(remember: bool) -> dict:
+    """Cookie options for `set_cookie`.
+
+    Ticking "keep me signed in" is the difference between a cookie the browser
+    keeps for SESSION_DAYS and one it throws away when it closes. Either way the
+    signature expires after SESSION_DAYS, so a copied cookie is not good forever.
+    """
+    options = {"httponly": True, "samesite": "lax", "secure": SECURE_COOKIES}
+    if remember:
+        options["max_age"] = SESSION_DAYS * 86400
+    return options
 
 
 def verify_local(username: str, password: str) -> dict:
