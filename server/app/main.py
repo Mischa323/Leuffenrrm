@@ -2540,8 +2540,77 @@ def _webhook_for_user(wid: str, user: dict) -> dict:
     h = db.get_webhook(wid)
     if not h:
         raise HTTPException(status_code=404, detail="Webhook not found")
-    auth.require_org(user, h["org_id"])
+    # A webhook with no org is global, so only a global admin may touch it.
+    auth.require_scope(user, h["org_id"])
     return h
+
+
+# --------------------------------------------------------------------------- #
+# Integrations, managed globally (Settings -> API & webhooks)
+#
+# A key's **scope** is the whole point: with no organisation it reads across the
+# entire estate (one key for a ticket system that serves every customer), with
+# one set it is confined to that customer. That choice belongs to a global
+# admin, so these endpoints live outside any organisation.
+# --------------------------------------------------------------------------- #
+def _scope_org(org_id: str | None) -> str | None:
+    org_id = (org_id or "").strip() or None
+    if org_id and not db.get_org(org_id):
+        raise HTTPException(status_code=404, detail="Organisation not found")
+    return org_id
+
+
+@app.get("/api/api-keys")
+def api_keys_all(user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    return db.list_all_api_keys()
+
+
+@app.post("/api/api-keys")
+def api_key_create(req: ApiKeyCreateRequest, user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    import secrets as _secrets
+    raw = "lrmm_api_" + _secrets.token_urlsafe(30)
+    k = db.create_api_key(_scope_org(req.org_id),
+                          (req.name or "API key").strip() or "API key", raw)
+    k.pop("key_hash", None)
+    return {**k, "key": raw}   # the full key is returned ONCE, on creation
+
+
+@app.post("/api/api-keys/{key_id}/toggle")
+def api_key_toggle(key_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    k = db.get_api_key(key_id)
+    if not k:
+        raise HTTPException(status_code=404, detail="API key not found")
+    db.set_api_key_enabled(key_id, not k["enabled"])
+    return {"enabled": not k["enabled"]}
+
+
+@app.delete("/api/api-keys/{key_id}")
+def api_key_delete(key_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    db.delete_api_key(key_id)
+    return {"ok": True}
+
+
+@app.get("/api/webhooks")
+def webhooks_all(user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    return db.list_all_webhooks()
+
+
+@app.post("/api/webhooks")
+def webhook_create(req: WebhookCreateRequest, user: dict = Depends(auth.current_user)):
+    auth.require_global(user)
+    url = (req.url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="A valid http(s) URL is required")
+    import secrets as _secrets
+    return db.create_webhook(_scope_org(req.org_id),
+                             (req.name or "Webhook").strip() or "Webhook", url,
+                             "whsec_" + _secrets.token_urlsafe(24),
+                             (req.events or "*").strip() or "*")
 
 
 @app.post("/api/webhooks/{wid}/toggle")

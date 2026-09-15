@@ -13,11 +13,13 @@ const NAV = {
   alerts: { icon: "bell", t: "Alerts & email" },
   security: { icon: "shieldCheck", t: "Security" },
   agents: { icon: "monitor", t: "Agents" },
+  integrations: { icon: "link", t: "API & webhooks" },
   logs: { icon: "terminal", t: "Logs" },
   appearance: { icon: "sliders", t: "Appearance" },
 };
 
 let cfg = {}, ORGS = [], USERS = { mode: "dev", users: [], bootstrap_admins: [] };
+let KEYS = [], HOOKS = [];
 
 function toast(msg) {
   const t = $("toast"); t.querySelector("span:last-child").textContent = msg; t.classList.add("show");
@@ -328,6 +330,39 @@ function render() {
       </div>
     </section>
 
+    <section class="sec" data-sec="integrations">
+      ${secTitle("link", "API &amp; webhooks", "Let other systems read your fleet and react to it — ticketing, dashboards, automation.")}
+      ${block("Calling the API", "Every endpoint lives under /api/v1 and is authenticated with a key you issue below.",
+        `<div class="frow"><label>Base URL</label><div class="code mono">${esc(cfg.RMM_PUBLIC_URL || location.origin)}/api/v1</div></div>
+         <div class="frow"><label>Authentication</label><div class="code mono">X-API-Key: lrmm_api_…</div>
+           <div class="hint">Or <b>Authorization: Bearer lrmm_api_…</b> — whichever your tool sends more easily.</div></div>
+         <div class="frow"><label>Endpoints</label><div class="code mono" style="white-space:pre-wrap">GET  /api/v1/devices
+GET  /api/v1/devices/{id}
+GET  /api/v1/alerts
+POST /api/v1/devices/{id}/run-script
+POST /api/v1/devices/{id}/reboot</div>
+           <div class="hint">Enough for a ticket system to pull the machines it monitors, read what is alerting, and act on a device without a person opening the dashboard.</div></div>`)}
+
+      <div class="card-block">
+        <div class="cb-head" style="display:flex;align-items:center;justify-content:space-between">
+          <div><h3>API keys</h3><p>A key with <b>no organisation</b> reads the whole estate; one scoped to an organisation sees only that customer's devices and alerts.</p></div>
+          <button class="btn" id="add-key">${ICON.plus} New API key</button>
+        </div>
+        <table class="utable"><thead><tr><th>Name</th><th>Scope</th><th>Key</th><th>Last used</th><th></th></tr></thead>
+          <tbody id="key-rows"><tr><td colspan="5" class="muted" style="padding:18px">Loading…</td></tr></tbody></table>
+      </div>
+
+      <div class="card-block">
+        <div class="cb-head" style="display:flex;align-items:center;justify-content:space-between">
+          <div><h3>Webhooks</h3><p>Leuffen RMM posts signed JSON the moment an alert is raised or clears — enough to open a ticket and close it again by itself.</p></div>
+          <button class="btn" id="add-hook">${ICON.plus} New webhook</button>
+        </div>
+        <table class="utable"><thead><tr><th>Name</th><th>Endpoint</th><th>Scope</th><th>Events</th><th></th></tr></thead>
+          <tbody id="hook-rows"><tr><td colspan="5" class="muted" style="padding:18px">Loading…</td></tr></tbody></table>
+        <div class="cb-body"><div class="hint">Each delivery carries <b>X-RMM-Event</b> and <b>X-RMM-Signature: sha256=…</b>, an HMAC of the exact request body using that webhook's secret. Verify it before you trust a payload.</div></div>
+      </div>
+    </section>
+
     <section class="sec" data-sec="appearance">
       ${secTitle("sliders", "Appearance", "The workspace default look. Applies to everyone who hasn't set their own in Account.")}
       ${block("Theme & colour", "Default theme and accent for the dashboard, settings and setup.",
@@ -348,6 +383,147 @@ function render() {
   buildTlsSeg();
   buildAppearance();
   wire();
+  loadIntegrations();
+}
+
+/* ---- integrations: API keys + webhooks (global admin) ---------------------
+   Scope is the thing to get right: org_id null means the key or webhook spans
+   every organisation, which is what a shared ticket system wants; an org id
+   confines it to one customer. Both are listed together so that surface is
+   visible in one place. */
+const orgName = (id) => (ORGS.find((o) => o.id === id) || {}).name || id;
+const scopePill = (orgId) => orgId
+  ? `<span class="role-pill member" style="white-space:nowrap">${ICON.building} ${esc(orgName(orgId))}</span>`
+  : `<span class="role-pill admin" style="white-space:nowrap">${ICON.globe} All organisations</span>`;
+const whenever = (ts) => (ts ? new Date(ts * 1000).toLocaleString() : "never");
+
+function scopeSelect(id) {
+  return `<select class="inp" id="${id}">
+    <option value="">All organisations</option>
+    ${ORGS.map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("")}
+  </select>`;
+}
+
+async function loadIntegrations() {
+  const rows = $("key-rows"), hooks = $("hook-rows");
+  if (!rows) return;
+  try {
+    [KEYS, HOOKS] = await Promise.all([api("/api/api-keys"), api("/api/webhooks")]);
+  } catch (e) {
+    const msg = `<tr><td colspan="5" class="muted" style="padding:18px">${esc(e.message)}</td></tr>`;
+    rows.innerHTML = msg; if (hooks) hooks.innerHTML = msg;
+    return;
+  }
+  rows.innerHTML = KEYS.map((k) => `<tr${k.enabled ? "" : ' style="opacity:.55"'}>
+    <td><div class="un">${esc(k.name)}</div></td>
+    <td>${scopePill(k.org_id)}</td>
+    <td class="mono muted">${esc(k.prefix)}\u2026</td>
+    <td class="muted">${whenever(k.last_used)}</td>
+    <td><div class="u-actions">
+      <button class="btn ghost sm key-toggle" data-id="${esc(k.id)}">${k.enabled ? "Suspend" : "Enable"}</button>
+      <button class="btn ghost sm key-del" data-id="${esc(k.id)}" data-name="${esc(k.name)}" title="Revoke">${ICON.trash}</button>
+    </div></td></tr>`).join("")
+    || `<tr><td colspan="5" class="muted" style="padding:18px">No API keys yet. Create one to let another system read this RMM.</td></tr>`;
+
+  hooks.innerHTML = HOOKS.map((h) => `<tr${h.enabled ? "" : ' style="opacity:.55"'}>
+    <td><div class="un">${esc(h.name)}</div></td>
+    <td class="mono muted" style="max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(h.url)}</td>
+    <td>${scopePill(h.org_id)}</td>
+    <td class="muted">${esc(h.events === "*" ? "all events" : h.events)}</td>
+    <td><div class="u-actions">
+      <button class="btn ghost sm hook-test" data-id="${esc(h.id)}">Test</button>
+      <button class="btn ghost sm hook-toggle" data-id="${esc(h.id)}">${h.enabled ? "Disable" : "Enable"}</button>
+      <button class="btn ghost sm hook-del" data-id="${esc(h.id)}" data-name="${esc(h.name)}" title="Delete">${ICON.trash}</button>
+    </div></td></tr>`).join("")
+    || `<tr><td colspan="5" class="muted" style="padding:18px">No webhooks yet. Add one to have alerts open tickets automatically.</td></tr>`;
+  wireIntegrations();
+}
+
+function wireIntegrations() {
+  document.querySelectorAll(".key-toggle").forEach((b) => b.onclick = async () => {
+    try { await api(`/api/api-keys/${b.dataset.id}/toggle`, { method: "POST" }); loadIntegrations(); }
+    catch (e) { toast(e.message); }
+  });
+  document.querySelectorAll(".key-del").forEach((b) => b.onclick = async () => {
+    if (!confirm(`Revoke "${b.dataset.name}"? Anything using it stops working immediately.`)) return;
+    try { await api(`/api/api-keys/${b.dataset.id}`, { method: "DELETE" }); toast("API key revoked"); loadIntegrations(); }
+    catch (e) { toast(e.message); }
+  });
+  document.querySelectorAll(".hook-toggle").forEach((b) => b.onclick = async () => {
+    try { await api(`/api/webhooks/${b.dataset.id}/toggle`, { method: "POST" }); loadIntegrations(); }
+    catch (e) { toast(e.message); }
+  });
+  document.querySelectorAll(".hook-del").forEach((b) => b.onclick = async () => {
+    if (!confirm(`Delete the webhook "${b.dataset.name}"?`)) return;
+    try { await api(`/api/webhooks/${b.dataset.id}`, { method: "DELETE" }); toast("Webhook deleted"); loadIntegrations(); }
+    catch (e) { toast(e.message); }
+  });
+  document.querySelectorAll(".hook-test").forEach((b) => b.onclick = async () => {
+    const old = b.innerHTML; b.disabled = true; b.innerHTML = "Sending\u2026";
+    try {
+      const r = await api(`/api/webhooks/${b.dataset.id}/test`, { method: "POST" });
+      toast(r.ok ? `Endpoint answered ${r.status}` : `Endpoint answered ${r.status || "nothing"} \u2014 check the URL`);
+    } catch (e) { toast(e.message); }
+    finally { b.disabled = false; b.innerHTML = old; }
+  });
+}
+
+function openNewKeyModal() {
+  const m = modal("New API key",
+    mfield("Name", `<input class="inp" id="k-name" placeholder="Ticket system" />`,
+           "Only for your own reference.") +
+    mfield("Scope", scopeSelect("k-org"),
+           "All organisations gives one key the whole estate. Pick an organisation to confine it to that customer.") +
+    `<div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn" id="k-create">${ICON.plus} Create key</button></div>`);
+  m.q("#k-name").focus();
+  m.q("#k-create").onclick = async () => {
+    const name = m.q("#k-name").value.trim();
+    if (!name) { toast("Give the key a name"); return; }
+    try {
+      const k = await api("/api/api-keys", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, org_id: m.q("#k-org").value || null }),
+      });
+      // Shown once and never again: the server only keeps a hash.
+      m.q(".modal-body").innerHTML = `
+        <div class="callout warn"><div class="ic">${ICON.alert}</div><div>
+          <div class="ct">Copy it now</div>
+          <div class="cd">This is the only time the key is shown \u2014 only a hash is stored.</div></div></div>
+        <div class="code mono" style="margin:14px 0;word-break:break-all">${esc(k.key)}</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" id="k-copy">${ICON.copy} Copy</button>
+          <button class="btn ghost" id="k-done">Done</button></div>`;
+      m.q("#k-copy").onclick = () => { navigator.clipboard?.writeText(k.key); toast("Copied"); };
+      m.q("#k-done").onclick = () => { m.close(); loadIntegrations(); };
+    } catch (e) { toast(e.message); }
+  };
+}
+
+function openNewHookModal() {
+  const m = modal("New webhook",
+    mfield("Name", `<input class="inp" id="h-name" placeholder="Ticket system" />`) +
+    mfield("Endpoint URL", `<input class="inp mono" id="h-url" placeholder="https://tickets.example.com/hooks/rmm" />`,
+           "Must be reachable from this server.") +
+    mfield("Scope", scopeSelect("h-org"), "Which organisations' alerts are delivered here.") +
+    mfield("Events", `<select class="inp" id="h-events">
+        <option value="*">All events</option>
+        <option value="alert.raised">Only alert.raised (open a ticket)</option>
+        <option value="alert.cleared">Only alert.cleared (close a ticket)</option>
+      </select>`) +
+    `<div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn" id="h-create">${ICON.plus} Add webhook</button></div>`);
+  m.q("#h-name").focus();
+  m.q("#h-create").onclick = async () => {
+    const name = m.q("#h-name").value.trim(), url = m.q("#h-url").value.trim();
+    if (!name || !url) { toast("Name and URL are both required"); return; }
+    try {
+      await api("/api/webhooks", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, url, events: m.q("#h-events").value,
+                               org_id: m.q("#h-org").value || null }),
+      });
+      m.close(); toast("Webhook added \u2014 use Test to check it"); loadIntegrations();
+    } catch (e) { toast(e.message); }
+  };
 }
 
 function usersRows() {
@@ -832,6 +1008,8 @@ function wire() {
   document.querySelectorAll("[data-toggle]:not([data-toggle='ap-dataviz'])").forEach((t) => t.onclick = () => t.classList.toggle("on"));
   document.querySelectorAll(".save-btn").forEach((b) => b.onclick = () => onSave(b.dataset.save));
   const oc = $("add-org"); if (oc) oc.onclick = createOrg;
+  const ak = $("add-key"); if (ak) ak.onclick = openNewKeyModal;
+  const ah = $("add-hook"); if (ah) ah.onclick = openNewHookModal;
   document.querySelectorAll(".org-del").forEach((b) => b.onclick = () => deleteOrg(b.dataset.id, b.dataset.name));
   document.querySelectorAll(".user-edit").forEach((b) => b.onclick = () => {
     const u = (USERS.users || []).find((x) => x.username === b.dataset.username);

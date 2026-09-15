@@ -80,12 +80,15 @@ class ProgramSettingsRequest(BaseModel):
 # -- Integrations (ticketing / external tools) ------------------------------- #
 class ApiKeyCreateRequest(BaseModel):
     name: str
+    # Scope: None/"" = every organisation, or one organisation's id.
+    org_id: str | None = None
 
 
 class WebhookCreateRequest(BaseModel):
     name: str
     url: str
     events: str = "*"          # comma list (alert.raised, alert.cleared) or '*'
+    org_id: str | None = None  # scope, as above
 
 
 class ApiRunScriptRequest(BaseModel):

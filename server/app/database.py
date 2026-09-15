@@ -2347,6 +2347,7 @@ def raised_alert_keys(device_id: str) -> set[str]:
 # Integrations — API keys (inbound) + webhooks (outbound)
 # --------------------------------------------------------------------------- #
 def _hash_key(raw: str) -> str:
+    import hashlib          # local, like every other hash helper in this module
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -2374,6 +2375,27 @@ def list_api_keys(org_id: str) -> list[dict]:
         d.pop("key_hash", None)  # never expose the hash
         out.append(d)
     return out
+
+
+def list_all_api_keys() -> list[dict]:
+    """Every key, whatever its scope — the global-admin view.
+
+    A key with ``org_id`` NULL reaches every organisation; one with an org set is
+    confined to it. Both live in this one list so an admin can see the whole
+    surface at a glance."""
+    rows = get_conn().execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d.pop("key_hash", None)  # never expose the hash
+        out.append(d)
+    return out
+
+
+def set_api_key_enabled(kid: str, enabled: bool) -> None:
+    """Suspend a key without destroying it (a rotation or an incident)."""
+    with write() as conn:
+        conn.execute("UPDATE api_keys SET enabled=? WHERE id=?", (1 if enabled else 0, kid))
 
 
 def delete_api_key(kid: str, org_id: str | None = None) -> None:
@@ -2416,6 +2438,12 @@ def list_webhooks(org_id: str) -> list[dict]:
     rows = get_conn().execute(
         "SELECT * FROM webhooks WHERE org_id=? ORDER BY created_at DESC", (org_id,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_all_webhooks() -> list[dict]:
+    """Every webhook, whatever its scope — the global-admin view."""
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM webhooks ORDER BY created_at DESC").fetchall()]
 
 
 def set_webhook_enabled(wid: str, enabled: bool, org_id: str | None = None) -> None:
