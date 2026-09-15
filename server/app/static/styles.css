@@ -353,6 +353,23 @@ table.grid tbody tr:hover td { background: var(--surface-hover); }
 .dl-block .h-sub { line-height: 1.55; }
 .dl-block .seg { flex: none; }
 
+/* Downloads has two audiences and they must not be confused: the agent goes on
+   every customer device, the console goes on a technician's own machine. The
+   headings carry that distinction, so they hold the explanation, not just a
+   label -- and the console block is tinted so it can't read as one more agent
+   download on an org-scoped page. */
+.dl-sec { margin-bottom: 26px; }
+.dl-sec:last-child { margin-bottom: 0; }
+.dl-sec-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+            margin: 0 0 12px; padding-bottom: 9px; border-bottom: 1px solid var(--border); }
+.dl-sec-t { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px;
+            font-weight: 700; color: var(--text); }
+.dl-sec-t svg { width: 16px; height: 16px; color: var(--accent); flex: none; }
+.dl-sec-s { flex: 1; min-width: 200px; font-size: 12px; color: var(--text-faint); line-height: 1.5; }
+.dl-block.tech { background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+                 border-color: color-mix(in srgb, var(--accent) 32%, var(--border)); }
+.dl-block.tech .lab svg { color: var(--accent); }
+
 .subnet-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--surface-3); border-radius: var(--r-sm); font-family: var(--font-mono); font-size: 12.5px; margin-bottom: 6px; }
 .subnet-row .x { margin-left: auto; color: var(--text-faint); cursor: pointer; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px; }
 .subnet-row .x:hover { background: var(--bad-soft); color: var(--bad); }

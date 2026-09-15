@@ -1243,6 +1243,18 @@ async function renderDownloads() {
     ? `<span class="badge ok" style="margin-left:8px">${escapeHtml(rel.name || rel.tag || "latest")}</span>${rel.size ? ` <span class="h-sub">${(rel.size / 1048576).toFixed(1)} MB${rel.published_at ? " · " + new Date(rel.published_at).toLocaleDateString() : ""}</span>` : ""}`
     : `<span class="badge na" style="margin-left:8px">no build published yet</span>`;
   $("downloads-body").innerHTML = `
+    <div class="dl-sec">
+      <div class="dl-sec-h"><span class="dl-sec-t">${ICON.desktop} For your technicians</span>
+        <span class="dl-sec-s">Goes on the computers your team works from — never on a customer device. Same download for every organisation.</span></div>
+    <div class="dl-block tech"><div class="lab">${ICON.desktop} Desktop console — Windows ${conLabel}</div>
+      <div class="h-sub" style="margin:4px 0 10px">Remote control, terminal and file transfer as a native app, signed in with <b>your own</b> account. The browser viewer keeps working — each device's <b>Remote control</b> button lets you choose, per session, whether it opens in the browser or in the app.</div>
+      <div style="margin:6px 0 0">${con.available
+        ? `<a class="btn sm" href="${base}/api/console/install.msi">${ICON.download} Download the console</a> <span class="h-sub">sign in with your RMM account — no enrolment key</span>`
+        : `<span class="h-sub">No build published yet — run the console workflow in the agent repo.</span>`}</div></div>
+    </div>
+    <div class="dl-sec">
+      <div class="dl-sec-h"><span class="dl-sec-t">${ICON.monitor} For the devices you manage</span>
+        <span class="dl-sec-s">The agent — one install per customer computer, server or NAS you monitor.</span></div>
     <div class="dl-block"><div class="lab">${ICON.key} Enrolment key — one-time &amp; write-once</div>
       <div class="h-sub" style="margin:4px 0 10px">Generate a key per device. It's shown <b>once</b>, can't be retrieved again, and enrols a <b>single</b> device. Already-enrolled agents reconnect by their identity — no key needed.</div>
       <button class="btn sm" id="gen-token">${ICON.plus} Generate enrolment key</button>
@@ -1250,11 +1262,25 @@ async function renderDownloads() {
     <div class="dl-block"><div class="lab">${ICON.windows} Windows — MSI installer ${relLabel}</div>
       <div style="margin:6px 0 8px"><a class="btn sm" href="${base}/api/orgs/${state.org}/install.msi">${ICON.download} Download MSI</a> <span class="h-sub">then install with the generated key</span></div>
       <div class="code">msiexec /i leuffen-rmm-agent.msi /qn RMM_SERVER_URL=${base} RMM_API_KEY=&lt;enrolment-key&gt; RMM_INSECURE_TLS=${ins}</div></div>
-    <div class="dl-block"><div class="lab">${ICON.desktop} Desktop console — for technicians ${conLabel}</div>
-      <div class="h-sub" style="margin:4px 0 10px">The native Windows app for remote control, terminal and file transfer. Install it on <b>your own</b> machine (not on managed devices) — the browser viewer keeps working either way, and each device's <b>Remote control</b> button can then open a session in the app instead.</div>
-      <div style="margin:6px 0 0">${con.available
-        ? `<a class="btn sm" href="${base}/api/console/install.msi">${ICON.download} Download the console</a> <span class="h-sub">signs in with your own account</span>`
-        : `<span class="h-sub">Publish the console workflow in the agent repo to make this download available.</span>`}</div></div>
+    <div class="dl-block"><div class="lab">${ICON.link} Shareable one-click installer link</div>
+      <div class="h-sub" style="margin:4px 0 10px">Send this link to anyone who needs the agent installed — <b>no RMM login required</b>. They download and run a one-click installer with the <b>server address and key already filled in</b>; the device then appears in your <b>approval queue</b> to accept. Valid for a set number of days, unlimited installs, revoke anytime.</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <select id="dl-ttl" class="inp" style="width:auto">
+          <option value="1">1 day</option>
+          <option value="3">3 days</option>
+          <option value="7" selected>7 days</option>
+          <option value="14">14 days</option>
+          <option value="30">30 days</option>
+        </select>
+        <button class="btn sm" id="gen-dl-link">${ICON.plus} Generate link</button>
+      </div>
+      <div id="dl-link-result" style="margin-top:10px"></div>
+      <div id="dl-link-list" style="margin-top:10px"></div></div>
+    <div class="dl-block"><div class="lab">${ICON.nas} Synology NAS — Package Center source</div>
+      <div class="h-sub" style="margin:4px 0 10px">Monitor a Synology NAS like any other device. In DSM open <b>Package Center → Settings → Package Sources → Add</b>, paste the URL below, then install <b>Leuffen RMM</b> from the new source. It auto-connects to this organisation — no key to type. The NAS just needs a <b>Python 3</b> package installed (most do; otherwise install one from Package Center first).${syno.enabled ? "" : ` <b style="color:var(--bad)">The source is currently disabled in Settings → Agents.</b>`}</div>
+      <div class="code"><button class="btn ghost sm" id="syno-copy" data-c="${escapeAttr(syno.url)}">${ICON.copy} Copy</button>${escapeHtml(syno.url)}</div></div>
+    <div class="dl-block"><div class="lab">${ICON.key} Active enrolment keys</div>
+      <div id="token-list"></div></div>
     <div class="dl-block"><div class="lab">${ICON.refresh} Update installed agents</div>
       <div class="h-sub" style="margin:4px 0 10px">Push the latest build to every online agent in this organisation. Each updates in place and reconnects automatically.</div>
       <button class="btn sm" id="update-all">${ICON.download} Update all online agents</button>
@@ -1277,25 +1303,7 @@ async function renderDownloads() {
           <button data-ctd="off">Off</button>
         </div>
       </div></div>
-    <div class="dl-block"><div class="lab">${ICON.link} Shareable one-click installer link</div>
-      <div class="h-sub" style="margin:4px 0 10px">Send this link to anyone who needs the agent installed — <b>no RMM login required</b>. They download and run a one-click installer with the <b>server address and key already filled in</b>; the device then appears in your <b>approval queue</b> to accept. Valid for a set number of days, unlimited installs, revoke anytime.</div>
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <select id="dl-ttl" class="inp" style="width:auto">
-          <option value="1">1 day</option>
-          <option value="3">3 days</option>
-          <option value="7" selected>7 days</option>
-          <option value="14">14 days</option>
-          <option value="30">30 days</option>
-        </select>
-        <button class="btn sm" id="gen-dl-link">${ICON.plus} Generate link</button>
-      </div>
-      <div id="dl-link-result" style="margin-top:10px"></div>
-      <div id="dl-link-list" style="margin-top:10px"></div></div>
-    <div class="dl-block"><div class="lab">${ICON.nas} Synology NAS — Package Center source</div>
-      <div class="h-sub" style="margin:4px 0 10px">Monitor a Synology NAS like any other device. In DSM open <b>Package Center → Settings → Package Sources → Add</b>, paste the URL below, then install <b>Leuffen RMM</b> from the new source. It auto-connects to this organisation — no key to type. The NAS just needs a <b>Python 3</b> package installed (most do; otherwise install one from Package Center first).${syno.enabled ? "" : ` <b style="color:var(--bad)">The source is currently disabled in Settings → Agents.</b>`}</div>
-      <div class="code"><button class="btn ghost sm" id="syno-copy" data-c="${escapeAttr(syno.url)}">${ICON.copy} Copy</button>${escapeHtml(syno.url)}</div></div>
-    <div class="dl-block"><div class="lab">${ICON.key} Active enrolment keys</div>
-      <div id="token-list"></div></div>`;
+    </div>`;
   { const sc = $("syno-copy"); if (sc) sc.onclick = () => { navigator.clipboard?.writeText(sc.dataset.c); toast("Copied"); }; }
   $("update-all").onclick = async () => {
     if (!confirm("Push the latest agent to all online devices in this organisation?")) return;
