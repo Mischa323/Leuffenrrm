@@ -321,8 +321,39 @@
     F7: "f7", F8: "f8", F9: "f9", F10: "f10", F11: "f11", F12: "f12",
   };
 
+  // Ctrl+C / Ctrl+V are made to mean what people expect them to mean. Sent
+  // through as plain hotkeys they act only on the *remote* machine's own
+  // clipboard, so text could cross between the two computers only via the
+  // toolbar buttons. Instead:
+  //   Ctrl+V  -> the browser's own paste event hands us this computer's
+  //              clipboard, which we ship over as `clip_paste` (the agent sets
+  //              the remote clipboard and presses Ctrl+V there). Reading it
+  //              this way needs no clipboard permission prompt.
+  //   Ctrl+C  -> the hotkey still goes over so the remote copies, and a moment
+  //     /X       later we pull the result back into this computer's clipboard.
+  let clipPull = null;
+  function pullRemoteClipboard(delayMs) {
+    clearTimeout(clipPull);
+    clipPull = setTimeout(() => send({ kind: "clip_get" }), delayMs);
+  }
+
+  // The paste event fires on the focused element and bubbles, so listening on
+  // the document catches it and the activeElement check keeps it scoped to the
+  // session (not, say, a toolbar input).
+  document.addEventListener("paste", (ev) => {
+    if (document.activeElement !== canvas) return;
+    ev.preventDefault();
+    const cd = ev.clipboardData || window.clipboardData;
+    const text = cd ? cd.getData("text") : "";
+    if (text) { send({ kind: "clip_paste", text }); flash(btnClip, "Pasted ✓"); }
+  });
+
   canvas.addEventListener("keydown", (ev) => {
     const k = ev.key;
+    const clipMod = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
+    const lower = k.length === 1 ? k.toLowerCase() : k;
+    // Let Ctrl+V through untouched so the paste event above can fire.
+    if (clipMod && lower === "v") return;
     // Ctrl/Alt/Meta combinations -> hotkey (e.g. Ctrl+C, Alt+Tab, Win+R).
     if (ev.ctrlKey || ev.altKey || ev.metaKey) {
       const base = KEYMAP[k] || (k.length === 1 ? k.toLowerCase() : null);
@@ -335,6 +366,8 @@
       keys.push(base);
       ev.preventDefault();
       send({ kind: "hotkey", keys });
+      // Give the remote a moment to fill its clipboard, then mirror it here.
+      if (clipMod && (lower === "c" || lower === "x")) pullRemoteClipboard(180);
       return;
     }
     // Named non-printable key (Enter, Backspace, arrows, …).
