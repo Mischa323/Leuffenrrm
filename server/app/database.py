@@ -25,6 +25,12 @@ DB_PATH = os.environ.get(
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
+# One sqlite3 connection per thread. A single shared connection is not safe to
+# execute on concurrently, and FastAPI runs every sync endpoint in a threadpool:
+# two dashboard reads landing at the same time would raise
+# "InterfaceError: bad parameter or other API misuse" and 500 the request.
+# WAL lets the readers run in parallel; writes stay serialised by _lock.
+_threadlocal = threading.local()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS organizations (
@@ -1228,13 +1234,12 @@ def list_runs(org_id: str, device_id: str | None = None, limit: int = 50) -> lis
 def init_db() -> None:
     global _conn
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
-    _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA journal_mode=WAL;")
-    _conn.execute("PRAGMA foreign_keys=ON;")
+    _conn = _new_conn()
     _conn.executescript(SCHEMA)
     _migrate(_conn)
     _conn.commit()
+    # The thread that initialises reuses that same connection.
+    _threadlocal.conn = _conn
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -1360,10 +1365,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE organizations ADD COLUMN cpu_temp_driver TEXT NOT NULL DEFAULT 'inherit'")
 
 
+def _new_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    # Wait rather than fail if another connection is mid-write.
+    conn.execute("PRAGMA busy_timeout=5000;")
+    return conn
+
+
 def get_conn() -> sqlite3.Connection:
+    """This thread's connection (see `_threadlocal` above)."""
     if _conn is None:
         raise RuntimeError("Database not initialised; call init_db() first")
-    return _conn
+    conn = getattr(_threadlocal, "conn", None)
+    if conn is None:
+        conn = _new_conn()
+        _threadlocal.conn = conn
+    return conn
 
 
 @contextmanager
