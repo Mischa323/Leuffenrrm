@@ -17,6 +17,7 @@
   const btnLock  = document.getElementById("btn-lock");
   const btnCopy  = document.getElementById("btn-copy");
   const btnClip  = document.getElementById("btn-clip");
+  const btnType  = document.getElementById("btn-type");
   // Chrome (session bar + side panel) — all optional, populated best-effort.
   const connPill = document.getElementById("rc-conn");
   const rcSub    = document.getElementById("rc-sub");
@@ -337,6 +338,29 @@
     clipPull = setTimeout(() => send({ kind: "clip_get" }), delayMs);
   }
 
+  // "Paste as keystrokes": type the text out instead of pasting it. Plenty of
+  // places refuse a paste outright -- UAC prompts, the Windows sign-in screen, a
+  // remote session inside the remote session, password boxes that block it --
+  // and typed characters are indistinguishable from someone at the keyboard.
+  // Chunked so one long message can't stall the input stream, and capped
+  // because typing is far slower than pasting.
+  const KEYSTROKE_CHUNK = 200;
+  const KEYSTROKE_MAX = 10000;
+  let typeNextPaste = false;      // set by Ctrl+Shift+V, read by the paste event
+
+  function sendAsKeystrokes(text) {
+    // The remote presses Enter for a newline; normalise so a Windows clipboard's
+    // CRLF doesn't type it twice.
+    let out = String(text || "").replace(/\r\n?/g, "\n");
+    const clipped = out.length > KEYSTROKE_MAX;
+    out = out.slice(0, KEYSTROKE_MAX);
+    if (!out) { flash(btnType, "Clipboard empty"); return; }
+    for (let i = 0; i < out.length; i += KEYSTROKE_CHUNK) {
+      send({ kind: "key", text: out.slice(i, i + KEYSTROKE_CHUNK) });
+    }
+    flash(btnType, clipped ? `Typed first ${KEYSTROKE_MAX} chars` : "Typed \u2713");
+  }
+
   // The paste event fires on the focused element and bubbles, so listening on
   // the document catches it and the activeElement check keeps it scoped to the
   // session (not, say, a toolbar input).
@@ -345,15 +369,22 @@
     ev.preventDefault();
     const cd = ev.clipboardData || window.clipboardData;
     const text = cd ? cd.getData("text") : "";
-    if (text) { send({ kind: "clip_paste", text }); flash(btnClip, "Pasted ✓"); }
+    const asKeystrokes = typeNextPaste;
+    typeNextPaste = false;
+    if (!text) return;
+    if (asKeystrokes) { sendAsKeystrokes(text); return; }
+    send({ kind: "clip_paste", text });
+    flash(btnClip, "Pasted ✓");
   });
 
   canvas.addEventListener("keydown", (ev) => {
     const k = ev.key;
     const clipMod = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
     const lower = k.length === 1 ? k.toLowerCase() : k;
-    // Let Ctrl+V through untouched so the paste event above can fire.
-    if (clipMod && lower === "v") return;
+    // Let Ctrl+V through untouched so the paste event above can fire. Shift
+    // asks for the typed variant -- browsers fire `paste` for that chord too,
+    // so it rides the same permission-free path.
+    if (clipMod && lower === "v") { typeNextPaste = ev.shiftKey; return; }
     // Ctrl/Alt/Meta combinations -> hotkey (e.g. Ctrl+C, Alt+Tab, Win+R).
     if (ev.ctrlKey || ev.altKey || ev.metaKey) {
       const base = KEYMAP[k] || (k.length === 1 ? k.toLowerCase() : null);
@@ -404,6 +435,17 @@
 
   // Copy: pull the remote clipboard to this computer.
   btnCopy.onclick = () => { send({ kind: "clip_get" }); };
+
+  // Paste as keystrokes: the button has to read the clipboard itself (there is
+  // no paste event to ride), which is the one path that may prompt for
+  // permission -- the Ctrl+Shift+V chord above avoids that.
+  btnType.onclick = async () => {
+    try {
+      sendAsKeystrokes(await navigator.clipboard.readText());
+    } catch {
+      flash(btnType, "Clipboard blocked");
+    }
+  };
 
   // Paste: push this computer's clipboard into the remote.
   btnClip.onclick = async () => {

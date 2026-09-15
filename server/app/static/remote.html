@@ -121,6 +121,7 @@
             <div class="rc-tool-sep"></div>
             <button class="rc-tool" id="btn-copy" title="Copy the remote clipboard to this computer"><span id="ic-copy"></span> <span class="lbl">Copy</span></button>
             <button class="rc-tool" id="btn-clip" title="Paste this computer's clipboard into the remote"><span id="ic-clip"></span> <span class="lbl">Paste</span></button>
+            <button class="rc-tool" id="btn-type" title="Type this computer's clipboard out character by character — works where pasting is blocked (UAC, the sign-in screen, password boxes). Shortcut: Ctrl+Shift+V"><span id="ic-type"></span> <span class="lbl">Paste as keystrokes</span></button>
             <button class="rc-tool" id="btn-cad"><span class="lbl">Ctrl+Alt+Del</span></button>
             <button class="rc-tool" id="btn-lock" title="Lock the remote device"><span id="ic-lock"></span> <span class="lbl">Lock</span></button>
             <div class="rc-tool-sep"></div>
@@ -178,6 +179,7 @@
     _set("ic-size", "desktop");
     _set("ic-copy", "copy");
     _set("ic-clip", "copy");
+    _set("ic-type", "terminal");
     _set("ic-lock", "lock");
     _set("ic-reconnect", "refresh");
     _set("ic-fs", "scan");
