@@ -347,6 +347,20 @@ table.grid tbody tr:hover td { background: var(--surface-hover); }
   padding: 13px 15px; font-family: var(--font-mono); font-size: 12.5px; color: #cde3ff; overflow-x: auto; position: relative;
 }
 .code .copy { position: absolute; top: 9px; right: 9px; }
+/* ---- callout: an icon beside a title and a line of explanation ----
+   Used across the dashboard, Settings, Account and Setup, so it lives here in
+   the shared sheet. It used to be defined only in settings.css and setup.css,
+   which left every callout on the dashboard (the enrolment-key and share-link
+   reveals among them) rendering as bare, unframed text. */
+.callout { display: flex; gap: 13px; padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface-2); }
+.callout .ic { width: 32px; height: 32px; border-radius: var(--r-sm); display: grid; place-items: center; flex: none; }
+.callout .ic svg { width: 17px; height: 17px; }
+.callout.info .ic { background: var(--accent-soft); color: var(--accent-text); }
+.callout.warn .ic { background: var(--warn-soft); color: var(--warn); }
+.callout .ct { font-size: 13px; font-weight: 600; }
+.callout .cd { font-size: 12.5px; color: var(--text-dim); margin-top: 3px; line-height: 1.5; }
+.callout .cd code { font-family: var(--font-mono); font-size: 11.5px; background: var(--surface-3); padding: 1px 6px; border-radius: 5px; }
+
 .dl-block { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 15px 17px; margin-bottom: 12px; }
 .dl-block .lab { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
 .dl-block .lab svg { width: 15px; height: 15px; color: var(--text-dim); flex: none; }

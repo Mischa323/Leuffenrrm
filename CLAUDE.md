@@ -15,7 +15,7 @@ gone stale before — this is the checklist to prevent that).
 | Repo | What lives here |
 |---|---|
 | **`Mischa323/Leuffenrrm`** (this repo) | FastAPI server (`server/app/`), the vanilla-JS dashboard (`server/app/static/`), the **vendored** copy of the agent (`agent/`), the Synology packaging the server assembles (`packaging/synology/`), and `CHANGELOG.md` + `VERSION`. |
-| **`Mischa323/leuffen-rmm-agent`** | The **canonical** cross-platform agent (`agent/`), the **desktop console** (`console/`), and packaging (`packaging/windows` WiX MSIs for both, `packaging/synology` SPK) + release workflows. |
+| **`Mischa323/leuffen-rmm-agent`** | The **canonical** cross-platform agent (`agent/`), the **desktop console** (`console/`), packaging (`packaging/windows` WiX MSIs for both, `packaging/synology` SPK) + release workflows, and the **Home Assistant add-on repository** (`repository.yaml` + `homeassistant/leuffen_rmm/`). |
 
 The `agent/` code is duplicated in both repos and must stay **byte-identical**
 (copy canonical → vendored) **except** the `AGENT_VERSION` constant, which lags
@@ -64,6 +64,27 @@ in the vendored copy (see "The auto-update loop" below).
 - **`syno_agent.py` + `syno_inventory.py`** — the slim, stdlib-only Synology DSM
   agent. It carries its **own** `AGENT_VERSION` copy (the `.spk` doesn't bundle
   `inventory.py`) — kept in lockstep with `inventory.py`.
+- **`haos_agent.py` + `haos_inventory.py`** — Home Assistant OS. It reuses the
+  Synology agent's loop (`syno_agent.Agent` takes the inventory module, power
+  function and update message as parameters) with an inventory that asks the
+  **Supervisor API** (`http://supervisor`, `SUPERVISOR_TOKEN`) for host/OS/Core/
+  add-on state. It reports add-ons + Core as `services` and pending OS/Core/
+  Supervisor/add-on updates as `updates_available`, so the existing *Service not
+  running* and *Updates available* monitors work unchanged. `AGENT_VERSION` is
+  imported from `syno_inventory`, so there is no third copy to bump.
+
+## Home Assistant add-on (`leuffen-rmm-agent/homeassistant/leuffen_rmm/`)
+
+The agent repo root doubles as a Home Assistant **add-on repository**
+(`repository.yaml`); users add its GitHub URL (or the My Home Assistant link on
+**Downloads → Home Assistant OS**). The add-on is **built on the HA box**: its
+`Dockerfile` fetches the five `agent/*.py` files it needs from the release tag
+**`v<version>`**, where `<version>` is `config.yaml`'s `version`. So that line
+must only ever name a **published** tag — `windows-agent-msi.yml` moves it
+(`point-home-assistant-addon` job) after each release; don't hand-edit it ahead
+of a release. Changing `version` is also what makes HA offer the update.
+Options map to the usual env (`server_url` → `RMM_SERVER_URL`, `enrolment_key`
+→ `RMM_API_KEY`, …) and the identity lives in the add-on's `/data`.
 
 ## Desktop console (`leuffen-rmm-agent/console/`)
 
@@ -122,9 +143,11 @@ invent new colours/spacing.
   `.dev-card` (with CPU/MEM/DISK **ring gauges** — `ringChart()` in `app.js`),
   `.panel`/`.tab-head`, `.status` pill (on/off + LED), `.badge` (`ok/bad/na/warn/
   info`), `.meter`, `.mini-grid`/`.mini` tiles, `.modal` + `.modal-head/-foot`,
-  `.seg`/`.segmented`/`.seg-opt` cards, `.toast`, `.drawer`. Settings/account use
-  `settings.css`: `.card-block`, `.frow`/`.inp`, `.callout`, `.switch` toggle,
-  `.segmented`, `.utable`, `.acct-hero`, `.pw-meter`.
+  `.seg`/`.segmented`/`.seg-opt` cards, `.toast`, `.drawer`, `.callout` (+ `.info/
+  .warn`, used on every page). Settings/account use `settings.css`: `.card-block`,
+  `.frow`/`.inp`, `.switch` toggle, `.segmented`, `.utable`, `.acct-hero`,
+  `.pw-meter`. A class that `app.js` renders must live in `styles.css` — the
+  dashboard doesn't load `settings.css`.
 - **Icons:** inline SVG in `icons.js`. In JS use `ICON.<name>`; static markup uses
   `<span class="ni|hi" data-i="<name>">` hydrated by `ICON[dataset.i]` in the
   page's boot script — **dynamically-built HTML must inline `ICON.x`, not
@@ -161,6 +184,8 @@ invent new colours/spacing.
   WiX MSI and **publishes GitHub Release `v<AGENT_VERSION>`**. Manual:
   `gh workflow run windows-agent-msi.yml --ref main -R Mischa323/leuffen-rmm-agent`.
   **It does NOT run automatically after the version bump — you trigger it.**
+  After publishing it points the Home Assistant add-on's `config.yaml` at the
+  new tag and commits that (`[version bump]`).
 - **Leuffenrrm `server-image.yml`** — builds the server container image.
 
 ## ⚠️ The auto-update loop (do not trip this)
@@ -200,9 +225,10 @@ vendored `AGENT_VERSION` is **higher than the newest published MSI**, agents
    then verify `gh release view v<new> -R Mischa323/leuffen-rmm-agent` shows the
    `.msi` asset.
 3. **Sync the vendored agent** into this repo: copy the changed `agent/*.py`
-   canonical → `Leuffenrrm/agent/` (byte-identical), and **bump the vendored
-   `inventory.py` + `syno_inventory.py` `AGENT_VERSION` to the just-published
-   MSI version.**
+   canonical → `Leuffenrrm/agent/` (byte-identical, `haos_*.py` included), and
+   **bump the vendored `inventory.py` + `syno_inventory.py` `AGENT_VERSION` to
+   the just-published MSI version.** (The HA add-on needs nothing here — the MSI
+   workflow already moved it to the new tag.)
 4. Add a `CHANGELOG.md` entry.
 5. Branch → PR → merge the server change → **deploy**. The server now advertises
    the new version and online agents auto-update to the matching, published MSI.

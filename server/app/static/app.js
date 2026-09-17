@@ -1221,6 +1221,9 @@ async function _updateAllPrograms() {
     toast(`Updating apps on ${r.started} device(s) — see run history`);
   } catch (e) { toast(e.message); }
 }
+// Home Assistant add-on repository (the add-on lives in the agent repo).
+const HA_ADDON_REPO = "https://github.com/Mischa323/leuffen-rmm-agent";
+
 async function renderDownloads() {
   const base = location.origin;
   let info = { tokens: [], insecure_tls: location.protocol === "https:" };
@@ -1279,6 +1282,16 @@ async function renderDownloads() {
     <div class="dl-block"><div class="lab">${ICON.nas} Synology NAS — Package Center source</div>
       <div class="h-sub" style="margin:4px 0 10px">Monitor a Synology NAS like any other device. In DSM open <b>Package Center → Settings → Package Sources → Add</b>, paste the URL below, then install <b>Leuffen RMM</b> from the new source. It auto-connects to this organisation — no key to type. The NAS just needs a <b>Python 3</b> package installed (most do; otherwise install one from Package Center first).${syno.enabled ? "" : ` <b style="color:var(--bad)">The source is currently disabled in Settings → Agents.</b>`}</div>
       <div class="code"><button class="btn ghost sm" id="syno-copy" data-c="${escapeAttr(syno.url)}">${ICON.copy} Copy</button>${escapeHtml(syno.url)}</div></div>
+    <div class="dl-block"><div class="lab">${ICON.homeassistant} Home Assistant OS \u2014 add-on</div>
+      <div class="h-sub" style="margin:4px 0 10px">Monitor a Home Assistant server like any other device: health, the data disk, <b>pending updates</b>, whether Home Assistant and each <b>add-on</b> are running, remote reboot, and its configuration files. Home Assistant OS runs the agent as an add-on.</div>
+      <ol class="h-sub" style="margin:0 0 12px 18px;padding:0;line-height:1.9">
+        <li><a class="btn sm" href="https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=${encodeURIComponent(HA_ADDON_REPO)}" target="_blank" rel="noopener">${ICON.plus} Add the repository to Home Assistant</a>
+          <span style="margin-left:6px">or add <code class="mono">${escapeHtml(HA_ADDON_REPO)}</code> under <b>Settings \u2192 Add-ons \u2192 Add-on store \u2192 \u22ee \u2192 Repositories</b>.</span></li>
+        <li>Install <b>Leuffen RMM Agent</b> and fill in its <b>Configuration</b> tab with the values below, then start it.</li>
+        <li>Approve the server when it appears under <b>Approvals</b>.</li>
+      </ol>
+      <button class="btn sm" id="ha-settings">${ICON.key} Generate the add-on settings</button>
+      <div id="ha-result" style="margin-top:12px"></div></div>
     <div class="dl-block"><div class="lab">${ICON.key} Active enrolment keys</div>
       <div id="token-list"></div></div>
     <div class="dl-block"><div class="lab">${ICON.refresh} Update installed agents</div>
@@ -1305,6 +1318,26 @@ async function renderDownloads() {
       </div></div>
     </div>`;
   { const sc = $("syno-copy"); if (sc) sc.onclick = () => { navigator.clipboard?.writeText(sc.dataset.c); toast("Copied"); }; }
+  // Home Assistant: mint a key and lay out exactly the fields the add-on's
+  // Configuration tab asks for, each with its own copy button.
+  $("ha-settings").onclick = async () => {
+    try {
+      const { token } = await api(`/api/orgs/${state.org}/tokens`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      const row = (label, value) => `<div style="margin-top:8px"><div class="h-sub">${label}</div><div class="code"><button class="btn ghost sm tcopy" data-c="${escapeAttr(value)}">${ICON.copy} Copy</button>${escapeHtml(value)}</div></div>`;
+      $("ha-result").innerHTML = `<div class="callout warn"><div class="ic">${ICON.key}</div><div style="flex:1">
+        <div class="ct">Paste these into the add-on</div>
+        <div class="h-sub" style="margin:4px 0 2px">The key works <b>once</b>, for this one server. It also appears under <b>Active enrolment keys</b> below, where you can revoke it.</div>
+        ${row("Server address", base)}
+        ${row("Enrolment key", token)}
+        <div class="h-sub" style="margin-top:10px">Accept a self-signed certificate: <b>${ins ? "on" : "off"}</b></div>
+      </div></div>`;
+      $("ha-result").querySelectorAll(".tcopy").forEach((b) => b.onclick = () => { navigator.clipboard?.writeText(b.dataset.c); toast("Copied"); });
+      const info = await api(`/api/orgs/${state.org}/tokens`);
+      renderTokenList(info.tokens);
+    } catch (e) { toast(e.message); }
+  };
   $("update-all").onclick = async () => {
     if (!confirm("Push the latest agent to all online devices in this organisation?")) return;
     const b = $("update-all"); b.disabled = true; const old = b.innerHTML; b.innerHTML = "Sending…";
@@ -1672,6 +1705,7 @@ function ruleValueText(r) {
   if (m === "disk_health") return "SMART / disk health";
   if (m === "reboot_pending") return "reboot required";
   if (m === "uptime") return `up ≥ ${Math.round(r.threshold)} days`;
+  if (m === "updates_available") return `${Math.round(r.threshold)} or more updates pending`;
   if (m === "av_health") return `antivirus health · defs > ${Math.round(r.threshold)}d`;
   if (m === "firewall") return "firewall disabled";
   if (m === "bitlocker") return "BitLocker off (system drive)";
@@ -2090,7 +2124,7 @@ function renderOverview(d) {
     </div>
     <div id="disk-detail" class="hidden tile" style="margin-bottom:18px">${diskRows(disks)}</div>` : `<div class="tile" style="margin-bottom:20px;text-align:center;color:var(--text-dim)">Device offline · last seen ${relTime(d.last_seen)}</div>`;
   const rows = [
-    ["Operating system", `${d.os || ""} ${d.os_version || ""}`.trim()], ["Architecture", d.os_arch], ["Type", d.os_kind],
+    ["Operating system", osLabel(d)], ["Architecture", d.os_arch], ["Type", d.os_kind],
     ["Manufacturer", d.manufacturer], ["Model", d.model], ["Serial", d.serial],
     ["Processor", `${d.cpu || ""}${d.cores ? " · " + d.cores + " cores" : ""}`.trim()], ["Graphics", d.gpu], ["Memory", ram ? ram + " GB" : null],
     ["Primary IP", d.ip], ["MAC", d.mac], ["Logged-in user", d.logged_in_user], ["Agent version", d.agent_version],
@@ -2397,6 +2431,15 @@ function fmtBytes(n) {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
 }
+// "Windows 11 Pro" + "10.0.26200" reads well joined; "Home Assistant OS 16.2"
+// already carries its version, so don't print it twice.
+function osLabel(d) {
+  const os = (d.os || "").trim();
+  const ver = (d.os_version || "").trim();
+  if (!ver || os.endsWith(" " + ver) || os === ver) return os || ver;
+  return `${os} ${ver}`.trim();
+}
+
 function renderActions(d) {
   const acts = [
     { t: "Wake (WoL)", d: "Send magic packet", i: ICON.power, c: "go", f: () => act(`/api/devices/${d.id}/wake`, {}) },

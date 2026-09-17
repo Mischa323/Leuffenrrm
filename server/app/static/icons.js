@@ -51,6 +51,7 @@ const ICON = {
   mail: I('<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m3 6 9 7 9-7"/>'),
   key: I('<circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.5 12.5 9-9M16 4l3 3M19 7l2-2"/>'),
   clipboard: I('<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>'),
+  homeassistant: I('<path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9"/><circle cx="12" cy="13" r="1.6"/><path d="M12 14.6V20M9.2 11.8 12 14.6l2.8-2.8"/>'),
   keyboard: I('<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M10 13h4M7 16h10"/>'),
   gear: I('<circle cx="12" cy="12" r="3.2"/><path d="M19.4 13a7.8 7.8 0 0 0 0-2l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.7-1l-.3-2.5h-4l-.3 2.5a7.6 7.6 0 0 0-1.7 1l-2.3-1-2 3.4L4.6 11a7.8 7.8 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7.6 7.6 0 0 0 1.7 1l.3 2.5h4l.3-2.5a7.6 7.6 0 0 0 1.7-1l2.3 1 2-3.4Z"/>', { w: 1.6 }),
   save: I('<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/>', { w: 1.7 }),
@@ -76,6 +77,7 @@ const ICON = {
 
 function osIcon(os = "") {
   const s = os.toLowerCase();
+  if (s.includes("home assistant")) return ICON.homeassistant;
   if (s.includes("synology") || s.includes("dsm") || s.includes("nas")) return ICON.nas;
   if (s.includes("win")) return ICON.windows;
   if (s.includes("ubuntu") || s.includes("linux") || s.includes("debian") || s.includes("raspberry") || s.includes("pi os")) return ICON.linux;

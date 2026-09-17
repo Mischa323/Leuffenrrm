@@ -22,7 +22,7 @@ import time
 
 # Keep in sync with inventory.AGENT_VERSION (single source of truth for the SPK
 # version is inventory.py; this constant is the value the running NAS reports).
-AGENT_VERSION = "2.2.43"
+AGENT_VERSION = "2.2.44"
 
 
 # --------------------------------------------------------------------------- #
@@ -209,6 +209,11 @@ def _cpu_percent() -> float:
     if dt <= 0:
         return 0.0
     return round((1 - di / dt) * 100, 1)
+
+
+def prime() -> None:
+    """Take the first CPU sample so the next metrics() reports a real delta."""
+    _cpu_percent()
 
 
 def _uptime() -> float:

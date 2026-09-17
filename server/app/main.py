@@ -1238,6 +1238,8 @@ def _alert_detail(a: dict) -> str:
         return "Wake-on-LAN policy"
     if (metric or "").startswith("service:"):
         return f"Service '{metric.split(':', 1)[1]}' not running"
+    if metric == "updates_available":
+        return f"{int(a.get('threshold') or 0)} or more updates pending"
     return (f"{(metric or '').replace('_percent', '')} ≥ {float(a.get('threshold') or 0):.0f}% "
             f"for {float(a.get('duration_minutes') or 0):.0f} min")
 
@@ -2249,6 +2251,9 @@ def _effective_policies(dev: dict) -> list[dict]:
             value = f"backup failed or no backup in {r['threshold']:.0f}h"
         elif (r["metric"] or "").startswith("service:"):
             value = f"{r['metric'].split(':', 1)[1]} must be running"
+        elif r["metric"] == "updates_available":
+            # a count, not a percentage (the template's unit is "")
+            value = f"{r['threshold']:.0f} or more updates pending"
         else:
             value = f"{r['metric']} ≥ {r['threshold']:.0f}{unit}"
         out.append({"name": r["name"], "template_id": r["template_id"],
