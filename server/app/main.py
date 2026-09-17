@@ -3500,10 +3500,15 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
         _audit(device_id, user, "Opened terminal", "", dedupe_seconds=45)
     close_code: object = "?"
     close_reason = ""
-    if channel == "screen":
-        # Initial quality; an interactive viewer immediately overrides this with
-        # its selected preset, but a one-shot screenshot uses it as-is — so keep
-        # it crisp (near-native resolution, high quality).
+    if channel == "screen" and purpose == "screenshot":
+        # A one-shot still has no viewer logic of its own, so the server starts
+        # the capture for it -- crisp, near-native.
+        #
+        # Interactive sessions are deliberately NOT started here. Both viewers
+        # send their own screen_start the moment the socket opens, and a second
+        # start makes the agent tear down the capture helper it just launched
+        # and launch another: two helper processes per session, one of them
+        # wasted, and a visibly slower first frame.
         await agent.send({"type": "screen_start", "fps": 15, "quality": 82,
                           "max_edge": 3200, "purpose": purpose})
     try:
