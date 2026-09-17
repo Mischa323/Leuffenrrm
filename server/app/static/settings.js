@@ -30,7 +30,11 @@ const colorFor = (id) => { let h = 0; for (const c of String(id)) h = (h * 31 + 
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  if (!r.ok) {
+    const err = new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    err.status = r.status;          // lets callers tell "not allowed" from "failed"
+    throw err;
+  }
   return r.json();
 }
 async function saveKeys(obj, msg) {
@@ -1154,20 +1158,54 @@ function onSave(which) {
   if (which === "agents-unifi") return saveKeys({ RMM_UNIFI: document.querySelector('[data-toggle="unifiEnabled"]').classList.contains("on") ? "1" : "0" }, "UniFi monitoring policy saved");
 }
 
+// Loading needs three requests at once. Any one of them failing used to be
+// reported as "Admins only" -- so a server hiccup (a restart, a proxy blip, a
+// briefly busy database) told a real global admin they weren't one, and a
+// refresh "fixed" it. Only a 401/403 means you lack the rights; anything else
+// is retried, and if it keeps failing it is reported as what it is.
+const LOAD_ATTEMPTS = 3;
+
+async function loadSettingsData() {
+  let lastError;
+  for (let attempt = 1; attempt <= LOAD_ATTEMPTS; attempt++) {
+    try {
+      return await Promise.all([
+        api("/api/settings"),
+        api("/api/overview").then((d) => d.orgs.map((o) => ({ ...o, color: colorFor(o.id) }))),
+        api("/api/users"),
+      ]);
+    } catch (e) {
+      lastError = e;
+      if (e.status === 401 || e.status === 403) throw e;   // a real "no"
+      if (attempt < LOAD_ATTEMPTS) await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw lastError;
+}
+
+function showLoadError(e) {
+  const denied = e.status === 401 || e.status === 403;
+  $("settings-main").innerHTML = denied
+    ? `<div class="callout warn"><div class="ic">${ICON.lock}</div><div><div class="ct">Admins only</div><div class="cd">Settings are for global administrators. Sign in with an account that has that role.</div></div></div>`
+    : `<div class="callout warn"><div class="ic">${ICON.alert}</div><div style="flex:1"><div class="ct">Couldn't load the settings</div><div class="cd">The server answered: ${esc(e.message || "no response")}. This is usually momentary \u2014 a restart or a network blip.</div><button class="btn sm" id="settings-retry" style="margin-top:10px">${ICON.refresh} Try again</button></div></div>`;
+  const retry = $("settings-retry");
+  if (retry) retry.onclick = () => { $("settings-main").innerHTML = ""; boot(); };
+}
+
+async function boot() {
+  try {
+    [cfg, ORGS, USERS] = await loadSettingsData();
+  } catch (e) {
+    showLoadError(e);
+    return;
+  }
+  render();
+}
+
 async function init() {
   $("toast-ico").innerHTML = ICON.check;
   buildChrome("Settings");
   buildNav();
-  try {
-    [cfg, ORGS, USERS] = await Promise.all([
-      api("/api/settings"),
-      api("/api/overview").then((d) => d.orgs.map((o) => ({ ...o, color: colorFor(o.id) }))),
-      api("/api/users"),
-    ]);
-  } catch (e) {
-    $("settings-main").innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Admins only</div><div class="cd">${esc(e.message)} — sign in as a global administrator to manage settings.</div></div></div>`;
-    return;
-  }
-  render();
+  await boot();
 }
 init();
