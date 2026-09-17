@@ -2,6 +2,7 @@
 <html lang="en" data-theme="dark" data-density="comfortable" data-dataviz="on">
 <head>
   <meta charset="utf-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Remote control — Leuffen RMM</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -88,10 +89,10 @@
 </head>
 <body>
   <div class="app remote-app">
+    <header class="topbar" id="topbar"></header>
     <main class="remote-main">
       <!-- session bar -->
       <div class="rc-bar">
-        <a class="btn ghost sm" href="/" id="rc-back"><span id="rc-back-ico"></span> Back</a>
         <div class="rc-title">
           <div class="os-ico" id="rc-os"></div>
           <div style="min-width:0">
@@ -122,7 +123,7 @@
             <button class="rc-tool" id="btn-copy" title="Copy the remote clipboard to this computer"><span id="ic-copy"></span> <span class="lbl">Copy</span></button>
             <button class="rc-tool" id="btn-clip" title="Paste this computer's clipboard into the remote"><span id="ic-clip"></span> <span class="lbl">Paste</span></button>
             <button class="rc-tool" id="btn-type" title="Type this computer's clipboard out character by character — works where pasting is blocked (UAC, the sign-in screen, password boxes). Shortcut: Ctrl+Shift+V"><span id="ic-type"></span> <span class="lbl">Paste as keystrokes</span></button>
-            <button class="rc-tool" id="btn-cad"><span class="lbl">Ctrl+Alt+Del</span></button>
+            <button class="rc-tool" id="btn-cad" title="Send Ctrl+Alt+Del to the remote device"><span id="ic-cad"></span> <span class="lbl">Ctrl+Alt+Del</span></button>
             <button class="rc-tool" id="btn-lock" title="Lock the remote device"><span id="ic-lock"></span> <span class="lbl">Lock</span></button>
             <div class="rc-tool-sep"></div>
             <button class="rc-tool" id="btn-reconnect" title="Reconnect the session"><span id="ic-reconnect"></span> <span class="lbl">Reconnect</span></button>
@@ -168,18 +169,18 @@
 
   <script src="/icons.js"></script>
   <script src="/appearance.js"></script>
+  <script src="/chrome.js"></script>
   <script src="/remote.js"></script>
   <script>
     // hydrate static icon slots (remote.js manages the dynamic state)
     var _set = function (id, name) { var e = document.getElementById(id); if (e && window.ICON) e.innerHTML = ICON[name] || ""; };
-    _set("rc-back-ico", "chevD"); // rotated below into a left chevron
-    var back = document.getElementById("rc-back-ico");
-    if (back && window.ICON) back.innerHTML = ICON.chevR.replace('d="m9 6 6 6-6 6"', 'd="m15 6-6 6 6 6"');
+    buildChrome("Remote control");
     _set("rc-disc-ico", "power");
     _set("ic-size", "desktop");
     _set("ic-copy", "copy");
-    _set("ic-clip", "copy");
-    _set("ic-type", "terminal");
+    _set("ic-clip", "clipboard");
+    _set("ic-type", "keyboard");
+    _set("ic-cad", "key");
     _set("ic-lock", "lock");
     _set("ic-reconnect", "refresh");
     _set("ic-fs", "scan");

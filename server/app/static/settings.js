@@ -826,14 +826,14 @@ function buildAuthSeg() {
     o.onclick = () => { authMethod = m.id; buildAuthSeg(); };
     seg.appendChild(o);
   });
+  // An explanation of the selected option, not another option: no repeated
+  // title, and an info glyph rather than the option's own icon.
+  // (Legacy "sso"/"local" modes fold into hybrid on the server, so only the
+  // two offered modes need describing.)
   const ex = $("auth-extra");
-  ex.innerHTML = authMethod === "sso"
-    ? `<div class="callout info"><div class="ic">${ICON.globe}</div><div><div class="ct">Microsoft 365 SSO</div><div class="cd">Tenant/client credentials are set during setup. Switching here changes the active mode after a restart.</div></div></div>`
-    : authMethod === "local"
-    ? `<div class="callout info"><div class="ic">${ICON.lock}</div><div><div class="ct">Local accounts</div><div class="cd">Manage accounts under <b>Users &amp; roles</b>. Passwords are PBKDF2-hashed on this server.</div></div></div>`
-    : authMethod === "hybrid"
-    ? `<div class="callout info"><div class="ic">${ICON.shieldCheck}</div><div><div class="ct">Local accounts + Microsoft 365</div><div class="cd">Both sign-in methods are offered. A Microsoft 365 user is matched to a local account with the same email, so they share one identity and its admin rights. Requires the SSO credentials configured at setup.</div></div></div>`
-    : `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Dev login is on</div><div class="cd">Anyone reaching this server is signed in as bootstrap admin. Switch before production.</div></div></div>`;
+  ex.innerHTML = authMethod === "dev"
+    ? `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Anyone can get in</div><div class="cd">Everyone who reaches this server is signed in as the bootstrap admin. Switch before production.</div></div></div>`
+    : `<div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">How sign-in works</div><div class="cd">People sign in with a password on this server, or with Microsoft 365 once its credentials are set below. A Microsoft 365 user is matched to the local account with the same email, so both routes lead to one identity with one set of rights.</div></div></div>`;
 }
 
 const TLS_MODES = [

@@ -49,7 +49,7 @@ function render() {
         <div class="acct-hero">
           <div class="big-av">${initials(acct.name)}</div>
           <div><div class="ah-name">${esc(acct.name)}</div>
-            <div class="ah-sub"><span class="role-pill ${acct.is_global_admin ? "admin" : "member"}">${roleIcon} ${esc(acct.role)}</span>${acct.username ? `<span class="mono">@${esc(acct.username)}</span>` : ""}<span>${esc(acct.email)}</span></div></div>
+            <div class="ah-sub"><span class="role-pill ${acct.is_global_admin ? "admin" : "member"}">${roleIcon} ${esc(acct.role)}</span>${acct.username && acct.username !== acct.email ? `<span class="mono">@${esc(acct.username)}</span>` : ""}${acct.email && acct.email !== acct.name ? `<span>${esc(acct.email)}</span>` : ""}</div></div>
         </div>
       </div></div>
       <div class="card-block">
