@@ -87,6 +87,11 @@ async function init() {
   $("sidebar-scrim").onclick = closeSidebar;
   $("term-form").onsubmit = onTerm;
   $("approvals-ico").innerHTML = ICON.shieldCheck;
+  // The documentation app, shown only once this server has been pointed at one.
+  if (state.me.doc_url) {
+    $("doc-btn").href = state.me.doc_url;
+    $("doc-btn").classList.remove("hidden");
+  }
   setupScriptModal();
   setupMonitorModal();
   setupRuleModal();

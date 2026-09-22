@@ -383,6 +383,13 @@ POST /api/v1/devices/{id}/reboot</div>
           <tbody id="hook-rows"><tr><td colspan="5" class="muted" style="padding:18px">Loading…</td></tr></tbody></table>
         <div class="cb-body"><div class="hint">Each delivery carries <b>X-RMM-Event</b> and <b>X-RMM-Signature: sha256=…</b>, an HMAC of the exact request body using that webhook's secret. Verify it before you trust a payload.</div></div>
       </div>
+
+      ${block("LeuffenDoc", "The documentation and password app. Fill this in and a <b>Docs</b> button appears in the header, which signs people in over there with the account they already have here.",
+        `<div class="frow"><label>Address</label><input class="inp mono" id="doc-url" value="${esc(cfg.RMM_DOC_URL || "")}" placeholder="https://doc.example.com" />
+           <div class="hint">Leave empty if you don't run it — the button then stays hidden. The address you fill in here is also the only one this server will hand a sign-in ticket to.</div></div>
+         <div class="frow"><label>On that side</label><div class="code mono" style="white-space:pre-wrap">DOC_RMM_URL=${esc(cfg.RMM_PUBLIC_URL || location.origin)}
+DOC_RMM_API_KEY=lrmm_api_…</div>
+           <div class="hint">Issue the key above, under <b>API keys</b>, with <b>no organisation</b> — it reads the accounts and customers that LeuffenDoc keeps in step with this server.</div></div>`, "doc")}
     </section>
 
     <section class="sec" data-sec="appearance">
@@ -1163,6 +1170,11 @@ function onSave(which) {
     }
     msg.style.display = "none";
     return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value, SMTP_HOST: "" }, "Graph settings saved");
+  }
+  if (which === "doc") {
+    const url = $("doc-url").value.trim().replace(/\/+$/, "");
+    if (url && !/^https?:\/\//i.test(url)) { toast("The address needs to start with https:// or http://"); return; }
+    return saveKeys({ RMM_DOC_URL: url }, url ? "LeuffenDoc saved — reload to see the button" : "LeuffenDoc link removed");
   }
   if (which === "alerts-recipients") return saveKeys({ RMM_ALERT_RECIPIENTS: $("a-recipients").value }, "Recipients saved");
   if (which === "security-tls") return saveKeys({ RMM_TLS_MODE: tlsMode }, "TLS mode saved — restart to apply");

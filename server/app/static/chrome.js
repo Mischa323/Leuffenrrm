@@ -19,6 +19,7 @@ function buildChrome(crumb) {
       <a href="/">Dashboard</a><span class="sep">/</span><a class="here">${crumb}</a>
     </nav>
     <div class="spacer"></div>
+    <a class="org-switch hidden" id="doc-btn" target="_blank" rel="noopener" style="text-decoration:none" title="Documentatie en wachtwoorden — opent LeuffenDoc, al aangemeld"><span style="display:inline-flex;width:15px;height:15px">${ICON.book}</span>Docs</a>
     <button class="icon-btn" id="theme-btn" title="Toggle theme"><span id="theme-ico"></span></button>
     <div style="position:relative">
       <button class="icon-btn" id="chrome-bell" title="Alerts">${ICON.bell}<span class="ping hidden" id="chrome-bell-ping"></span></button>
@@ -74,6 +75,11 @@ function buildChrome(crumb) {
     ME = { name: me.email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
            email: me.email, role: me.is_global_admin ? "Global admin" : "Member", is_global_admin: me.is_global_admin };
     window.ME = ME;
+    if (me.doc_url) {
+      const doc = document.getElementById("doc-btn");
+      doc.href = me.doc_url;
+      doc.classList.remove("hidden");
+    }
     document.getElementById("chrome-av").textContent = initials(me.email);
     document.getElementById("chrome-name").textContent = ME.name;
     document.getElementById("chrome-email").textContent = me.email;

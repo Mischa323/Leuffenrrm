@@ -798,8 +798,13 @@ def auth_logout():
 @app.get("/api/me")
 def me(user: dict = Depends(auth.current_user)):
     orgs = db.orgs_for_user(user["email"], user["is_global_admin"])
+    # Not the app's front door but its sign-in path: the session here is what
+    # identifies you there, so the link hands you over signed in instead of
+    # dropping you on a sign-in page to press a second button.
+    doc = doc_url()
     return {"email": user["email"], "is_global_admin": user["is_global_admin"],
-            "orgs": [{"id": o["id"], "name": o["name"]} for o in orgs]}
+            "orgs": [{"id": o["id"], "name": o["name"]} for o in orgs],
+            "doc_url": f"{doc}/auth/rmm/start" if doc else ""}
 
 
 # --------------------------------------------------------------------------- #
@@ -882,6 +887,16 @@ def app_ticket(user: dict = Depends(auth.current_user)):
 # API key, which is the only step that reveals who they are. 2FA, the IP rules,
 # Microsoft 365 and removing an account therefore stay in one place.
 # --------------------------------------------------------------------------- #
+def doc_url() -> str:
+    """Where LeuffenDoc lives, or "" when nobody has pointed us at it.
+
+    Set under Settings -> API & webhooks (or as RMM_DOC_URL). Empty is the
+    normal state for an estate that does not run the documentation app, and
+    everything keyed off this stays out of sight until it is filled in.
+    """
+    return (os.environ.get("RMM_DOC_URL", "") or "").strip().rstrip("/")
+
+
 def _sso_return_allowed(url: str) -> str | None:
     """The return address, if it is one we were told to allow.
 
@@ -893,6 +908,11 @@ def _sso_return_allowed(url: str) -> str | None:
     allowed = [u.strip().rstrip("/") for u in
                os.environ.get("RMM_SSO_RETURN_URLS", "").replace(";", ",").split(",")
                if u.strip()]
+    # Naming the companion app in the settings *is* the statement that it may
+    # be returned to, so an admin who fills that in does not then have to
+    # repeat the same address in a second list to make the link work.
+    if doc_url():
+        allowed.append(doc_url())
     for prefix in allowed:
         if url == prefix or url.startswith(prefix + "/") or url.startswith(prefix + "?"):
             return url
@@ -4376,6 +4396,7 @@ SETTINGS_KEYS = [
     "RMM_LOGIN_ALERT", "RMM_LOGIN_ALERT_FAILS", "RMM_LOGIN_ALERT_QUIET",
     "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS",
     "MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_REDIRECT_URI",
+    "RMM_DOC_URL",
 ]
 
 

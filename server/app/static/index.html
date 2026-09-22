@@ -32,6 +32,7 @@
         <div class="hmenu" id="bell-menu" style="width:300px;right:0;left:auto"><div style="padding:14px 16px;color:var(--text-dim);font-size:13px">No new notifications</div></div>
       </div>
       <button class="org-switch hidden" id="approvals-btn" title="Pending device approvals"><span id="approvals-ico" style="display:inline-flex;width:15px;height:15px"></span><span id="approvals-badge" style="font-weight:700"></span></button>
+      <a class="org-switch hidden" id="doc-btn" target="_blank" rel="noopener" style="text-decoration:none" title="Documentatie en wachtwoorden — opent LeuffenDoc, al aangemeld"><span id="doc-ico" style="display:inline-flex;width:15px;height:15px"></span>Docs</a>
       <a class="icon-btn" id="docs-btn" href="https://github.com/Mischa323/Leuffenrrm/wiki" target="_blank" rel="noopener" title="Wiki / documentatie"><span id="docs-ico"></span></a>
       <button class="icon-btn" id="debug-btn" title="Debug — meld een probleem op GitHub"><span id="debug-ico"></span></button>
       <a class="icon-btn" id="settings-btn" href="settings.html" title="Admin settings"><span id="gear-ico"></span></a>
@@ -446,6 +447,7 @@
     document.querySelectorAll(".hi").forEach((s) => s.innerHTML = ICON[s.dataset.i] || "");
     document.getElementById("gear-ico").innerHTML = ICON.gear;
     document.getElementById("docs-ico").innerHTML = ICON.file;
+    document.getElementById("doc-ico").innerHTML = ICON.book;
     document.getElementById("debug-ico").innerHTML = ICON.alert;
     document.getElementById("bell-btn").onclick = (e) => { e.stopPropagation(); document.getElementById("bell-menu").classList.toggle("open"); };
     // Debug: open a pre-filled GitHub issue with basic diagnostics.
