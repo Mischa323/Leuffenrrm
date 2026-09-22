@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -2644,11 +2645,43 @@ def _api_device(device_id: str, key: dict) -> dict:
     return dev
 
 
+def _api_json_col(d: dict, column: str, fallback):
+    raw = d.get(column)
+    if not raw:
+        return fallback
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return fallback
+
+
 def _api_device_public(d: dict, org: dict | None, online: set[str]) -> dict:
+    """One device, for anything outside this server.
+
+    The hardware detail is here because a documentation system is the obvious
+    consumer: it should show what is in the machine rather than ask somebody to
+    type it in and then watch it go stale. Live figures (how full a disk is,
+    what the CPU is doing) stay out -- those belong to monitoring, not to a
+    description of the machine.
+    """
+    inventory = _api_json_col(d, "inventory_json", {})
+    disks = _api_json_col(d, "disks_json", [])
     return {"id": d["id"], "hostname": d["hostname"], "online": _display_online(d, online),
-            "os": d.get("os"), "os_kind": d.get("os_kind"), "ip": d.get("ip"),
+            "os": d.get("os"), "os_kind": d.get("os_kind"), "os_version": d.get("os_version"),
+            "os_arch": d.get("os_arch"), "ip": d.get("ip"),
             "mac": d.get("mac"), "agent_version": d.get("agent_version"),
             "last_seen": d.get("last_seen"),
+            "manufacturer": d.get("manufacturer"), "model": d.get("model"),
+            "serial": d.get("serial"), "cpu": d.get("cpu"), "gpu": d.get("gpu"),
+            "ram_total": d.get("ram_total"),
+            "is_server": bool(inventory.get("is_server")),
+            "disks": [{"mount": x.get("mount"), "fs": x.get("fs"), "total": x.get("total")}
+                      for x in disks if isinstance(x, dict)],
+            # Every adapter, not just the primary one: which machine hangs on
+            # which switch port is a question about a specific MAC address.
+            "nics": [{"name": n.get("name"), "mac": n.get("mac"),
+                      "ipv4": n.get("ipv4") or [], "ipv6": n.get("ipv6") or []}
+                     for n in (inventory.get("nics") or []) if isinstance(n, dict)],
             "org": {"id": org["id"], "name": org["name"]} if org else None}
 
 
