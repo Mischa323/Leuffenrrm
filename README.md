@@ -474,6 +474,19 @@ browser can send one too.
 **Settings → Security** shows the address you are judged by and says so when
 either of these is left loose.
 
+### Signing companion apps in (LeuffenDoc)
+
+The RMM is where accounts live, so it can sign people in to
+[LeuffenDoc](https://github.com/Mischa323/LeuffenDoc) as well: it hands the
+browser back with a single-use ticket, which the app redeems server-to-server
+with an API key. 2FA, the IP rules, Microsoft 365 and removing an account
+therefore stay here, and so does deciding who sees which organisation.
+
+| | |
+|---|---|
+| `RMM_SSO_RETURN_URLS` | Where a hand-off may send the browser back to (`https://doc.example.com`), comma separated. Anything else is refused — otherwise the endpoint would hand a valid ticket to whatever address a link named. |
+| API key | **Settings → API & webhooks**, spanning all organisations. The app uses it to redeem tickets and to read `/api/v1/orgs` and `/api/v1/users`. |
+
 #### Synology DSM as the reverse proxy
 
 DSM's reverse proxy passes almost nothing on by default, and the RMM needs

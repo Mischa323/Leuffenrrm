@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import time
+import urllib.parse
 
 from fastapi import (Depends, FastAPI, File, HTTPException, Query, Request, UploadFile,
                      WebSocket, WebSocketDisconnect)
@@ -540,11 +541,26 @@ async def _schedule_loop() -> None:
 # --------------------------------------------------------------------------- #
 # Auth routes
 # --------------------------------------------------------------------------- #
-def _sso_redirect(remember: bool = False) -> RedirectResponse:
+def _safe_next(target: str) -> str:
+    """Where to land after signing in. Only a path on this server: an absolute
+    URL here would turn the sign-in page into a way of bouncing people (and
+    anything in the URL) somewhere else."""
+    target = (target or "").strip()
+    if target.startswith("/") and not target.startswith("//"):
+        return target
+    return "/"
+
+
+def _sso_redirect(remember: bool = False, next_to: str = "/") -> RedirectResponse:
     state = secrets.token_urlsafe(16)
     resp = RedirectResponse(auth.login_url(state))
     resp.set_cookie("oauth_state", state, httponly=True, max_age=600,
                     samesite="lax", secure=auth.SECURE_COOKIES)
+    # Where the person was heading before Microsoft got involved; parked for the
+    # length of the round trip, like "keep me signed in" below.
+    if next_to and next_to != "/":
+        resp.set_cookie("oauth_next", next_to, httponly=True, max_age=600,
+                        samesite="lax", secure=auth.SECURE_COOKIES)
     # "Keep me signed in" is ticked before we hand the browser to Microsoft, and
     # only matters once it comes back — park it for the length of the round trip.
     if remember:
@@ -554,23 +570,26 @@ def _sso_redirect(remember: bool = False) -> RedirectResponse:
 
 
 @app.get("/auth/login")
-def auth_login(request: Request):
+def auth_login(request: Request, next: str = "/"):
+    """The sign-in page. `next` is where to land afterwards -- a hand-off to a
+    companion app, say -- and is always a path on this server (see _safe_next)."""
     _guard_ip(request)
+    target = _safe_next(next)
     if auth.AUTH_MODE == "dev":
-        return RedirectResponse("/")
+        return RedirectResponse(target)
     # SSO-only: go straight to Microsoft. Otherwise show the sign-in page
     # (local form, plus a Microsoft button in hybrid mode).
     if auth.SSO_ENABLED and not auth.LOCAL_ENABLED:
-        return _sso_redirect()
+        return _sso_redirect(next_to=target)
     return _serve_html("login.html")
 
 
 @app.get("/auth/sso")
-def auth_sso(request: Request, remember: int = 0):
+def auth_sso(request: Request, remember: int = 0, next: str = "/"):
     _guard_ip(request)
     if not auth.SSO_ENABLED:
         raise HTTPException(status_code=404, detail="SSO is not enabled")
-    return _sso_redirect(bool(remember))
+    return _sso_redirect(bool(remember), _safe_next(next))
 
 
 @app.get("/api/auth/config")
@@ -727,11 +746,12 @@ def auth_callback(request: Request, code: str = "", state: str = ""):
         return HTMLResponse(_sso_denied_page(email), status_code=403)
     # In hybrid mode, fold the SSO user onto a matching local account (by email).
     identity = auth.resolve_sso_identity(email)
-    resp = RedirectResponse("/")
+    resp = RedirectResponse(_safe_next(request.cookies.get("oauth_next") or "/"))
     resp.set_cookie(auth.COOKIE, auth.make_cookie(identity),
                     **auth.cookie_kwargs(request.cookies.get("oauth_remember") == "1"))
     resp.delete_cookie("oauth_state")
     resp.delete_cookie("oauth_remember")
+    resp.delete_cookie("oauth_next")
     return resp
 
 
@@ -850,6 +870,75 @@ def app_ticket(user: dict = Depends(auth.current_user)):
     return JSONResponse({"ticket": auth.make_app_ticket(user["email"]),
                          "expires_in": auth.APP_TICKET_SECONDS},
                         headers={"Cache-Control": "no-store"})
+
+
+# --------------------------------------------------------------------------- #
+# Signing a companion app in (LeuffenDoc)
+#
+# The RMM is where accounts live, so it is also where they are checked: the
+# companion app sends the browser here, this server recognises the session it
+# already has (or asks the person to sign in), and sends them back with a
+# single-use ticket. The app then redeems that ticket server-to-server with its
+# API key, which is the only step that reveals who they are. 2FA, the IP rules,
+# Microsoft 365 and removing an account therefore stay in one place.
+# --------------------------------------------------------------------------- #
+def _sso_return_allowed(url: str) -> str | None:
+    """The return address, if it is one we were told to allow.
+
+    Without this list the endpoint is an open redirect that hands a *valid
+    ticket* to whatever address the link says -- so an unlisted address is
+    refused rather than trusted.
+    """
+    url = (url or "").strip()
+    allowed = [u.strip().rstrip("/") for u in
+               os.environ.get("RMM_SSO_RETURN_URLS", "").replace(";", ",").split(",")
+               if u.strip()]
+    for prefix in allowed:
+        if url == prefix or url.startswith(prefix + "/") or url.startswith(prefix + "?"):
+            return url
+    return None
+
+
+def _sso_identity(identity: str, key: dict | None = None) -> dict:
+    """Who this person is, and which customers they may see -- the same answer
+    the dashboard itself works from, so access granted (or taken away) there
+    needs no second administration in the companion app."""
+    is_admin = auth.is_global_admin(identity)
+    user = db.get_user(identity) or {}
+    orgs = db.orgs_for_user(identity, is_admin)
+    if key and key.get("org_id"):        # an org-scoped key sees only its own
+        orgs = [o for o in orgs if o["id"] == key["org_id"]]
+    return {"email": identity,
+            "display_name": user.get("display_name") or "",
+            "is_global_admin": is_admin,
+            "orgs": [{"id": o["id"], "name": o["name"],
+                      "role": db.user_role(identity, o["id"]) or ("admin" if is_admin else "member")}
+                     for o in orgs]}
+
+
+@app.get("/auth/sso/handoff")
+def sso_handoff(request: Request, return_to: str = Query("", alias="return")):
+    """Send a signed-in dashboard user back to a companion app with a ticket."""
+    _guard_ip(request)
+    target = _sso_return_allowed(return_to)
+    if not target:
+        raise HTTPException(status_code=400,
+                            detail="That return address is not allowed. Add it to "
+                                   "RMM_SSO_RETURN_URLS on the server.")
+    user = auth.optional_user(request)
+    if not user:
+        # Sign in first, then come straight back here rather than landing on the
+        # dashboard and having to start the whole thing again.
+        here = f"/auth/sso/handoff?return={urllib.parse.quote(target, safe='')}"
+        return RedirectResponse(f"/auth/login?next={urllib.parse.quote(here, safe='')}")
+    ticket = auth.make_app_ticket(user["email"])
+    sep = "&" if "?" in target else "?"
+    return RedirectResponse(f"{target}{sep}ticket={urllib.parse.quote(ticket, safe='')}")
+
+
+# The two key-authenticated halves of this live with the rest of /api/v1, below:
+# `api_auth` is defined there, and a Depends() is evaluated when the route is
+# declared, not when it is called.
 
 
 # --------------------------------------------------------------------------- #
@@ -2541,6 +2630,54 @@ def _api_device_public(d: dict, org: dict | None, online: set[str]) -> dict:
             "mac": d.get("mac"), "agent_version": d.get("agent_version"),
             "last_seen": d.get("last_seen"),
             "org": {"id": org["id"], "name": org["name"]} if org else None}
+
+
+@app.post("/api/v1/sso/exchange")
+async def api_sso_exchange(request: Request, key: dict = Depends(api_auth)):
+    """Redeem a hand-off ticket for the identity behind it (see /auth/sso/handoff).
+
+    Each ticket works once, for a few minutes, and only for a caller holding an
+    API key -- so a ticket left behind in a browser's history is not enough on
+    its own to become anybody.
+    """
+    data = await request.json()
+    identity = auth.read_app_ticket((data.get("ticket") or "").strip())
+    if not identity:
+        raise HTTPException(status_code=401,
+                            detail="This sign-in link has expired or was already used")
+    if not auth._identity_still_valid(identity):
+        raise HTTPException(status_code=401, detail="That account no longer exists")
+    return _sso_identity(identity, key)
+
+
+@app.get("/api/v1/orgs")
+def api_orgs(key: dict = Depends(api_auth)):
+    """The customers. A companion app syncs these on their own rather than
+    through whoever happens to have access, so a customer nobody is assigned to
+    still exists over there."""
+    orgs = _api_scope_orgs(key)
+    return {"orgs": [{"id": o["id"], "name": o["name"]}
+                     for o in db.list_orgs() if o["id"] in orgs]}
+
+
+@app.get("/api/v1/users")
+def api_users(key: dict = Depends(api_auth)):
+    """Everyone who can sign in, and the customers each may see -- what a
+    companion app syncs so that access removed here disappears there too.
+
+    Bootstrap administrators are included even though they have no account row:
+    they can sign in, so as far as a companion app is concerned they exist.
+    """
+    out = []
+    seen = set()
+    for u in db.list_users():
+        identity = _sso_identity(u["username"], key)
+        identity["display_name"] = u.get("display_name") or identity["display_name"]
+        out.append(identity)
+        seen.add(u["username"].lower())
+    for admin in sorted(auth.BOOTSTRAP_ADMINS - seen):
+        out.append(_sso_identity(admin, key))
+    return {"users": out}
 
 
 @app.get("/api/v1/devices")
