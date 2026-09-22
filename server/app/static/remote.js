@@ -52,28 +52,37 @@
   const CLIP_MAGIC = "LRMMCLIP";
 
   // Speed/quality presets sent to the agent via screen_start. max_edge caps the
-  // captured frame's longest side: smaller = higher fps, larger = crisper. Tuned
-  // up into the range the agent already allows (fps ≤ 24, quality ≤ 90,
-  // max_edge ≤ 4096) — a much sharper baseline than before.
+  // captured frame's longest side: smaller = lighter, larger = crisper.
+  // All three ask for 30 fps: the agent paces to it and steps down only if that
+  // device or link genuinely can't hold it, so a preset is about how the picture
+  // looks, not how smooth it is. (Agent v2.2.45+; older agents cap at 24.)
   const PRESETS = {
-    // fps is capped at 24 by the agent. These are generous now that the earlier
-    // "disconnects" turned out to be the consent-banner bug (fixed), not
-    // bandwidth. H.264 (Phase 1) will drop the bitrate further once it engages.
-    balanced: { fps: 20, quality: 72, max_edge: 2400 },  // default — smooth + crisp
-    sharp:    { fps: 15, quality: 88, max_edge: 2880 },  // best image quality
-    smooth:   { fps: 24, quality: 60, max_edge: 1920 },  // highest frame rate
+    balanced: { fps: 30, quality: 72, max_edge: 2400 },  // default — smooth + crisp
+    sharp:    { fps: 30, quality: 88, max_edge: 2880 },  // best image quality
+    smooth:   { fps: 30, quality: 60, max_edge: 1920 },  // lightest on a thin link
   };
 
   // ---- live stats (frames + bytes per second) ----
+  // Counted over three seconds rather than one: a frame landing either side of a
+  // one-second boundary moves a per-second count by a whole frame, so a perfectly
+  // even 30 fps stream still reads 29/31/30. The three-second window shows the
+  // rate the stream is actually holding.
+  const STAT_WINDOW = 3;
   let frameCount = 0;
   let byteCount  = 0;
+  const frameHist = [];
+  const byteHist  = [];
   setInterval(() => {
     if (!ws || ws.readyState !== WebSocket.OPEN) { statsEl.textContent = "—"; return; }
-    const bits = byteCount * 8;
+    frameHist.push(frameCount); byteHist.push(byteCount);
+    while (frameHist.length > STAT_WINDOW) { frameHist.shift(); byteHist.shift(); }
+    const secs = frameHist.length;
+    const fps  = frameHist.reduce((a, b) => a + b, 0) / secs;
+    const bits = byteHist.reduce((a, b) => a + b, 0) * 8 / secs;
     const rate = bits >= 1e6 ? (bits / 1e6).toFixed(1) + " Mbps"
                              : Math.round(bits / 1e3) + " kbps";
     const res  = nativeW ? `${nativeW}×${nativeH}` : "—";
-    statsEl.textContent = `${frameCount} fps · ${rate} · ${res}`;
+    statsEl.textContent = `${Math.round(fps)} fps · ${rate} · ${res}`;
     frameCount = 0;
     byteCount  = 0;
   }, 1000);

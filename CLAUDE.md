@@ -59,7 +59,15 @@ in the vendored copy (see "The auto-update loop" below).
   (single source of truth).**
 - **`monitors.py`** — extended health monitors (disk/SMART, reboot-pending,
   Windows security, event log, processes), throttled + best-effort.
-- `snmp.py`, `screen.py` (remote control), `netscan.py`, `updater.py`,
+- **`screen.py`** — remote control. On Windows the capture runs in a helper
+  process in the interactive session, where **three stages run in parallel**:
+  `_FrameSource` (grab), the encode loop, and `_Sender`. Keep them that way — a
+  screen grab blocks until the display's next vertical blank, so chaining grab
+  and encode inside one refresh period drops the rate to a whole divisor of the
+  refresh rate (measured: 32 → 16 fps for 15 ms of extra work), which is what
+  made the frame rate bounce. `_Pacer` holds the rate on one number (30 by
+  default, `_RATE_STEPS` down from there) and only steps when two windows agree.
+- `snmp.py`, `netscan.py`, `updater.py`,
   `tray.py` (Windows tray dialog), `handlers.py`.
 - **`syno_agent.py` + `syno_inventory.py`** — the slim, stdlib-only Synology DSM
   agent. It carries its **own** `AGENT_VERSION` copy (the `.spk` doesn't bundle
