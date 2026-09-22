@@ -53,8 +53,16 @@ def main() -> None:
 
     if mode == "proxy":
         # TLS terminated upstream; trust forwarded headers for scheme/client IP.
-        kwargs.update(proxy_headers=True, forwarded_allow_ips="*")
-        print(f"[tls] mode=proxy — serving HTTP on {host}:{port} behind a reverse proxy")
+        # RMM_PROXY_IPS names the addresses the proxy connects from. Forwarded
+        # headers are then believed only on connections coming from there, so
+        # someone who can reach this container directly cannot hand it an
+        # address of their choosing. "*" (the default) keeps the old behaviour:
+        # any caller's headers are taken, which is only safe while nothing but
+        # the proxy can reach the port.
+        proxies = os.environ.get("RMM_PROXY_IPS", "*").strip() or "*"
+        kwargs.update(proxy_headers=True, forwarded_allow_ips=proxies)
+        print(f"[tls] mode=proxy — serving HTTP on {host}:{port} behind a reverse "
+              f"proxy (forwarded headers trusted from {proxies})")
     elif mode in ("self-signed", "self_signed", "selfsigned"):
         from app import tls
         tls.ensure_self_signed(cert, key, os.environ.get("RMM_TLS_HOSTNAME"))

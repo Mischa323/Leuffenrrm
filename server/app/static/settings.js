@@ -298,7 +298,8 @@ function render() {
            <textarea class="inp mono" id="ip-deny" rows="3" spellcheck="false" placeholder="203.0.113.66">${esc(cfg.RMM_IP_DENY || "")}</textarea>
            <div class="hint">Always refused, even when the allow list would let them in.</div></div>
          ${toggle("trustProxy", "This server sits behind a reverse proxy", "Take the caller's address from X-Forwarded-For. Only turn this on if a proxy you control sets that header \u2014 otherwise anyone can claim any address.", (cfg.RMM_TRUST_PROXY ?? "0") === "1")}
-         <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">You are connecting from <b class="mono" id="my-ip">\u2026</b></div><div class="cd"><b>Agents are never filtered</b>, so a mistyped rule cannot take your fleet offline. Rules that would shut you out are refused when you save. Sessions already signed in are not cut off \u2014 this decides where someone may sign in <i>from</i>.</div></div></div>`, "security-ip")}
+         <div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">You are connecting from <b class="mono" id="my-ip">\u2026</b></div><div class="cd"><b>Agents are never filtered</b>, so a mistyped rule cannot take your fleet offline. Rules that would shut you out are refused when you save. Sessions already signed in are not cut off \u2014 this decides where someone may sign in <i>from</i>.</div></div></div>
+         <div id="ip-proxy-note"></div>`, "security-ip")}
       ${block("Failed sign-in alerts", "Mail the administrators when someone keeps failing to sign in.",
         `${toggle("loginAlert", "Email on repeated failures", "Sent to your alert recipients, or to every global admin if none are configured.", (cfg.RMM_LOGIN_ALERT ?? "0") === "1")}
          <div class="frow"><label>Alert after</label>
@@ -418,6 +419,22 @@ async function showMyIp() {
     const r = await api("/api/my-ip");
     el.textContent = r.ip || "an unknown address";
     el.title = r.trust_proxy ? "Taken from X-Forwarded-For" : "The direct connection's address";
+    // An allow list is only as trustworthy as the address it judges. Two
+    // settings decide that, and both are easy to leave in the loose position.
+    const note = $("ip-proxy-note");
+    if (!note || !r.trust_proxy) return;
+    const warn = [];
+    if (r.forwarded_hops > 1) {
+      warn.push(`Your proxy <b>appends</b> to <code>X-Forwarded-For</code> (${r.forwarded_hops} addresses arrived: <span class="mono">${esc(r.forwarded_for)}</span>). Everything before the last one came from the caller's own browser. Set <code>proxy_set_header X-Forwarded-For $remote_addr;</code> so only what your proxy saw is passed on.`);
+    }
+    if (r.proxy_ips === "*") {
+      warn.push(`Forwarded headers are accepted from <b>any</b> caller. Set <code>RMM_PROXY_IPS</code> to your proxy's address, so someone reaching this server directly cannot claim an allowed address.`);
+    }
+    note.innerHTML = warn.length
+      ? `<div class="callout warn" style="margin-top:12px"><div class="ic">${ICON.alert}</div><div>
+           <div class="ct">The address above can be spoofed</div>
+           <div class="cd">${warn.join(" ")}</div></div></div>`
+      : "";
   } catch {
     el.textContent = "unknown";
   }

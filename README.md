@@ -449,8 +449,55 @@ volumes:
 Set `RMM_TLS_MODE=proxy` and have nginx/Traefik/Caddy terminate TLS and forward
 to the server on port 8000 with `X-Forwarded-Proto`/`X-Forwarded-For` headers.
 
+```nginx
+location / {
+    proxy_pass         http://127.0.0.1:8000;
+    proxy_set_header   Host              $host;
+    # $remote_addr, not $proxy_add_x_forwarded_for — see below.
+    proxy_set_header   X-Forwarded-For   $remote_addr;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+}
+```
+
 > Always set `RMM_PUBLIC_URL` (and `MS_REDIRECT_URI` for SSO) to the **https://**
 > URL clients actually use, so agent downloads and SSO redirects are correct.
+
+**If you use the IP allow/block list, two more things decide whether the address
+it judges can be trusted.** `X-Forwarded-For` is a header like any other, and a
+browser can send one too.
+
+| | |
+|---|---|
+| `RMM_PROXY_IPS` | The address your proxy connects from. Forwarded headers are believed only on connections from there, so someone reaching the server directly cannot claim an allowed address. Default `*` (any), which is only safe while nothing but the proxy can reach the port. |
+| **Overwrite, don't append** | nginx's usual `$proxy_add_x_forwarded_for` *adds* to whatever the browser sent. Use `$remote_addr` so the header carries only the address nginx actually saw. Caddy: `header_up X-Forwarded-For {remote_host}`. |
+
+**Settings → Security** shows the address you are judged by and says so when
+either of these is left loose.
+
+#### Synology DSM as the reverse proxy
+
+DSM's reverse proxy passes almost nothing on by default, and the RMM needs
+WebSockets (agents, remote control, the terminal and the file browser all run
+over them) as well as the forwarding headers. In **Control Panel → Login Portal
+→ Advanced → Reverse Proxy**, edit the rule and open **Custom Header**:
+
+| Header name | Value | Why |
+|---|---|---|
+| `Upgrade` | `$http_upgrade` | WebSockets. **Create → WebSocket** adds this pair for you. |
+| `Connection` | `$connection_upgrade` | ditto |
+| `X-Forwarded-Proto` | `$scheme` | Without it the server believes it is serving plain HTTP, and secure cookies and generated links go wrong. |
+| `X-Forwarded-For` | `$remote_addr` | The visitor's address. `$remote_addr` **replaces** any header the browser sent, which is the point — see above. |
+| `X-Real-IP` | `$remote_addr` | Not used by the server, but handy in DSM's own logs. |
+
+Then set `RMM_PROXY_IPS` to the address DSM's proxy connects from — for a
+container on the same NAS that is the Docker bridge gateway (commonly
+`172.17.0.1`), not the NAS's LAN address.
+
+Two more DSM settings worth checking on the rule's **General** tab: **HSTS** off
+unless you mean it, and the proxy's own timeout long enough that an idle
+WebSocket is not cut (DSM defaults to 60s; the agents reconnect, but sessions
+drop). Afterwards, open **Settings → Security** and confirm the address shown is
+yours rather than the NAS's.
 
 ---
 

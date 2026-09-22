@@ -4264,9 +4264,14 @@ def my_ip(request: Request, user: dict = Depends(auth.current_user)):
     """
     if not user["is_global_admin"]:
         raise HTTPException(status_code=403, detail="Global admin required")
+    hops = auth.forwarded_hops(request)
     return {"ip": auth.client_ip(request),
             "direct": request.client.host if request.client else "",
             "forwarded_for": request.headers.get("x-forwarded-for", ""),
+            # More than one hop means the proxy appends rather than replaces, so
+            # everything before the last entry came from the caller.
+            "forwarded_hops": len(hops),
+            "proxy_ips": os.environ.get("RMM_PROXY_IPS", "*"),
             "trust_proxy": os.environ.get("RMM_TRUST_PROXY", "0") == "1",
             "filtering": auth.ip_filtering_on()}
 

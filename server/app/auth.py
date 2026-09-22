@@ -440,14 +440,35 @@ def client_ip(request: Request) -> str:
 
     `X-Forwarded-For` is honoured only when RMM_TRUST_PROXY is set: taking it on
     faith would let anyone put whatever address they like in front of an allow
-    list. Only the left-most entry is used -- the client as seen by the first
-    proxy in the chain.
+    list.
+
+    Who resolves the header depends on `RMM_PROXY_IPS`:
+
+    * **Pinned to the proxy** -- uvicorn has already done it, and only for
+      connections that actually came from that proxy, so a caller reaching this
+      server directly cannot claim anything. Its answer stands.
+    * **Left as `*`** -- uvicorn believes any caller, and takes the *first*
+      entry, which is precisely the part a browser can write itself. So read the
+      header here instead and take the **last** entry: each proxy appends what
+      it saw, so the last one is what *our* proxy saw. (A proxy told to
+      overwrite rather than append -- `X-Forwarded-For $remote_addr` -- sends
+      one entry, and the two readings agree.) A caller who can reach this server
+      without passing the proxy can still claim an address; Settings → Security
+      says so.
     """
-    if os.environ.get("RMM_TRUST_PROXY", "0") == "1":
-        first = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-        if first:
-            return first
+    if os.environ.get("RMM_TRUST_PROXY", "0") == "1" \
+            and os.environ.get("RMM_PROXY_IPS", "*").strip() in ("", "*"):
+        hops = forwarded_hops(request)
+        if hops:
+            return hops[-1]
     return request.client.host if request.client else ""
+
+
+def forwarded_hops(request: Request) -> list[str]:
+    """The addresses in `X-Forwarded-For`, as sent. More than one means the
+    proxy appends to a header the caller's own browser may have supplied."""
+    raw = request.headers.get("x-forwarded-for") or ""
+    return [h.strip() for h in raw.split(",") if h.strip()]
 
 
 def ip_filtering_on() -> bool:
