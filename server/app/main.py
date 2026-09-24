@@ -933,11 +933,16 @@ def _sso_identity(identity: str, key: dict | None = None) -> dict:
     orgs = db.orgs_for_user(identity, is_admin)
     if key and key.get("org_id"):        # an org-scoped key sees only its own
         orgs = [o for o in orgs if o["id"] == key["org_id"]]
+    # The role that counts is the best one from a direct assignment *or* an
+    # access group -- the same answer the dashboard works from. Looking only at
+    # direct assignments reported everyone who came in through a group as a
+    # member, which starts to matter the moment a companion app acts on it.
     return {"email": identity,
             "display_name": user.get("display_name") or "",
             "is_global_admin": is_admin,
             "orgs": [{"id": o["id"], "name": o["name"],
-                      "role": db.user_role(identity, o["id"]) or ("admin" if is_admin else "member")}
+                      "role": db.user_effective_role(identity, o["id"])
+                              or ("admin" if is_admin else "member")}
                      for o in orgs]}
 
 
