@@ -70,6 +70,7 @@ docker compose up -d
 The `DOCKER_GID` is host-specific (check with `stat -c '%g' /var/run/docker.sock`) and should not be committed — keep it in `.env` only.
 
 Once running, one-click updates are available under **Settings → General → About this server**.
+**Check for updates** pulls the newest image and says which version is waiting; **Update & restart** hands the swap to a short-lived helper container. It keeps your ports, volumes, networks, restart policy and the environment you gave the container, but takes the command, health check and built-in defaults from the **new** image, so a release that changes those is not run with the old ones. The previous container is only removed once the new one reports healthy (the image has a `HEALTHCHECK` that works over HTTPS or HTTP, on whatever port you chose); if the new version does not come up, the previous one is put back and Settings says so.
 
 **Option B — build from source**
 

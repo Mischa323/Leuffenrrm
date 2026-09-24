@@ -1035,34 +1035,85 @@ function renderServerUpdate(st) {
   }
   const staged = st.update_staged;
   host.innerHTML = `<div class="upd-row">
-      ${staged ? `<span class="badge ok">update ready</span>` : `<span class="badge na">up to date</span>`}
+      ${staged
+        ? `<span class="badge ok">${st.waiting_version ? `v${esc(st.waiting_version)} ready` : "update ready"}</span>`
+        : `<span class="badge na">up to date</span>`}
       <button class="btn ghost sm" id="srv-check">${ICON.refresh} Check for updates</button>
       <button class="btn sm" id="srv-apply" ${staged ? "" : "disabled"}>${ICON.download} Update &amp; restart</button>
     </div>
-    <div class="hint" style="margin-top:8px">Image <span class="mono">${esc(st.image || "—")}</span></div>`;
+    <div class="hint" style="margin-top:8px">Image <span class="mono">${esc(st.image || "—")}</span></div>
+    <div id="srv-confirm"></div>`;
   $("srv-check").onclick = async () => {
     const b = $("srv-check"), o = b.innerHTML; b.disabled = true; b.innerHTML = "Checking…";
     try { const r = await api("/api/server/update/check", { method: "POST" }); renderServerUpdate(r); toast(r.update_staged ? "Update available" : "Already up to date"); }
     catch (e) { toast(e.message); b.disabled = false; b.innerHTML = o; }
   };
-  $("srv-apply").onclick = async () => {
-    if (!confirm("Pull the latest image and restart the server container now?\n\nThe dashboard will be briefly unavailable while it restarts.")) return;
-    const b = $("srv-apply"), o = b.innerHTML; b.disabled = true; b.innerHTML = "Updating…";
-    try {
-      const r = await api("/api/server/update/apply", { method: "POST" });
-      host.innerHTML = `<div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Updating…</div><div class="cd">${esc(r.note || "The server is restarting.")} This page will reconnect automatically.</div></div></div>`;
-      waitForServerBack();
-    } catch (e) { toast(e.message); b.disabled = false; b.innerHTML = o; }
+  // Asked on the page rather than with confirm(): browsers may refuse that
+  // dialog outright, which leaves a button that seems to do nothing.
+  $("srv-apply").onclick = () => {
+    const box = $("srv-confirm");
+    box.innerHTML = `<div class="callout warn" style="margin-top:12px"><div class="ic">${ICON.alert}</div>
+      <div style="flex:1"><div class="ct">Update now?</div>
+        <div class="cd">The dashboard is unavailable for about half a minute while the container restarts.
+          Agents reconnect by themselves. If the new version does not come up, the current one is put back.</div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn sm" id="srv-go">Yes, update</button>
+          <button class="btn ghost sm" id="srv-no">Cancel</button></div></div></div>`;
+    $("srv-no").onclick = () => { box.innerHTML = ""; };
+    $("srv-go").onclick = async () => {
+      $("srv-go").disabled = true;
+      const before = cfg.RMM_VERSION;
+      try {
+        await api("/api/server/update/apply", { method: "POST" });
+        host.innerHTML = `<div class="callout info"><div class="ic">${ICON.info}</div><div><div class="ct">Updating…</div>
+          <div class="cd" id="srv-progress">The new image is starting. This page reloads by itself.</div></div></div>`;
+        waitForNewVersion(before);
+      } catch (e) { toast(e.message); box.innerHTML = ""; }
+    };
   };
 }
-function waitForServerBack() {
-  let tries = 0;
-  const t = setInterval(async () => {
-    tries++;
-    try { const r = await fetch("/api/health", { cache: "no-store" }); if (r.ok) { clearInterval(t); toast("Server is back — reloading"); setTimeout(() => location.reload(), 800); } }
-    catch {}
-    if (tries > 60) clearInterval(t);
-  }, 3000);
+
+/* The old server keeps answering for a few seconds after the button, so a
+   reload on the first answer lands on the version you just left. Wait for the
+   version to change -- or, if the server went away and came back on the same
+   version, find out whether the update was rolled back. */
+function waitForNewVersion(before) {
+  const host = $("srv-update");
+  let wentAway = false;
+  const started = Date.now();
+  const tick = async () => {
+    let st = null;
+    try {
+      const r = await fetch("/api/server/update", { cache: "no-store" });
+      if (r.ok) st = await r.json();
+    } catch (e) { /* on its way down or back up */ }
+    if (!st) wentAway = true;
+    if (st && st.version && st.version !== before) {
+      toast(`Updated to v${st.version}`);
+      setTimeout(() => location.reload(), 900);
+      return;
+    }
+    if (st && wentAway) {
+      if (st.update_staged) {
+        host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div>
+          <div class="ct">The update failed — the previous version is running again</div>
+          <div class="cd">The new version${st.waiting_version ? ` (v${esc(st.waiting_version)})` : ""} did not
+            come up, so v${esc(before)} was put back. Nothing was lost. The container logs say why.</div></div></div>`;
+        return;
+      }
+      toast("Server is back");
+      setTimeout(() => location.reload(), 900);
+      return;
+    }
+    if (Date.now() - started > 240000) {
+      const p = $("srv-progress");
+      if (p) p.textContent = "This is taking longer than expected. Check the container — if the new "
+        + "version does not come up, the previous one is put back within two minutes.";
+      return;
+    }
+    setTimeout(tick, 2500);
+  };
+  setTimeout(tick, 3000);
 }
 
 function wire() {

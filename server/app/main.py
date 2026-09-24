@@ -237,6 +237,10 @@ app = FastAPI(title="Leuffen RMM", version=SERVER_VERSION)
 @app.on_event("startup")
 async def _startup() -> None:
     db.init_db()
+    # While this container's own image can still be looked up, note what it
+    # set -- an update needs that to carry over only what was chosen here.
+    from . import docker_update
+    asyncio.create_task(asyncio.to_thread(docker_update.remember_own_image))
     _resolve_setup_state()
     _ensure_default_org()
     _seed_device_secret_default()
