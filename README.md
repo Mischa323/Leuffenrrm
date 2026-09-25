@@ -487,11 +487,22 @@ therefore stay here, and so does deciding who sees which organisation.
 |---|---|
 | `RMM_DOC_URL` | LeuffenDoc's address (`https://doc.example.com`). Set it under **Settings → API & webhooks → LeuffenDoc** instead, and no restart is needed. Filling it in puts a **Docs** button in the header and makes that address a permitted hand-off target — an estate without the app leaves it empty and sees neither. |
 | `RMM_SSO_RETURN_URLS` | Further addresses a hand-off may send the browser back to, comma separated. Anything not listed (and not `RMM_DOC_URL`) is refused — otherwise the endpoint would hand a valid ticket to whatever address a link named. |
-| API key | **Settings → API & webhooks**, spanning all organisations. The app uses it to redeem tickets and to read `/api/v1/orgs`, `/api/v1/users` and `/api/v1/devices`. |
+| API key | **Settings → API & webhooks**, spanning all organisations. The app uses it to redeem tickets, to read `/api/v1/orgs`, `/api/v1/users` and `/api/v1/devices`, and to send documentation to `/api/v1/documentation`. |
 
 The **Docs** button opens the app's sign-in path, not its front door, so the
 session here carries you straight in rather than landing you on a second
 sign-in page.
+
+With `RMM_DOC_URL` set, the device drawer also gets a **Docs** tab: what
+LeuffenDoc has written down about the machine (when it was installed and by
+whom, its warranty, its location, notes), the switch port it is patched into,
+and the passwords, procedures and people linked to it — by name, each opening
+its page in LeuffenDoc. LeuffenDoc *sends* this with the API key it already
+has, so there is nothing further to configure and no connection from this
+server to it. Passwords themselves never come across, nor anything shut off to
+named colleagues there. What arrives is rebuilt field by field before it is
+stored — text of a bounded length, links only as http(s) — since it is shown
+in this dashboard.
 
 #### Synology DSM as the reverse proxy
 

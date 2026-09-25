@@ -1286,6 +1286,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "software_json" not in dcols:
         conn.execute("ALTER TABLE devices ADD COLUMN software_json TEXT")
         conn.execute("ALTER TABLE devices ADD COLUMN software_at REAL")
+    if "doc_json" not in dcols:
+        # What LeuffenDoc has documented about the machine, sent from there.
+        conn.execute("ALTER TABLE devices ADD COLUMN doc_json TEXT")
+        conn.execute("ALTER TABLE devices ADD COLUMN doc_at REAL")
     # Remove any duplicate (node, subnet) rows from before dedup, keeping one.
     conn.execute("DELETE FROM subnets WHERE id NOT IN "
                  "(SELECT MIN(id) FROM subnets GROUP BY node_id, cidr)")
@@ -1785,6 +1789,27 @@ def set_device_software(device_id: str, software: list) -> None:
     with write() as conn:
         conn.execute("UPDATE devices SET software_json=?, software_at=? WHERE id=?",
                      (json.dumps(software), _now(), device_id))
+
+
+def set_device_doc(device_id: str, doc: dict | None) -> None:
+    """Store (or, with None, forget) what the documentation app says about a
+    device. Kept on the device row, like the software list: it goes when the
+    device goes."""
+    with write() as conn:
+        conn.execute("UPDATE devices SET doc_json=?, doc_at=? WHERE id=?",
+                     (json.dumps(doc) if doc is not None else None,
+                      _now() if doc is not None else None, device_id))
+
+
+def get_device_doc(device_id: str) -> dict:
+    row = get_conn().execute(
+        "SELECT doc_json, doc_at FROM devices WHERE id=?", (device_id,)).fetchone()
+    if not row or not row["doc_json"]:
+        return {"doc": None, "received_at": None}
+    try:
+        return {"doc": json.loads(row["doc_json"]), "received_at": row["doc_at"]}
+    except (ValueError, TypeError):
+        return {"doc": None, "received_at": None}
 
 
 def get_device_software(device_id: str) -> dict:

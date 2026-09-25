@@ -2793,6 +2793,113 @@ async def api_v1_reboot(device_id: str, key: dict = Depends(api_auth)):
         raise HTTPException(status_code=504, detail=str(exc))
 
 
+# ---- Documentation, sent by LeuffenDoc --------------------------------------- #
+# The drawer's Docs tab shows what is documented about a machine: when it was
+# installed and by whom, the switch port it hangs on, the passwords and
+# procedures that belong to it. LeuffenDoc sends that here with the API key it
+# already uses to read devices, rather than this server fetching it -- so there
+# is no second key to set up and no second network path to open.
+#
+# It is shown in this dashboard, so it is taken apart and put back together
+# from what is expected rather than stored as it arrives: plain text of a
+# bounded length, and links that can only be http(s) or a path.
+DOC_TONES = ("warn", "bad")
+
+
+def _doc_str(value, limit: int = 300) -> str | None:
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    text = str(value).strip()
+    return text[:limit] if text else None
+
+
+def _doc_link(value) -> str | None:
+    text = _doc_str(value, 1000)
+    return text if text and text.lower().startswith(("https://", "http://")) else None
+
+
+def _doc_path(value) -> str | None:
+    text = _doc_str(value, 400)
+    return text if text and text.startswith("/") and not text.startswith("//") else None
+
+
+def _doc_list(value, limit: int) -> list:
+    return [x for x in value[:limit] if isinstance(x, dict)] if isinstance(value, list) else []
+
+
+def _clean_doc(doc: dict) -> dict:
+    def where(x: dict) -> dict:
+        return {"url": _doc_link(x.get("url")), "path": _doc_path(x.get("path"))}
+
+    fields = []
+    for f in _doc_list(doc.get("fields"), 60):
+        flag = f.get("flag") if isinstance(f.get("flag"), dict) else None
+        fields.append({
+            "label": _doc_str(f.get("label"), 100), "value": _doc_str(f.get("value"), 4000),
+            "multiline": bool(f.get("multiline")), **where(f),
+            "flag": ({"tone": flag.get("tone"), "text": _doc_str(flag.get("text"), 100)}
+                     if flag and flag.get("tone") in DOC_TONES else None)})
+    ports = [{"adapter": _doc_str(p.get("adapter"), 100), "mac": _doc_str(p.get("mac"), 40),
+              "switch": _doc_str(p.get("switch"), 200), "port": _doc_str(p.get("port"), 20),
+              "vlan": _doc_str(p.get("vlan"), 40), "label": _doc_str(p.get("label"), 100), **where(p)}
+             for p in _doc_list(doc.get("ports"), 20)]
+    related = [{"kind": _doc_str(r.get("kind"), 40), "kind_label": _doc_str(r.get("kind_label"), 60),
+                "name": _doc_str(r.get("name"), 200), **where(r)}
+               for r in _doc_list(doc.get("related"), 100)]
+    updated = doc.get("updated_at")
+    return {"name": _doc_str(doc.get("name"), 200), "kind_label": _doc_str(doc.get("kind_label"), 60),
+            "archived": bool(doc.get("archived")), **where(doc),
+            "updated_at": float(updated) if isinstance(updated, (int, float)) else None,
+            "updated_by": _doc_str(doc.get("updated_by"), 200),
+            "fields": [f for f in fields if f["label"] and f["value"]],
+            "ports": [p for p in ports if p["switch"]],
+            "related": [r for r in related if r["name"]]}
+
+
+@app.post("/api/v1/documentation")
+async def api_v1_documentation(request: Request, key: dict = Depends(api_auth)):
+    """Store what the documentation app says about devices, many at once:
+    `{"set": {device_id: summary}, "clear": [device_id, ...]}`. A device this
+    key cannot see is reported back as unknown rather than refused, so one
+    machine removed here in the meantime does not fail the rest."""
+    body = await request.json()
+    to_set = body.get("set") or {}
+    to_clear = body.get("clear") or []
+    if not isinstance(to_set, dict) or not isinstance(to_clear, list):
+        raise HTTPException(status_code=400, detail="Expected {set: {...}, clear: [...]}")
+    if len(to_set) + len(to_clear) > 500:
+        raise HTTPException(status_code=413, detail="At most 500 devices per call")
+    stored = cleared = 0
+    unknown = []
+    for device_id, doc in to_set.items():
+        dev = db.get_device(str(device_id))
+        if not dev or (key.get("org_id") and dev["org_id"] != key["org_id"]) \
+                or not isinstance(doc, dict):
+            unknown.append(device_id)
+            continue
+        clean = _clean_doc(doc)
+        if len(json.dumps(clean)) > 64_000:
+            unknown.append(device_id)
+            continue
+        db.set_device_doc(dev["id"], clean)
+        stored += 1
+    for device_id in to_clear:
+        dev = db.get_device(str(device_id))
+        if not dev or (key.get("org_id") and dev["org_id"] != key["org_id"]):
+            unknown.append(device_id)
+            continue
+        db.set_device_doc(dev["id"], None)
+        cleared += 1
+    return {"stored": stored, "cleared": cleared, "unknown": unknown}
+
+
+@app.get("/api/devices/{device_id}/documentation")
+def device_documentation(device_id: str, user: dict = Depends(auth.current_user)):
+    """The Docs tab: what LeuffenDoc sent about this device, if anything."""
+    _device_for_user(device_id, user)
+    return {**db.get_device_doc(device_id), "doc_url": doc_url()}
+
+
 # ---- Management (cookie-authed, from the dashboard) ------------------------ #
 @app.get("/api/orgs/{org_id}/api-keys")
 def list_org_api_keys(org_id: str, user: dict = Depends(auth.current_user)):

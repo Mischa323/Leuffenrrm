@@ -91,6 +91,7 @@ async function init() {
   if (state.me.doc_url) {
     $("doc-btn").href = state.me.doc_url;
     $("doc-btn").classList.remove("hidden");
+    document.querySelector('.dtabs [data-dtab="docs"]').classList.remove("hidden");
   }
   setupScriptModal();
   setupMonitorModal();
@@ -1994,12 +1995,72 @@ async function openDrawer(id) {
 }
 function selectDrawerTab(tab) {
   document.querySelectorAll(".dtabs button").forEach((b) => b.classList.toggle("active", b.dataset.dtab === tab));
-  ["overview", "history", "software", "files", "terminal", "actions"].forEach((t) => $("dtab-" + t).classList.toggle("hidden", t !== tab));
+  ["overview", "docs", "history", "software", "files", "terminal", "actions"].forEach((t) => $("dtab-" + t).classList.toggle("hidden", t !== tab));
   if (tab === "overview") renderOverview(state.deviceObj);
+  if (tab === "docs") loadDocs(state.device);
   if (tab === "history") loadDeviceHistory(state.device);
   if (tab === "software") loadSoftware(state.device);
   if (tab === "files") openFiles(); else closeFiles();
   if (tab === "terminal") openTerminal(); else closeTerminal();
+}
+/* Docs tab: what LeuffenDoc has documented about this machine -- when it was
+   installed and by whom, the switch port, the passwords and procedures that
+   belong to it. It is sent from there; this only shows it, with a way through
+   to the page itself. Passwords are names only: reading one happens over
+   there, where it is logged. */
+function docHref(x, base) {
+  if (x.url) return x.url;
+  if (x.path && base) return base + x.path;
+  return null;
+}
+function docIcon(kind) {
+  if (kind === "password") return ICON.key;
+  if (kind === "document") return ICON.file;
+  return ICON.link;
+}
+async function loadDocs(id) {
+  const host = $("dtab-docs");
+  host.innerHTML = `<div class="muted" style="padding:14px;font-size:12.5px">Loading documentation…</div>`;
+  let r;
+  try { r = await api(`/api/devices/${id}/documentation`); }
+  catch (e) { host.innerHTML = `<div class="callout warn"><div class="ic">${ICON.alert}</div><div><div class="ct">Couldn't load documentation</div><div class="cd">${escapeHtml(e.message)}</div></div></div>`; return; }
+  if (state.device !== id) return;                  // another device was opened meanwhile
+  const base = r.doc_url || "";
+  const d = r.doc;
+  const open = (href, label, cls) => href
+    ? `<a class="btn ${cls}" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${ICON.external} ${label}</a>` : "";
+  if (!d) {
+    host.innerHTML = `<div class="tile doc-empty"><span class="os-ico">${ICON.book}</span><div style="flex:1">
+        <div style="font-weight:650">Not documented yet</div>
+        <div class="h-sub">LeuffenDoc has not sent anything about this device. A machine appears there after its next sync with the RMM, and what is written down about it shows up here shortly after it is saved.</div>
+        <div style="margin-top:10px">${open(base, "Open LeuffenDoc", "ghost sm")}</div></div></div>`;
+    return;
+  }
+  const link = (x, html) => {
+    const href = docHref(x, base);
+    return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${html}</a>` : html;
+  };
+  const head = `<div class="tile doc-head"><span class="os-ico">${ICON.book}</span>
+      <div style="flex:1;min-width:0"><div style="font-weight:650">${escapeHtml(d.name || "")}</div>
+        <div class="h-sub">${escapeHtml(d.kind_label || "")}${d.archived ? " · taken out of use" : ""}</div></div>
+      ${open(docHref(d, base), "Open in LeuffenDoc", "sm")}</div>`;
+  const fields = d.fields.length ? `<div class="sec-label">Documented</div><dl class="inv doc-inv">${d.fields.map((f) => `
+      <dt>${escapeHtml(f.label)}</dt>
+      <dd${f.multiline ? ' class="doc-multi"' : ""}>${link(f, escapeHtml(f.value))}${
+        f.flag ? ` <span class="badge ${f.flag.tone}">${escapeHtml(f.flag.text)}</span>` : ""}</dd>`).join("")}</dl>` : "";
+  const ports = d.ports.length ? `<div class="sec-label">Switch port${d.ports.length > 1 ? "s" : ""}</div>` + d.ports.map((p) => `
+      <div class="tile doc-row"><span class="doc-ic">${ICON.link}</span><div style="flex:1;min-width:0">
+        <div>${link(p, `<b>${escapeHtml(p.switch)}</b>`)} · port ${escapeHtml(p.port || "?")}${p.vlan ? ` · VLAN ${escapeHtml(p.vlan)}` : ""}${p.label ? ` <span class="muted">(${escapeHtml(p.label)})</span>` : ""}</div>
+        <div class="h-sub">${escapeHtml(p.adapter || "")}${p.mac ? ` · <span class="mono">${escapeHtml(p.mac)}</span>` : ""}</div></div></div>`).join("") : "";
+  const groups = {};
+  d.related.forEach((x) => { (groups[x.kind_label || x.kind || "Other"] ||= []).push(x); });
+  const related = d.related.length ? `<div class="sec-label">Linked</div>` + Object.entries(groups).map(([label, list]) => `
+      <div class="tile doc-group"><div class="doc-glabel">${escapeHtml(label)} <span class="muted">${list.length}</span></div>
+        ${list.map((x) => `<div class="doc-link"><span class="doc-ic">${docIcon(x.kind)}</span>${link(x, escapeHtml(x.name))}</div>`).join("")}</div>`).join("") : "";
+  const empty = !d.fields.length && !d.ports.length && !d.related.length
+    ? `<div class="muted" style="padding:14px 2px;font-size:12.5px">Nothing is written down about this machine yet beyond what the RMM already knows.</div>` : "";
+  const foot = `<div class="muted doc-foot">From LeuffenDoc${d.updated_at ? ` · changed ${relTime(d.updated_at)}${d.updated_by ? ` by ${escapeHtml(d.updated_by)}` : ""}` : ""}. Passwords open in LeuffenDoc, where reading one is logged.</div>`;
+  host.innerHTML = head + fields + ports + related + empty + foot;
 }
 /* History tab: current policy issues (raised alerts) + resolved past issues. */
 function incidentIcon(metric) {
