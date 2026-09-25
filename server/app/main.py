@@ -8,6 +8,8 @@ management, and the self-contained agent download.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import ipaddress
 import json
 import logging
@@ -2791,6 +2793,101 @@ async def api_v1_reboot(device_id: str, key: dict = Depends(api_auth)):
         return await manager.request(device_id, {"type": "power", "action": "reboot"})
     except Exception as exc:
         raise HTTPException(status_code=504, detail=str(exc))
+
+
+# --------------------------------------------------------------------------- #
+# Pairing a companion app (LeuffenDoc) -- one button
+#
+# Instead of issuing an API key, copying it across and filling in an address on
+# both sides: LeuffenDoc sends the browser here with where it lives and the hash
+# of a secret only it holds (PKCE). A global administrator approves. The browser
+# goes back with a single-use code, and LeuffenDoc exchanges that code -- plus
+# the secret -- for an API key over its own connection. The key never passes
+# through a browser, and a code lifted from a browser's history is worthless
+# without the secret.
+# --------------------------------------------------------------------------- #
+_pairings: dict[str, dict] = {}
+PAIR_TTL = 600
+
+
+def _pair_target(doc_url: str) -> str | None:
+    """The companion app's base address, if it is a plain http(s) address."""
+    parts = urllib.parse.urlsplit((doc_url or "").strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc or parts.query or parts.fragment:
+        return None
+    return f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+
+
+def _pair_challenge_ok(challenge: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]{43,128}", challenge or ""))
+
+
+@app.get("/pair", response_class=HTMLResponse)
+def pair_page(request: Request):
+    """The approval page. Signing in first, and coming straight back."""
+    _guard_ip(request)
+    if not auth.optional_user(request):
+        here = f"/pair?{request.url.query}"
+        return RedirectResponse(f"/auth/login?next={urllib.parse.quote(here, safe='')}")
+    return _serve_html("pair.html")
+
+
+@app.get("/api/pair/info")
+def pair_info(doc: str = Query(""), user: dict = Depends(auth.current_user)):
+    target = _pair_target(doc)
+    return {"target": target, "host": urllib.parse.urlsplit(target).netloc if target else None,
+            "may": bool(user["is_global_admin"]), "user": user["email"],
+            "current": doc_url() or None}
+
+
+@app.post("/api/pair/approve")
+async def pair_approve(request: Request, user: dict = Depends(auth.current_user)):
+    if not user["is_global_admin"]:
+        raise HTTPException(status_code=403, detail="Only a global administrator can link an app")
+    data = await request.json()
+    target = _pair_target(data.get("doc"))
+    challenge = (data.get("challenge") or "").strip()
+    state = (data.get("state") or "").strip()
+    if not target or not _pair_challenge_ok(challenge) or not state:
+        raise HTTPException(status_code=400, detail="This link request is incomplete")
+    now = time.time()
+    for code in [c for c, p in _pairings.items() if p["expires"] < now]:
+        _pairings.pop(code, None)
+    # From now on this address is LeuffenDoc's: the Docs button, the drawer's
+    # Docs tab, and the one place a sign-in ticket may be handed to.
+    db.set_setting("RMM_DOC_URL", target)
+    os.environ["RMM_DOC_URL"] = target
+    code = secrets.token_urlsafe(32)
+    _pairings[code] = {"challenge": challenge, "doc_url": target, "by": user["email"],
+                       "expires": now + PAIR_TTL}
+    log.info("pairing with %s approved by %s", target, user["email"])
+    return {"redirect": f"{target}/koppelen/terug?code={code}"
+                        f"&state={urllib.parse.quote(state, safe='')}"}
+
+
+@app.post("/api/v1/pair/exchange")
+async def pair_exchange(request: Request):
+    """The code and the secret behind its challenge, for an API key. Once."""
+    _guard_ip(request)
+    data = await request.json()
+    pending = _pairings.pop((data.get("code") or "").strip(), None)
+    if not pending or pending["expires"] < time.time():
+        raise HTTPException(status_code=400, detail="This link code has expired or was already used")
+    digest = hashlib.sha256((data.get("verifier") or "").encode()).digest()
+    expected = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+    if not secrets.compare_digest(expected, pending["challenge"]):
+        raise HTTPException(status_code=400, detail="This link code does not belong to this request")
+    host = urllib.parse.urlsplit(pending["doc_url"]).netloc
+    name = f"LeuffenDoc ({host})"
+    # Linking again replaces the key of the previous link rather than leaving
+    # a second one working that nobody remembers.
+    for old in db.list_global_api_keys():
+        if old["name"] == name:
+            db.delete_api_key(old["id"])
+    raw = "lrmm_api_" + secrets.token_urlsafe(24)
+    db.create_api_key(None, name, raw)
+    return {"api_key": raw, "rmm_url": public_url(), "approved_by": pending["by"],
+            "orgs": len(db.list_orgs())}
 
 
 # ---- Documentation, sent by LeuffenDoc --------------------------------------- #

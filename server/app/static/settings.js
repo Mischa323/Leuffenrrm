@@ -387,9 +387,9 @@ POST /api/v1/devices/{id}/reboot</div>
       ${block("LeuffenDoc", "The documentation and password app. Fill this in and a <b>Docs</b> button appears in the header, which signs people in over there with the account they already have here.",
         `<div class="frow"><label>Address</label><input class="inp mono" id="doc-url" value="${esc(cfg.RMM_DOC_URL || "")}" placeholder="https://doc.example.com" />
            <div class="hint">Leave empty if you don't run it — the button then stays hidden. The address you fill in here is also the only one this server will hand a sign-in ticket to.</div></div>
-         <div class="frow"><label>On that side</label><div class="code mono" style="white-space:pre-wrap">DOC_RMM_URL=${esc(cfg.RMM_PUBLIC_URL || location.origin)}
-DOC_RMM_API_KEY=lrmm_api_…</div>
-           <div class="hint">Issue the key above, under <b>API keys</b>, with <b>no organisation</b> — it reads the accounts and customers that LeuffenDoc keeps in step with this server.</div></div>`, "doc")}
+         <div class="frow"><label>Link</label>
+           <div><button class="btn sm" id="doc-pair" type="button">${ICON.link} Link with LeuffenDoc</button></div>
+           <div class="hint">Fill in the address above and press this: LeuffenDoc asks you to approve, and both sides are set up — the API key included, which never leaves the two servers. A LeuffenDoc that is not set up yet asks for its set-up code first.</div></div>`, "doc")}
     </section>
 
     <section class="sec" data-sec="appearance">
@@ -1121,6 +1121,7 @@ function wire() {
   document.querySelectorAll(".save-btn").forEach((b) => b.onclick = () => onSave(b.dataset.save));
   const oc = $("add-org"); if (oc) oc.onclick = createOrg;
   const ak = $("add-key"); if (ak) ak.onclick = openNewKeyModal;
+  const dp = $("doc-pair"); if (dp) dp.onclick = () => onSave("doc-pair");
   const ah = $("add-hook"); if (ah) ah.onclick = openNewHookModal;
   document.querySelectorAll(".org-del").forEach((b) => b.onclick = () => deleteOrg(b.dataset.id, b.dataset.name));
   document.querySelectorAll(".user-edit").forEach((b) => b.onclick = () => {
@@ -1221,6 +1222,12 @@ function onSave(which) {
     }
     msg.style.display = "none";
     return saveKeys({ GRAPH_SENDER: $("a-sender").value, GRAPH_FROM: $("a-from").value, SMTP_HOST: "" }, "Graph settings saved");
+  }
+  if (which === "doc-pair") {
+    const url = $("doc-url").value.trim().replace(/\/+$/, "");
+    if (!/^https?:\/\//i.test(url)) { toast("Fill in LeuffenDoc's address first, starting with https://"); return; }
+    location.href = `${url}/koppelen?rmm=${encodeURIComponent(location.origin)}`;
+    return;
   }
   if (which === "doc") {
     const url = $("doc-url").value.trim().replace(/\/+$/, "");

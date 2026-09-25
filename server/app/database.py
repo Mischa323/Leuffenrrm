@@ -2423,6 +2423,18 @@ def set_api_key_enabled(kid: str, enabled: bool) -> None:
         conn.execute("UPDATE api_keys SET enabled=? WHERE id=?", (1 if enabled else 0, kid))
 
 
+def list_global_api_keys() -> list[dict]:
+    """Keys that span every organisation, without their hashes."""
+    rows = get_conn().execute(
+        "SELECT * FROM api_keys WHERE org_id IS NULL ORDER BY created_at DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d.pop("key_hash", None)
+        out.append(d)
+    return out
+
+
 def delete_api_key(kid: str, org_id: str | None = None) -> None:
     with write() as conn:
         if org_id is None:

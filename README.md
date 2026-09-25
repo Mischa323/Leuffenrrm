@@ -489,6 +489,15 @@ therefore stay here, and so does deciding who sees which organisation.
 | `RMM_SSO_RETURN_URLS` | Further addresses a hand-off may send the browser back to, comma separated. Anything not listed (and not `RMM_DOC_URL`) is refused — otherwise the endpoint would hand a valid ticket to whatever address a link named. |
 | API key | **Settings → API & webhooks**, spanning all organisations. The app uses it to redeem tickets, to read `/api/v1/orgs`, `/api/v1/users` and `/api/v1/devices`, and to send documentation to `/api/v1/documentation`. |
 
+**Linking with one button** does all of this: LeuffenDoc's set-up screen (or
+**Link with LeuffenDoc** here, next to its address) sends a global administrator
+to `/pair` to approve. The RMM then records LeuffenDoc's address as
+`RMM_DOC_URL` and issues its API key — handed to LeuffenDoc's server in
+exchange for a single-use code and a secret only that server holds (PKCE), so
+the key never passes through a browser. Linking again replaces the previous
+key. The key appears under **API keys** as *LeuffenDoc (its host)* and can be
+revoked there like any other.
+
 The **Docs** button opens the app's sign-in path, not its front door, so the
 session here carries you straight in rather than landing you on a second
 sign-in page.
