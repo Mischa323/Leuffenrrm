@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- **Copying out of a remote session lands what you just copied.** Ctrl+C in a remote session used to ask for the remote clipboard a fixed fifth of a second later — often before the application over there had filled it, so what arrived was whatever had been copied before, or nothing. The agent now notes where the clipboard stood when Ctrl+C was pressed and waits (up to 1.5 seconds) until the copy has landed; a clipboard the copying application still holds open is read again instead of given up on. When nothing was copied, the viewer says so rather than staying silent — and no longer empties your own clipboard. Where the browser will not let a page write to the clipboard by itself (Firefox and Safari outside a click, or any page over plain http), the copied text is offered with a **Copy to my clipboard** button — the click the browser wants — and selected for Ctrl+C if even that is refused. The desktop console does the same. Requires agent **v2.2.46+** for the waiting; older agents keep working as before, with a slightly longer delay.
 - **The device drawer's Docs tab sits between Terminal and History**, next to the history of the machine rather than between its overview and what you can do to it.
 
 ### Added

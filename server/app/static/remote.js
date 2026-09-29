@@ -247,9 +247,8 @@
       // Clipboard text coming back from the remote?
       if (isClipBlob(ev.data)) {
         const text = new TextDecoder("utf-8").decode(new Uint8Array(ev.data, CLIP_MAGIC.length));
-        navigator.clipboard.writeText(text)
-          .then(() => flash(btnCopy, "Copied ✓"))
-          .catch(() => flash(btnCopy, "Copy blocked"));
+        if (!text) { flash(btnCopy, "Nothing copied"); return; }
+        toLocalClipboard(text);
         return;
       }
       byteCount += ev.data.byteLength;
@@ -341,10 +340,66 @@
   //              this way needs no clipboard permission prompt.
   //   Ctrl+C  -> the hotkey still goes over so the remote copies, and a moment
   //     /X       later we pull the result back into this computer's clipboard.
+  // `after_copy` has the agent wait until the copy has actually landed on the
+  // remote clipboard (an older agent ignores it, and reads after the delay).
   let clipPull = null;
   function pullRemoteClipboard(delayMs) {
     clearTimeout(clipPull);
-    clipPull = setTimeout(() => send({ kind: "clip_get" }), delayMs);
+    clipPull = setTimeout(() => send({ kind: "clip_get", after_copy: true }), delayMs);
+  }
+
+  // Putting text on this computer's clipboard. Chrome allows it straight away;
+  // Firefox and Safari only within a click or key press, and nobody over plain
+  // http -- and by the time the remote's text arrives, the Ctrl+C is long past.
+  // Then a button offers it: pressing that is the click the browser wants, and
+  // if even that is refused the text is selected, ready for Ctrl+C.
+  async function toLocalClipboard(text) {
+    try {
+      if (!navigator.clipboard || !window.isSecureContext) throw new Error("no clipboard access");
+      await navigator.clipboard.writeText(text);
+      hideCopyOffer();
+      flash(btnCopy, "Copied ✓");
+    } catch {
+      offerCopy(text);
+    }
+  }
+
+  function hideCopyOffer() {
+    const box = document.getElementById("copy-offer");
+    if (box) box.remove();
+  }
+
+  function offerCopy(text) {
+    hideCopyOffer();
+    const box = document.createElement("div");
+    box.id = "copy-offer";
+    box.className = "copy-offer";
+    box.innerHTML = `<div class="co-head"><b>Copied on the remote</b>
+        <span>Your browser needs a click to put it on this computer's clipboard.</span>
+        <button class="co-close" title="Close">×</button></div>
+      <textarea readonly spellcheck="false"></textarea>
+      <div class="co-foot"><button class="btn sm" id="co-copy">Copy to my clipboard</button></div>`;
+    box.querySelector("textarea").value = text;
+    document.body.appendChild(box);
+    const done = () => { hideCopyOffer(); canvas.focus(); flash(btnCopy, "Copied ✓"); };
+    box.querySelector(".co-close").onclick = () => { hideCopyOffer(); canvas.focus(); };
+    box.querySelector("#co-copy").onclick = async () => {
+      const area = box.querySelector("textarea");
+      try {
+        if (!navigator.clipboard || !window.isSecureContext) throw new Error("no clipboard access");
+        await navigator.clipboard.writeText(text);
+        done();
+      } catch {
+        // No clipboard API at all (plain http): the old way still works
+        // inside a click.
+        area.focus();
+        area.select();
+        let copied = false;
+        try { copied = document.execCommand("copy"); } catch { copied = false; }
+        if (copied) { done(); return; }
+        box.querySelector("#co-copy").textContent = "Selected — press Ctrl+C";
+      }
+    };
   }
 
   // "Paste as keystrokes": type the text out instead of pasting it. Plenty of
@@ -406,8 +461,9 @@
       keys.push(base);
       ev.preventDefault();
       send({ kind: "hotkey", keys });
-      // Give the remote a moment to fill its clipboard, then mirror it here.
-      if (clipMod && (lower === "c" || lower === "x")) pullRemoteClipboard(180);
+      // Then mirror the remote clipboard here. The agent waits for the copy to
+      // land; the delay is for older agents that read straight away.
+      if (clipMod && (lower === "c" || lower === "x")) pullRemoteClipboard(300);
       return;
     }
     // Named non-printable key (Enter, Backspace, arrows, …).
@@ -443,7 +499,7 @@
   };
 
   // Copy: pull the remote clipboard to this computer.
-  btnCopy.onclick = () => { send({ kind: "clip_get" }); };
+  btnCopy.onclick = () => { send({ kind: "clip_get", report_empty: true }); };
 
   // Paste as keystrokes: the button has to read the clipboard itself (there is
   // no paste event to ride), which is the one path that may prompt for
