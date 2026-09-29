@@ -47,6 +47,13 @@
   let decoder    = null;   // WebCodecs VideoDecoder once a session negotiates H.264
   let sawKeyframe = false;  // ignore delta frames until the first keyframe arrives
   let vpts       = 0;       // monotonic timestamp for EncodedVideoChunk
+  let lastCodec  = null;    // what the session negotiated, to rebuild the decoder with
+  let forceJpeg  = false;   // H.264 kept failing on this computer: JPEG from here on
+  let hiccups    = [];      // when the decoder had to be rebuilt (last 30 s)
+  let backlogs   = [];      // when this computer fell behind decoding (last 20 s)
+  // Decode requests queued beyond this (~quarter of a second at 30 fps) mean
+  // this computer is not keeping up.
+  const MAX_DECODE_QUEUE = 8;
 
   // Marks a clipboard payload on the (otherwise JPEG) binary stream.
   const CLIP_MAGIC = "LRMMCLIP";
@@ -119,7 +126,7 @@
   function startCapture() {
     const p = PRESETS[selQual.value] || PRESETS.balanced;
     send({ type: "screen_start", fps: p.fps, quality: p.quality, max_edge: p.max_edge,
-           codecs: H264_SUPPORTED ? ["h264", "jpeg"] : ["jpeg"] });
+           codecs: H264_SUPPORTED && !forceJpeg ? ["h264", "jpeg"] : ["jpeg"] });
   }
 
   // ---- H.264 decode (WebCodecs) ----
@@ -129,6 +136,7 @@
     setTxt("rc-s-proto", "WebSocket · JPEG");
   }
   function setupDecoder(codecString) {
+    if (codecString) lastCodec = codecString;
     closeDecoder();
     try {
       decoder = new VideoDecoder({
@@ -143,9 +151,9 @@
             setStatus("ok", "Connected");
           } finally { frame.close(); }
         },
-        error: () => { setStatus("bad", "Video decoder error"); closeDecoder(); },
+        error: () => recoverDecoder("decoder error"),
       });
-      decoder.configure({ codec: codecString || "avc1.42E01F", optimizeForLatency: true });
+      decoder.configure({ codec: lastCodec || "avc1.42E01F", optimizeForLatency: true });
       setTxt("rc-s-proto", "WebSocket · H.264");
     } catch (e) {
       decoder = null;   // stay in JPEG mode
@@ -168,12 +176,53 @@
     if (!decoder || decoder.state !== "configured") return;
     const u8 = new Uint8Array(buf);
     const key = isKeyAU(u8);
-    if (!sawKeyframe) { if (!key) return; sawKeyframe = true; }  // await first keyframe
+    // Falling behind: this computer decodes slower than frames arrive, and the
+    // picture would lag further and further. Skip to the next keyframe (the
+    // agent sends one every ~2 s) so it catches up instead.
+    // (Counted once per time it falls behind, not once per skipped frame.)
+    if (!key && sawKeyframe && decoder.decodeQueueSize > MAX_DECODE_QUEUE) { sawKeyframe = false; fellBehind(); }
+    if (!sawKeyframe) { if (!key) return; sawKeyframe = true; }  // await a keyframe
     try {
       decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: vpts, data: u8 }));
       vpts += 33333;  // ~30fps in µs; only needs to be monotonic
     } catch (e) {
-      setStatus("bad", "Decode failed"); closeDecoder();
+      recoverDecoder("decode failed");
+    }
+  }
+
+  // One bad chunk used to freeze the picture until Reconnect: the decoder was
+  // closed and never made again, while frames kept arriving. Now it is rebuilt
+  // and picks up at the next keyframe, within about two seconds. If it keeps
+  // happening, H.264 is given up for this session and JPEG asked for instead,
+  // which decodes every frame on its own.
+  function recoverDecoder(why) {
+    const now = Date.now();
+    hiccups = hiccups.filter((t) => now - t < 30000);
+    hiccups.push(now);
+    console.warn(`[remote] video ${why}; rebuilding the decoder (${hiccups.length} in 30 s)`);
+    if (hiccups.length > 4) {
+      forceJpeg = true;
+      closeDecoder();
+      logActivity("Video kept failing to decode here — switched to JPEG");
+      startCapture();
+      return;
+    }
+    logActivity(`Video ${why} — recovering at the next keyframe`);
+    setupDecoder(lastCodec);
+  }
+
+  // Falling behind now and then is a busy moment; falling behind again and
+  // again means this computer cannot decode this much. Ask for the lighter
+  // stream rather than skipping frames for the rest of the session.
+  function fellBehind() {
+    const now = Date.now();
+    backlogs = backlogs.filter((t) => now - t < 20000);
+    backlogs.push(now);
+    if (backlogs.length >= 3 && selQual.value !== "smooth") {
+      backlogs = [];
+      selQual.value = "smooth";
+      logActivity("This computer could not keep up — switched to Smooth");
+      startCapture();
     }
   }
 
