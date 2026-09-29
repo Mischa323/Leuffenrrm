@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Hyper-V guests in the device API.** `/api/v1/devices` now lists a Hyper-V host's virtual machines (name, state, vCPUs, assigned memory), so LeuffenDoc can document them although they run no agent.
+
 ### Fixed
 - **Remote control froze until Reconnect after one bad video frame.** When the browser's H.264 decoder hit an error, the viewer closed it and never made a new one: frames kept arriving (the server log shows a steady 30 per second delivered) but none were shown, until Reconnect or a reload. The decoder is now rebuilt on the spot and the picture picks up at the next keyframe, within about two seconds, without reconnecting; the activity list says it happened. If H.264 keeps failing on this computer (five times in half a minute), the session switches to JPEG, which decodes every frame on its own.
 - **A computer that cannot decode as fast as frames arrive no longer falls further and further behind.** The viewer used to queue every frame, so the picture lagged more and more. It now skips to the next keyframe when it falls behind, and when that keeps happening it asks for the lighter **Smooth** stream by itself and says so.

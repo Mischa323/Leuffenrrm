@@ -2677,6 +2677,7 @@ def _api_device_public(d: dict, org: dict | None, online: set[str]) -> dict:
     """
     inventory = _api_json_col(d, "inventory_json", {})
     disks = _api_json_col(d, "disks_json", [])
+    hyperv = _api_json_col(d, "hyperv_json", {})
     return {"id": d["id"], "hostname": d["hostname"], "online": _display_online(d, online),
             "os": d.get("os"), "os_kind": d.get("os_kind"), "os_version": d.get("os_version"),
             "os_arch": d.get("os_arch"), "ip": d.get("ip"),
@@ -2693,6 +2694,13 @@ def _api_device_public(d: dict, org: dict | None, online: set[str]) -> dict:
             "nics": [{"name": n.get("name"), "mac": n.get("mac"),
                       "ipv4": n.get("ipv4") or [], "ipv6": n.get("ipv6") or []}
                      for n in (inventory.get("nics") or []) if isinstance(n, dict)],
+            # The virtual machines of a Hyper-V host. They run no agent of their
+            # own, so they are no devices here; they are machines a customer
+            # has all the same, and documentation wants them.
+            "hyperv": [{"name": v.get("name"), "state": v.get("state"), "vcpu": v.get("vcpu"),
+                        "mem_assigned": v.get("mem_assigned"), "status": v.get("status")}
+                       for v in ((hyperv or {}).get("vms") or [] if isinstance(hyperv, dict) else [])
+                       if isinstance(v, dict) and v.get("name")],
             "org": {"id": org["id"], "name": org["name"]} if org else None}
 
 
