@@ -94,6 +94,104 @@
     byteCount  = 0;
   }, 1000);
 
+  // ---- diagnostics: where a picture gets stuck ----
+  // What this viewer receives and draws goes to the server every ten seconds,
+  // for the session log -- next to what the device sent and how long frames
+  // waited for this link. A freeze is reported the moment it starts, with what
+  // it looks like from here: nothing arriving (the device, or the way here),
+  // or arriving but not drawn (this computer).
+  const REPORT_EVERY = 10000;
+  const FREEZE_AFTER = 2000;
+  const diag = { since: performance.now(), recv: 0, recvBytes: 0, drawn: 0, keyWait: 0,
+                 decodeQ: 0, gapRecv: 0, gapDraw: 0, freezes: 0, freezeMs: 0, errors: 0,
+                 behind: 0, rtts: [], hidden: document.hidden, longMs: 0, buffered: 0,
+                 lastRecv: 0, lastDraw: 0, frozenAt: 0, frozenCause: "" };
+  let lastClose = null;         // how the previous socket ended, told on the next one
+
+  function report(event, detail) {
+    send(Object.assign({ type: "viewer_event", event }, detail || {}));
+  }
+  function noteRecv(bytes) {
+    const now = performance.now();
+    if (diag.lastRecv) diag.gapRecv = Math.max(diag.gapRecv, now - diag.lastRecv);
+    diag.lastRecv = now; diag.recv++; diag.recvBytes += bytes;
+  }
+  function noteDraw() {
+    const now = performance.now();
+    if (diag.lastDraw) diag.gapDraw = Math.max(diag.gapDraw, now - diag.lastDraw);
+    diag.lastDraw = now; diag.drawn++;
+    if (diag.frozenAt) {
+      const ms = Math.round(now - diag.frozenAt);
+      diag.freezeMs = Math.max(diag.freezeMs, ms);
+      report("unfreeze", { after_ms: ms, cause: diag.frozenCause });
+      logActivity(`Picture moving again after ${(ms / 1000).toFixed(1)} s`);
+      diag.frozenAt = 0;
+    }
+  }
+  function freezeCause(now) {
+    if (document.hidden) return "this tab is in the background";
+    const recvAgo = diag.lastRecv ? now - diag.lastRecv : Infinity;
+    if (recvAgo > 1500) return `nothing arriving from the server (last frame ${Math.round(recvAgo)} ms ago)`;
+    if (decoder) {
+      if (!sawKeyframe) return `frames arriving, waiting for a keyframe (${diag.keyWait} set aside)`;
+      return `frames arriving but not decoded (decoder ${decoder.state}, queue ${decoder.decodeQueueSize})`;
+    }
+    return "frames arriving but not drawn (JPEG)";
+  }
+  setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !diag.lastDraw || diag.frozenAt) return;
+    const now = performance.now();
+    if (now - diag.lastDraw < FREEZE_AFTER) return;
+    diag.frozenAt = diag.lastDraw;
+    diag.freezes++;
+    diag.frozenCause = freezeCause(now);
+    report("freeze", { cause: diag.frozenCause, draw_ago: Math.round(now - diag.lastDraw),
+                       recv_ago: diag.lastRecv ? Math.round(now - diag.lastRecv) : -1,
+                       decode_q: decoder ? decoder.decodeQueueSize : 0, hidden: document.hidden,
+                       codec: decoder ? "h264" : "jpeg", quality: selQual.value });
+    console.warn(`[remote] picture stopped: ${diag.frozenCause}`);
+    logActivity(`Picture stopped: ${diag.frozenCause}`);
+  }, 250);
+  setInterval(() => {
+    const now = performance.now();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const rtts = diag.rtts;
+      const stats = {
+        secs: (now - diag.since) / 1000, recv: diag.recv, recv_kb: diag.recvBytes / 1024,
+        drawn: diag.drawn, key_wait: diag.keyWait, decode_q: diag.decodeQ,
+        gap_recv: Math.round(diag.gapRecv), gap_draw: Math.round(diag.gapDraw),
+        freezes: diag.freezes, freeze_ms: diag.freezeMs, errors: diag.errors, behind: diag.behind,
+        rtt_avg: rtts.length ? Math.round(rtts.reduce((a, b) => a + b, 0) / rtts.length) : -1,
+        rtt_max: rtts.length ? Math.round(Math.max(...rtts)) : -1,
+        hidden: diag.hidden || document.hidden, long_ms: Math.round(diag.longMs),
+        buffered: diag.buffered, codec: decoder ? "h264" : "jpeg", quality: selQual.value,
+        size: nativeW ? `${nativeW}x${nativeH}` : "-",
+      };
+      send(Object.assign({ type: "viewer_stats" }, stats));
+      console.info("[remote] last 10 s", stats);
+    }
+    Object.assign(diag, { since: now, recv: 0, recvBytes: 0, drawn: 0, keyWait: 0, decodeQ: 0,
+                          gapRecv: 0, gapDraw: 0, freezes: 0, freezeMs: 0, errors: 0, behind: 0,
+                          rtts: [], hidden: document.hidden, longMs: 0, buffered: 0 });
+  }, REPORT_EVERY);
+  // A ping answered through the server's queue for this viewer, behind the
+  // frames: the round trip is how far behind the picture runs.
+  setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    diag.buffered = Math.max(diag.buffered, ws.bufferedAmount);
+    send({ type: "viewer_ping", t: performance.now() });
+  }, 2000);
+  // Time the browser's main thread was too busy to do anything else.
+  try {
+    new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) diag.longMs += e.duration;
+    }).observe({ type: "longtask", buffered: false });
+  } catch (e) { /* not measured in this browser */ }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) diag.hidden = true;
+    report(document.hidden ? "hidden" : "visible", {});
+  });
+
   // ---- small helpers ----
   function setStatus(state, msg) {
     statusTx.textContent = msg;
@@ -148,14 +246,16 @@
             }
             ctx.drawImage(frame, 0, 0);
             frameCount++;
+            noteDraw();
             setStatus("ok", "Connected");
           } finally { frame.close(); }
         },
-        error: () => recoverDecoder("decoder error"),
+        error: (e) => recoverDecoder("decoder error", e && e.message),
       });
       decoder.configure({ codec: lastCodec || "avc1.42E01F", optimizeForLatency: true });
       setTxt("rc-s-proto", "WebSocket · H.264");
     } catch (e) {
+      report("decoder_error", { why: "could not set up H.264", detail: String(e && e.message || e) });
       decoder = null;   // stay in JPEG mode
       setTxt("rc-s-proto", "WebSocket · JPEG");
     }
@@ -181,12 +281,16 @@
     // agent sends one every ~2 s) so it catches up instead.
     // (Counted once per time it falls behind, not once per skipped frame.)
     if (!key && sawKeyframe && decoder.decodeQueueSize > MAX_DECODE_QUEUE) { sawKeyframe = false; fellBehind(); }
-    if (!sawKeyframe) { if (!key) return; sawKeyframe = true; }  // await a keyframe
+    if (!sawKeyframe) {                                           // await a keyframe
+      if (!key) { diag.keyWait++; return; }
+      sawKeyframe = true;
+    }
     try {
       decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: vpts, data: u8 }));
       vpts += 33333;  // ~30fps in µs; only needs to be monotonic
+      diag.decodeQ = Math.max(diag.decodeQ, decoder.decodeQueueSize);
     } catch (e) {
-      recoverDecoder("decode failed");
+      recoverDecoder("decode failed", e && e.message);
     }
   }
 
@@ -195,14 +299,17 @@
   // and picks up at the next keyframe, within about two seconds. If it keeps
   // happening, H.264 is given up for this session and JPEG asked for instead,
   // which decodes every frame on its own.
-  function recoverDecoder(why) {
+  function recoverDecoder(why, detail) {
     const now = Date.now();
     hiccups = hiccups.filter((t) => now - t < 30000);
     hiccups.push(now);
+    diag.errors++;
+    report("decoder_error", { why, detail: `${detail || "-"}; ${hiccups.length} in 30 s` });
     console.warn(`[remote] video ${why}; rebuilding the decoder (${hiccups.length} in 30 s)`);
     if (hiccups.length > 4) {
       forceJpeg = true;
       closeDecoder();
+      report("switched", { why: "H.264 kept failing to decode here", detail: "jpeg" });
       logActivity("Video kept failing to decode here — switched to JPEG");
       startCapture();
       return;
@@ -218,8 +325,13 @@
     const now = Date.now();
     backlogs = backlogs.filter((t) => now - t < 20000);
     backlogs.push(now);
+    if (link) diag.behind++;
+    else report("fell_behind", { why: "decoding slower than frames arrive",
+                                 decode_q: decoder ? decoder.decodeQueueSize : 0 });
     if (backlogs.length >= 3 && selQual.value !== "smooth") {
       backlogs = [];
+      report("switched", { why: link ? "the link could not keep up" : "this computer could not keep up",
+                           detail: "smooth" });
       selQual.value = "smooth";
       logActivity(link ? "The connection could not keep up — switched to Smooth"
                        : "This computer could not keep up — switched to Smooth");
@@ -273,6 +385,7 @@
     closeDecoder();
     setStatus("connecting", reconnectAttempts ? "Reconnecting…" : "Connecting…");
     frameCount = 0; byteCount = 0;
+    diag.lastRecv = 0; diag.lastDraw = 0; diag.frozenAt = 0;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/api/devices/${deviceId}/screen`);
@@ -280,6 +393,8 @@
 
     ws.onopen = () => {
       reconnectAttempts = 0;      // recovered — reset the backoff
+      // How the previous socket ended can only be told on this one.
+      if (lastClose) { report("closed", lastClose); lastClose = null; }
       startCapture();
       setStatus("connecting", "Starting capture…");
     };
@@ -292,6 +407,10 @@
           if (m.type === "video_info" && m.codec === "h264") { setupDecoder(m.codecString); return; }
           // The server had to skip frames: this link could not take them all.
           if (m.type === "behind") { fellBehind(true); return; }
+          if (m.type === "viewer_pong") {
+            if (typeof m.t === "number") diag.rtts.push(performance.now() - m.t);
+            return;
+          }
           if (m.error) setStatus("bad", m.error);
         } catch {}
         return;
@@ -304,6 +423,7 @@
         return;
       }
       byteCount += ev.data.byteLength;
+      noteRecv(ev.data.byteLength);
       // H.264 mode: feed the access unit to the WebCodecs decoder.
       if (decoder) { decodeAU(ev.data); return; }
       // Binary: JPEG frame (fallback / no WebCodecs).
@@ -318,6 +438,7 @@
         ctx.drawImage(img, 0, 0);
         URL.revokeObjectURL(url);
         frameCount++;
+        noteDraw();
         setStatus("ok", "Connected");
       };
       img.onerror = () => URL.revokeObjectURL(url);
@@ -329,6 +450,8 @@
       // Log the close code so the root cause of transient drops is diagnosable
       // (1006 = abnormal/proxy or network kill, 1001 = going away, 1011 = server).
       if (!userClosed) console.warn(`[remote] screen ws closed: code=${ev.code} reason="${ev.reason||""}" clean=${ev.wasClean}`);
+      if (!userClosed) lastClose = { code: ev.code, why: ev.reason || "-",
+                                     detail: `clean=${ev.wasClean}${diag.frozenAt ? ", picture was frozen" : ""}` };
       if (userClosed) { setStatus("bad", "Disconnected"); return; }
       scheduleReconnect();        // transient drop — self-heal
     };
@@ -527,6 +650,10 @@
 
   // ---- toolbar buttons ----
   document.getElementById("btn-reconnect").onclick = () => {
+    // Said before the socket goes: someone pressing Reconnect is usually the
+    // clearest sign that the picture had stopped.
+    report("reconnect", { why: "Reconnect button",
+                          detail: diag.frozenAt ? `picture frozen: ${diag.frozenCause}` : "picture was moving" });
     userClosed = false; reconnectAttempts = 0; connect();
   };
 

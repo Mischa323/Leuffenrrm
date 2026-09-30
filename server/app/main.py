@@ -13,6 +13,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -3868,6 +3869,139 @@ def _ws_token(ws: WebSocket) -> str | None:
     return value.strip() if scheme.lower() == "bearer" and value.strip() else None
 
 
+# --------------------------------------------------------------------------- #
+# Remote session diagnostics
+#
+# A picture that stutters or freezes is stuck in one of three places: the
+# device (sending nothing, or little), the way to the viewer (frames wait here
+# for the link), or the viewer's own computer (frames arrive but are not
+# drawn). Every ten seconds the session log gets one line with all three side
+# by side -- what came from the device, what went to the viewer and how long it
+# waited, and what the viewer says it received and drew -- and whatever goes
+# wrong in between gets a line of its own the moment it happens.
+# --------------------------------------------------------------------------- #
+_REPORT_EVERY = 10.0
+_DEVICE_SILENT = 3.0
+_VIEWER_MESSAGES = {"viewer_stats", "viewer_event", "viewer_ping"}
+_VIEWER_EVENTS_PER_MINUTE = 30
+_VIEWER_NUMBERS = {"secs", "recv", "recv_kb", "drawn", "key_wait", "decode_q", "gap_recv",
+                   "gap_draw", "freezes", "freeze_ms", "errors", "behind", "rtt_avg", "rtt_max",
+                   "long_ms", "buffered", "recv_ago", "draw_ago", "after_ms", "queue", "code"}
+_VIEWER_TEXTS = {"event", "cause", "why", "codec", "quality", "size", "state", "detail"}
+_WARN_EVENTS = {"freeze", "decoder_error", "fell_behind", "switched", "closed"}
+
+
+def _viewer_clean(data: dict) -> dict:
+    """What a viewer reported, reduced to known numbers and short texts: it
+    goes into a log, where a line break or a megabyte of text does not belong."""
+    out = {}
+    for key, value in data.items():
+        if key in _VIEWER_NUMBERS and isinstance(value, (int, float)) and not isinstance(value, bool):
+            if math.isfinite(value):
+                out[key] = round(value, 1) if isinstance(value, float) else value
+        elif key in _VIEWER_TEXTS and isinstance(value, (str, int, float)):
+            out[key] = re.sub(r"[\x00-\x1f]", " ", str(value))[:200]
+        elif key == "hidden" and isinstance(value, bool):
+            out[key] = value
+    return out
+
+
+def _viewer_said(ws: WebSocket, pipe, channel: str, label: str, data: dict) -> None:
+    kind = data.get("type")
+    if kind == "viewer_ping":
+        # Answered through the viewer's own queue, behind the frames: the round
+        # trip then says how far behind the picture is, not just the network.
+        t = data.get("t")
+        if pipe and isinstance(t, (int, float)) and not isinstance(t, bool):
+            pipe.offer({"type": "viewer_pong", "t": t})
+        return
+    clean = _viewer_clean(data)
+    if kind == "viewer_stats":
+        ws._viewer_stats = (time.monotonic(), clean)
+        return
+    # An event: logged at once, within reason.
+    now = time.monotonic()
+    window = getattr(ws, "_viewer_events", None)
+    if not window or now - window[0] > 60:
+        window = [now, 0]
+    window[1] += 1
+    ws._viewer_events = window
+    if window[1] > _VIEWER_EVENTS_PER_MINUTE:
+        return
+    event = clean.pop("event", "?")
+    if event == "freeze":
+        ws._viewer_freezes = getattr(ws, "_viewer_freezes", 0) + 1
+    detail = ", ".join(f"{k}={v}" for k, v in clean.items())
+    _remote_log.log(logging.WARNING if event in _WARN_EVENTS else logging.INFO,
+                    "remote %s VIEWER %s %s: %s", channel, label, event, detail or "-")
+
+
+def _mbit(nbytes: float, secs: float) -> float:
+    return nbytes * 8 / secs / 1e6 if secs > 0 else 0.0
+
+
+def _session_line(pipe, secs: float, viewer: dict | None) -> str:
+    i, o = pipe.inn.take(), pipe.out.take()
+    device = ("device->server {:.1f} fps {:.2f} Mbit/s, {} keyframes (largest {:.0f} KB), "
+              "longest gap {:.0f} ms").format(
+        i.get("frames", 0) / secs, _mbit(i.get("bytes", 0), secs), int(i.get("keys", 0)),
+        i.get("key_bytes", 0) / 1024, i.get("gap_ms", 0))
+    link = ("server->viewer {:.1f} fps {:.2f} Mbit/s, link busy {:.0f}%, longest wait {:.0f} ms, "
+            "slowest send {:.0f} ms, queue max {}, skipped {}, fell behind {}x, caught up {}x").format(
+        o.get("sent", 0) / secs, _mbit(o.get("bytes", 0), secs), o.get("busy", 0) / secs * 100,
+        o.get("wait_ms", 0), o.get("send_ms", 0), int(o.get("queue", 0)), int(o.get("skipped", 0)),
+        int(o.get("fell_behind", 0)), int(o.get("caught_up", 0)))
+    if not viewer:
+        return f"{secs:.0f}s | {device} | {link} | viewer: no report (an older page, or the desktop console)"
+    v = viewer
+    span = v.get("secs") or secs
+    seen = ("viewer: got {:.1f} fps {:.2f} Mbit/s, drew {:.1f} fps, longest without a new picture {} ms, "
+            "longest between frames {} ms, decode queue max {}, set aside awaiting a keyframe {}, "
+            "freezes {} (longest {} ms), decoder errors {}, told behind {}x, round trip {}/{} ms, "
+            "{} {} {}").format(
+        v.get("recv", 0) / span, v.get("recv_kb", 0) * 8 / 1000 / span, v.get("drawn", 0) / span,
+        v.get("gap_draw", 0), v.get("gap_recv", 0), v.get("decode_q", 0), v.get("key_wait", 0),
+        v.get("freezes", 0), v.get("freeze_ms", 0), v.get("errors", 0), v.get("behind", 0),
+        v.get("rtt_avg", "?"), v.get("rtt_max", "?"), v.get("codec", "?"), v.get("quality", "?"),
+        v.get("size", "?"))
+    if v.get("hidden"):
+        seen += ", tab was in the background"
+    if v.get("long_ms"):
+        seen += f", browser busy {v['long_ms']} ms"
+    return f"{secs:.0f}s | {device} | {link} | {seen}"
+
+
+async def _session_report(ws: WebSocket, pipe, channel: str, label: str) -> None:
+    last_line = time.monotonic()
+    silent_from = 0.0
+    warned_first = False
+    try:
+        while True:
+            await asyncio.sleep(1.0)
+            now = time.monotonic()
+            if pipe.last_in:
+                if now - pipe.last_in > _DEVICE_SILENT and silent_from != pipe.last_in:
+                    silent_from = pipe.last_in
+                    _remote_log.warning("remote %s SILENT %s: no frame from the device for %.1f s",
+                                        channel, label, now - pipe.last_in)
+                elif silent_from and pipe.last_in > silent_from:
+                    _remote_log.info("remote %s SILENT %s: frames from the device again, after %.1f s",
+                                     channel, label, pipe.long_gap or (pipe.last_in - silent_from))
+                    silent_from = 0.0
+            elif not warned_first and now - pipe.opened > 10:
+                warned_first = True
+                _remote_log.warning("remote %s SILENT %s: no first frame from the device after 10 s "
+                                    "(its screen.log says whether the capture started)", channel, label)
+            if now - last_line >= _REPORT_EVERY:
+                secs, last_line = now - last_line, now
+                got = getattr(ws, "_viewer_stats", None)
+                viewer = got[1] if got and now - got[0] < 15 else None
+                _remote_log.info("remote %s STATS %s %s", channel, label,
+                                 _session_line(pipe, secs, viewer))
+    except asyncio.CancelledError:
+        pass
+
+
 async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
                      purpose: str = "control") -> None:
     # Authenticate the operator. Browsers send the signed session cookie
@@ -3898,13 +4032,18 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
         await ws.send_json({"type": "error", "error": "Device offline"})
         await ws.close()
         return
-    manager.subscribe(device_id, channel, ws)
     # --- detailed session diagnostics (why do remote sessions drop?) -----------
     t0 = time.monotonic()
     peer = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
     who = (user or {}).get("email", "dev-auth")
-    _remote_log.info("remote %s OPEN device=%s user=%s peer=%s purpose=%s",
-                     channel, device_id, who, peer, purpose)
+    label = f"device={device_id} peer={peer}"
+    manager.subscribe(device_id, channel, ws, label)
+    pipe = getattr(ws, "_relay_pipe", None)
+    browser = re.sub(r"[\x00-\x1f]", " ", ws.headers.get("user-agent") or "?")[:160]
+    _remote_log.info("remote %s OPEN device=%s user=%s peer=%s purpose=%s browser=%r",
+                     channel, device_id, who, peer, purpose, browser)
+    reporter = (asyncio.create_task(_session_report(ws, pipe, channel, label))
+                if channel == "screen" and purpose == "control" and pipe else None)
     # Audit trail for the device History tab (dedupe so an auto-reconnecting session
     # or a burst of screenshot refreshes doesn't spam it). Passive screenshots are
     # recorded distinctly from an interactive remote-control session.
@@ -3930,6 +4069,11 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
     try:
         while True:
             data = await ws.receive_json()
+            # What the viewer measures about itself is for the session log,
+            # not for the device.
+            if isinstance(data, dict) and data.get("type") in _VIEWER_MESSAGES:
+                _viewer_said(ws, pipe, channel, label, data)
+                continue
             # Relay dashboard input to the agent.
             if channel == "terminal":
                 await agent.send({"type": "shell_input", "data": data.get("data", "")})
@@ -3946,19 +4090,28 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
         close_reason = repr(e)
         _remote_log.warning("remote %s ERROR device=%s: %r", channel, device_id, e)
     finally:
+        if reporter:
+            reporter.cancel()
         manager.unsubscribe(device_id, channel, ws)
         dur = time.monotonic() - t0
-        frames = getattr(ws, "_relay_frames", 0)
-        kb = getattr(ws, "_relay_bytes", 0) / 1024.0
+        out = pipe.out.total if pipe else {}
+        came = pipe.inn.total if pipe else {}
+        frames = int(out.get("sent", 0))
+        kb = out.get("bytes", 0) / 1024.0
         drops = getattr(ws, "_relay_drops", 0)
-        skipped = getattr(ws, "_relay_skipped", 0)
         rate = (frames / dur) if dur > 0 else 0.0
         # skipped = frames not sent because this viewer had fallen behind (it
-        # picked up at the next keyframe instead of stalling the agent).
+        # picked up at a keyframe instead of stalling the agent).
         _remote_log.info("remote %s CLOSE device=%s code=%s reason=%r after=%.1fs "
-                         "frames=%d (%.1f/s) sent=%.0fKB (%.0fkbit/s) send_fail=%d skipped=%d",
+                         "frames=%d (%.1f/s) sent=%.0fKB (%.0fkbit/s) send_fail=%d skipped=%d "
+                         "| from the device %d frames (%.1f/s), fell behind %dx, "
+                         "caught up at a keyframe %dx, longest wait %.0f ms, freezes seen by the viewer %d",
                          channel, device_id, close_code, close_reason, dur,
-                         frames, rate, kb, (kb * 8 / dur) if dur > 0 else 0.0, drops, skipped)
+                         frames, rate, kb, (kb * 8 / dur) if dur > 0 else 0.0, drops,
+                         int(out.get("skipped", 0)), int(came.get("frames", 0)),
+                         came.get("frames", 0) / dur if dur > 0 else 0.0,
+                         int(out.get("fell_behind", 0)), int(out.get("caught_up", 0)),
+                         out.get("wait_ms", 0), getattr(ws, "_viewer_freezes", 0))
         if channel == "screen" and manager.is_online(device_id):
             await manager.get(device_id).send({"type": "screen_stop"})
 
