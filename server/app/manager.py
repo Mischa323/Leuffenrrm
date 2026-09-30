@@ -22,8 +22,9 @@ class AgentConn:
         self.device_id = device_id
         self.org_id = org_id
         self.ws = ws
-        # dashboard sockets subscribed to this agent, by channel ('terminal'|'screen')
-        self.subscribers: dict[str, set[WebSocket]] = {"terminal": set(), "screen": set()}
+        # dashboard sockets subscribed to this agent, by channel ('terminal'|'screen'),
+        # each with the pipe that feeds it (see _ViewerPipe)
+        self.subscribers: dict[str, dict[WebSocket, "_ViewerPipe"]] = {"terminal": {}, "screen": {}}
 
     async def send(self, msg: dict[str, Any]) -> None:
         await self.ws.send_json(msg)
@@ -39,7 +40,10 @@ class ConnectionManager:
     async def register(self, device_id: str, org_id: str, ws: WebSocket) -> AgentConn:
         async with self._lock:
             conn = AgentConn(device_id, org_id, ws)
+            old = self._agents.get(device_id)
             self._agents[device_id] = conn
+            if old is not None:
+                _release_viewers(old)
             return conn
 
     async def unregister(self, device_id: str, conn: "AgentConn | None" = None) -> None:
@@ -50,7 +54,9 @@ class ConnectionManager:
         while it's actually connected)."""
         async with self._lock:
             if conn is None or self._agents.get(device_id) is conn:
-                self._agents.pop(device_id, None)
+                gone = self._agents.pop(device_id, None)
+                if gone is not None:
+                    _release_viewers(gone)
 
     def get(self, device_id: str) -> AgentConn | None:
         return self._agents.get(device_id)
@@ -86,35 +92,177 @@ class ConnectionManager:
     def subscribe(self, device_id: str, channel: str, ws: WebSocket) -> None:
         conn = self.get(device_id)
         if conn:
-            conn.subscribers.setdefault(channel, set()).add(ws)
+            pipe = _ViewerPipe(ws, channel, device_id)
+            ws._relay_pipe = pipe
+            conn.subscribers.setdefault(channel, {})[ws] = pipe
 
     def unsubscribe(self, device_id: str, channel: str, ws: WebSocket) -> None:
         conn = self.get(device_id)
         if conn:
-            conn.subscribers.get(channel, set()).discard(ws)
+            conn.subscribers.get(channel, {}).pop(ws, None)
+        # The pipe goes too when the agent reconnected in the meantime and this
+        # viewer was subscribed to the connection before.
+        pipe = getattr(ws, "_relay_pipe", None)
+        if pipe:
+            pipe.close()
 
     async def fanout(self, device_id: str, channel: str, data: Any) -> None:
+        """Hand what the agent sent to everyone watching. Never waits on a
+        viewer: the agent's socket is read by the same loop that calls this, and
+        a viewer that is slow to receive used to stall it -- the frames, but
+        also that device's heartbeats and metrics -- until the agent reported
+        "frame send stalled" and the picture froze."""
         conn = self.get(device_id)
         if not conn:
             return
-        is_bytes = isinstance(data, (bytes, bytearray))
-        dead = []
-        for ws in list(conn.subscribers.get(channel, set())):
-            try:
-                if is_bytes:
-                    await ws.send_bytes(data)
-                    # Per-subscriber counters, read by _bridge_ws when it logs the
-                    # session close (frames/throughput help diagnose drops).
-                    ws._relay_frames = getattr(ws, "_relay_frames", 0) + 1
-                    ws._relay_bytes = getattr(ws, "_relay_bytes", 0) + len(data)
-                else:
-                    await ws.send_json(data)
-            except Exception as e:
-                ws._relay_drops = getattr(ws, "_relay_drops", 0) + 1
-                _log.warning("fanout %s send failed dev=%s: %r", channel, device_id, e)
-                dead.append(ws)
-        for ws in dead:
-            conn.subscribers[channel].discard(ws)
+        pipes = conn.subscribers.get(channel, {})
+        for ws, pipe in list(pipes.items()):
+            if pipe.dead:
+                pipes.pop(ws, None)
+                continue
+            pipe.offer(data)
+
+
+# --------------------------------------------------------------------------- #
+# One viewer's outgoing stream
+# --------------------------------------------------------------------------- #
+_CLIP_MAGIC = b"LRMMCLIP"
+
+
+def _frame_kind(data: bytes) -> str:
+    """'clip' (clipboard text, never dropped), 'key' or 'delta' (H.264 access
+    units), or 'still' (a JPEG, or anything else that stands on its own)."""
+    if data[:len(_CLIP_MAGIC)] == _CLIP_MAGIC:
+        return "clip"
+    if data[:2] == b"\xff\xd8":
+        return "still"
+    # Walk the NAL units up to the first slice. Cheap: a start code cannot occur
+    # inside a unit, so this visits a handful of places, not every byte -- and
+    # it reads past a long SEI, which x264 can put first.
+    i = data.find(b"\x00\x00\x01")
+    if i == -1:
+        return "still"
+    while i != -1 and i + 3 < len(data):
+        nal = data[i + 3] & 0x1F
+        if nal in (5, 7, 8):          # IDR slice, SPS, PPS: a keyframe starts here
+            return "key"
+        if nal == 1:                  # an ordinary slice: needs what came before
+            return "delta"
+        i = data.find(b"\x00\x00\x01", i + 3)
+    return "delta"
+
+
+class _ViewerPipe:
+    """Feeds one viewer from a short queue, on a task of its own.
+
+    When a viewer falls behind -- a slow link, a busy browser -- the queue fills.
+    Then what is queued is thrown away and the stream picks up again at the next
+    keyframe (the agent sends one every two seconds), so the viewer catches up
+    instead of lagging further and further, and nobody else waits for it.
+    Clipboard text and control messages are never thrown away.
+    """
+
+    MAX_FRAMES = 8          # about a quarter of a second at 30 fps
+
+    def __init__(self, ws: WebSocket, channel: str, device_id: str) -> None:
+        self.ws = ws
+        self.channel = channel
+        self.device_id = device_id
+        self.q: asyncio.Queue = asyncio.Queue()
+        self.frames = 0                 # video frames in the queue
+        self.waiting_key = False
+        self.dead = False
+        self.task = asyncio.create_task(self._run())
+
+    def offer(self, data: Any) -> None:
+        if self.dead:
+            return
+        if isinstance(data, (bytes, bytearray)):
+            kind = _frame_kind(data)
+            if kind != "clip":
+                if self.waiting_key and kind == "delta":
+                    self._skipped(1)
+                    return
+                if kind == "key":
+                    self.waiting_key = False
+                if self.frames >= self.MAX_FRAMES:
+                    self._skipped(self._purge())
+                    # Say so: a viewer told this again and again asks for the
+                    # lighter stream, rather than seeing a burst every keyframe.
+                    self.q.put_nowait(("json", {"type": "behind"}))
+                    if kind == "delta":
+                        self.waiting_key = True
+                        self._skipped(1)
+                        return
+                self.frames += 1
+                self.q.put_nowait((kind, data))
+                return
+            self.q.put_nowait(("clip", data))
+            return
+        self.q.put_nowait(("json", data))
+
+    def _purge(self) -> int:
+        """Drop the queued frames, keep everything else, in order."""
+        kept, dropped = [], 0
+        while not self.q.empty():
+            item = self.q.get_nowait()
+            if item[0] in ("key", "delta", "still"):
+                dropped += 1
+            else:
+                kept.append(item)
+        for item in kept:
+            self.q.put_nowait(item)
+        self.frames = 0
+        return dropped
+
+    def _skipped(self, n: int) -> None:
+        if n:
+            self.ws._relay_skipped = getattr(self.ws, "_relay_skipped", 0) + n
+
+    async def _run(self) -> None:
+        try:
+            while True:
+                kind, data = await self.q.get()
+                if kind == "json":
+                    await self.ws.send_json(data)
+                    continue
+                if kind != "clip":
+                    self.frames = max(0, self.frames - 1)
+                await self.ws.send_bytes(data)
+                # Per-subscriber counters, read by _bridge_ws when it logs the
+                # session close (frames/throughput help diagnose drops).
+                self.ws._relay_frames = getattr(self.ws, "_relay_frames", 0) + 1
+                self.ws._relay_bytes = getattr(self.ws, "_relay_bytes", 0) + len(data)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.dead = True
+            self.ws._relay_drops = getattr(self.ws, "_relay_drops", 0) + 1
+            _log.warning("fanout %s send failed dev=%s: %r", self.channel, self.device_id, e)
+
+    def close(self) -> None:
+        self.dead = True
+        self.task.cancel()
+
+
+def _release_viewers(conn: AgentConn) -> None:
+    """The agent behind ``conn`` went away, or came back on a new connection.
+    Its viewers would otherwise wait on the old one for ever -- a picture that
+    froze and stayed frozen. Closed instead, they reconnect by themselves and
+    start the capture again on whatever connection the agent has now."""
+    for pipes in conn.subscribers.values():
+        for ws, pipe in list(pipes.items()):
+            pipe.close()
+            asyncio.create_task(_close_quietly(ws))
+        pipes.clear()
+
+
+async def _close_quietly(ws: WebSocket) -> None:
+    try:
+        # 1012: service restart -- "come back in a moment".
+        await ws.close(code=1012, reason="agent connection changed")
+    except Exception:
+        pass
 
 
 def _new_rid() -> str:

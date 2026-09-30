@@ -3951,11 +3951,14 @@ async def _bridge_ws(ws: WebSocket, device_id: str, channel: str,
         frames = getattr(ws, "_relay_frames", 0)
         kb = getattr(ws, "_relay_bytes", 0) / 1024.0
         drops = getattr(ws, "_relay_drops", 0)
+        skipped = getattr(ws, "_relay_skipped", 0)
         rate = (frames / dur) if dur > 0 else 0.0
+        # skipped = frames not sent because this viewer had fallen behind (it
+        # picked up at the next keyframe instead of stalling the agent).
         _remote_log.info("remote %s CLOSE device=%s code=%s reason=%r after=%.1fs "
-                         "frames=%d (%.1f/s) sent=%.0fKB (%.0fkbit/s) send_fail=%d",
+                         "frames=%d (%.1f/s) sent=%.0fKB (%.0fkbit/s) send_fail=%d skipped=%d",
                          channel, device_id, close_code, close_reason, dur,
-                         frames, rate, kb, (kb * 8 / dur) if dur > 0 else 0.0, drops)
+                         frames, rate, kb, (kb * 8 / dur) if dur > 0 else 0.0, drops, skipped)
         if channel == "screen" and manager.is_online(device_id):
             await manager.get(device_id).send({"type": "screen_stop"})
 

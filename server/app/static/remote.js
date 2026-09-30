@@ -214,14 +214,15 @@
   // Falling behind now and then is a busy moment; falling behind again and
   // again means this computer cannot decode this much. Ask for the lighter
   // stream rather than skipping frames for the rest of the session.
-  function fellBehind() {
+  function fellBehind(link) {
     const now = Date.now();
     backlogs = backlogs.filter((t) => now - t < 20000);
     backlogs.push(now);
     if (backlogs.length >= 3 && selQual.value !== "smooth") {
       backlogs = [];
       selQual.value = "smooth";
-      logActivity("This computer could not keep up — switched to Smooth");
+      logActivity(link ? "The connection could not keep up — switched to Smooth"
+                       : "This computer could not keep up — switched to Smooth");
       startCapture();
     }
   }
@@ -289,6 +290,8 @@
         try {
           const m = JSON.parse(ev.data);
           if (m.type === "video_info" && m.codec === "h264") { setupDecoder(m.codecString); return; }
+          // The server had to skip frames: this link could not take them all.
+          if (m.type === "behind") { fellBehind(true); return; }
           if (m.error) setStatus("bad", m.error);
         } catch {}
         return;
