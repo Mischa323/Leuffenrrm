@@ -3947,10 +3947,12 @@ def _session_line(pipe, secs: float, viewer: dict | None) -> str:
         i.get("frames", 0) / secs, _mbit(i.get("bytes", 0), secs), int(i.get("keys", 0)),
         i.get("key_bytes", 0) / 1024, i.get("gap_ms", 0))
     link = ("server->viewer {:.1f} fps {:.2f} Mbit/s, link busy {:.0f}%, longest wait {:.0f} ms, "
-            "slowest send {:.0f} ms, queue max {}, skipped {}, fell behind {}x, caught up {}x").format(
+            "slowest send {:.0f} ms, queue max {}, skipped {}, fell behind {}x, caught up {}x, "
+            "keyframes asked {}x, server itself stalled up to {:.0f} ms").format(
         o.get("sent", 0) / secs, _mbit(o.get("bytes", 0), secs), o.get("busy", 0) / secs * 100,
         o.get("wait_ms", 0), o.get("send_ms", 0), int(o.get("queue", 0)), int(o.get("skipped", 0)),
-        int(o.get("fell_behind", 0)), int(o.get("caught_up", 0)))
+        int(o.get("fell_behind", 0)), int(o.get("caught_up", 0)), int(o.get("keys_asked", 0)),
+        o.get("loop_ms", 0))
     if not viewer:
         return f"{secs:.0f}s | {device} | {link} | viewer: no report (an older page, or the desktop console)"
     v = viewer
@@ -3972,13 +3974,21 @@ def _session_line(pipe, secs: float, viewer: dict | None) -> str:
 
 
 async def _session_report(ws: WebSocket, pipe, channel: str, label: str) -> None:
-    last_line = time.monotonic()
+    last_line = last_check = time.monotonic()
     silent_from = 0.0
     warned_first = False
     try:
         while True:
-            await asyncio.sleep(1.0)
+            # Short sleeps, timed: one that wakes up late means the server's
+            # own event loop was busy -- and then every device and viewer on it
+            # waited, which the other figures would wrongly blame on a link.
+            before = time.monotonic()
+            await asyncio.sleep(0.05)
             now = time.monotonic()
+            pipe.out.peak("loop_ms", max(0.0, (now - before - 0.05) * 1000))
+            if now - last_check < 1.0:
+                continue
+            last_check = now
             if pipe.last_in:
                 if now - pipe.last_in > _DEVICE_SILENT and silent_from != pipe.last_in:
                     silent_from = pipe.last_in

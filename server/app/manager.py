@@ -27,6 +27,7 @@ class AgentConn:
         # dashboard sockets subscribed to this agent, by channel ('terminal'|'screen'),
         # each with the pipe that feeds it (see _ViewerPipe)
         self.subscribers: dict[str, dict[WebSocket, "_ViewerPipe"]] = {"terminal": {}, "screen": {}}
+        self.key_asked = 0.0        # when a keyframe was last asked of this agent
 
     async def send(self, msg: dict[str, Any]) -> None:
         await self.ws.send_json(msg)
@@ -124,6 +125,21 @@ class ConnectionManager:
                 pipes.pop(ws, None)
                 continue
             pipe.offer(data, kind)
+        # A viewer waiting for a keyframe asks the device for one, rather than
+        # waiting for the next it would send anyway (agent 2.2.47+ sends them
+        # only when asked, and every 30 s; an older agent ignores the request
+        # and sends one every two seconds, as it always did).
+        asking = [p for p in pipes.values() if p.wants_key]
+        if asking:
+            now = time.monotonic()
+            for p in asking:
+                p.wants_key = False
+            if now - conn.key_asked >= 1.0:
+                conn.key_asked = now
+                for p in asking:
+                    p.asked_at = now
+                    p.out.add("keys_asked")
+                asyncio.create_task(_ask_keyframe(conn))
 
 
 # --------------------------------------------------------------------------- #
@@ -225,6 +241,8 @@ class _ViewerPipe:
         self.opened = time.monotonic()
         self._behind_logged = 0.0
         self._behind_quiet = 0
+        self.wants_key = False          # waiting for a keyframe: ask the device for one
+        self.asked_at = 0.0
         self.task = asyncio.create_task(self._run())
 
     # -- in ---------------------------------------------------------------- #
@@ -242,6 +260,8 @@ class _ViewerPipe:
         self._arrived(kind, len(data), now)
         if self.waiting_key and kind == "delta":
             self.out.add("skipped")
+            if now - self.asked_at > 3.0:
+                self.wants_key = True           # asked before, and still none: ask again
             return
         lag = now - self._oldest() if self.frames else 0.0
         if kind in ("key", "still") and lag > self.CATCH_UP:
@@ -260,6 +280,7 @@ class _ViewerPipe:
             self._put(("json", {"type": "behind"}, now))
             if kind == "delta":
                 self.waiting_key = True
+                self.wants_key = True
                 self.out.add("skipped")
                 return
             self.out.add("skipped", self._purge())
@@ -351,6 +372,13 @@ class _ViewerPipe:
     def close(self) -> None:
         self.dead = True
         self.task.cancel()
+
+
+async def _ask_keyframe(conn: AgentConn) -> None:
+    try:
+        await conn.send({"type": "input", "kind": "keyframe"})
+    except Exception:
+        pass                        # the agent went away; its viewers are closed anyway
 
 
 def _release_viewers(conn: AgentConn) -> None:

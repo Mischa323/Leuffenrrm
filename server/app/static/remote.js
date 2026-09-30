@@ -280,7 +280,11 @@
     // picture would lag further and further. Skip to the next keyframe (the
     // agent sends one every ~2 s) so it catches up instead.
     // (Counted once per time it falls behind, not once per skipped frame.)
-    if (!key && sawKeyframe && decoder.decodeQueueSize > MAX_DECODE_QUEUE) { sawKeyframe = false; fellBehind(); }
+    if (!key && sawKeyframe && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+      sawKeyframe = false;
+      fellBehind();
+      askKeyframe();
+    }
     if (!sawKeyframe) {                                           // await a keyframe
       if (!key) { diag.keyWait++; return; }
       sawKeyframe = true;
@@ -316,6 +320,18 @@
     }
     logActivity(`Video ${why} — recovering at the next keyframe`);
     setupDecoder(lastCodec);
+    askKeyframe();
+  }
+
+  // A rebuilt decoder, or one that skipped ahead, can only start from a
+  // keyframe. The agent sends those only when asked (and every 30 s); an older
+  // agent ignores this and sends one every two seconds, as it always did.
+  let keyAskedAt = 0;
+  function askKeyframe() {
+    const now = Date.now();
+    if (now - keyAskedAt < 1000) return;
+    keyAskedAt = now;
+    send({ kind: "keyframe" });
   }
 
   // Falling behind now and then is a busy moment; falling behind again and
