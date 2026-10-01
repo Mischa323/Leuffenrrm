@@ -51,9 +51,10 @@
   let forceJpeg  = false;   // H.264 kept failing on this computer: JPEG from here on
   let hiccups    = [];      // when the decoder had to be rebuilt (last 30 s)
   let backlogs   = [];      // when this computer fell behind decoding (last 20 s)
-  // Decode requests queued beyond this (~quarter of a second at 30 fps) mean
-  // this computer is not keeping up.
+  // Decode requests queued beyond this (~quarter of a second at 30 fps), for
+  // longer than BACKLOG_MS, mean this computer is not keeping up.
   const MAX_DECODE_QUEUE = 8;
+  const BACKLOG_MS = 1000;
 
   // Marks a clipboard payload on the (otherwise JPEG) binary stream.
   const CLIP_MAGIC = "LRMMCLIP";
@@ -233,12 +234,20 @@
     sawKeyframe = false; vpts = 0;
     setTxt("rc-s-proto", "WebSocket · JPEG");
   }
+  // For telling a decoder that is working through a burst from one that has
+  // stopped: frames handed to it since it last gave a picture back, and when
+  // that was.
+  let fedSinceOutput = 0;
+  let lastOutputAt   = 0;
+  let backlogSince   = 0;   // when the decode queue last went over MAX_DECODE_QUEUE
   function setupDecoder(codecString) {
     if (codecString) lastCodec = codecString;
     closeDecoder();
+    fedSinceOutput = 0; lastOutputAt = performance.now(); backlogSince = 0;
     try {
       decoder = new VideoDecoder({
         output: (frame) => {
+          fedSinceOutput = 0; lastOutputAt = performance.now();
           try {
             if (frame.displayWidth !== nativeW || frame.displayHeight !== nativeH) {
               nativeW = canvas.width = frame.displayWidth;
@@ -277,13 +286,21 @@
     const u8 = new Uint8Array(buf);
     const key = isKeyAU(u8);
     // Falling behind: this computer decodes slower than frames arrive, and the
-    // picture would lag further and further. Skip to the next keyframe (the
-    // agent sends one every ~2 s) so it catches up instead.
+    // picture would lag further and further -- so skip to a keyframe instead.
+    // Only a queue that *stays* full means that. Frames held up on the way
+    // arrive all at once and fill it for a moment; it drains in milliseconds,
+    // and treating that as falling behind threw away a perfectly good stream
+    // and asked for a keyframe the slow link then had to carry as well.
     // (Counted once per time it falls behind, not once per skipped frame.)
-    if (!key && sawKeyframe && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
-      sawKeyframe = false;
-      fellBehind();
-      askKeyframe();
+    if (!key && sawKeyframe) {
+      if (decoder.decodeQueueSize <= MAX_DECODE_QUEUE) backlogSince = 0;
+      else if (!backlogSince) backlogSince = performance.now();
+      else if (performance.now() - backlogSince > BACKLOG_MS) {
+        backlogSince = 0;
+        sawKeyframe = false;
+        fellBehind();
+        askKeyframe();
+      }
     }
     if (!sawKeyframe) {                                           // await a keyframe
       if (!key) { diag.keyWait++; return; }
@@ -292,6 +309,7 @@
     try {
       decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: vpts, data: u8 }));
       vpts += 33333;  // ~30fps in µs; only needs to be monotonic
+      fedSinceOutput++;
       diag.decodeQ = Math.max(diag.decodeQ, decoder.decodeQueueSize);
     } catch (e) {
       recoverDecoder("decode failed", e && e.message);
@@ -329,10 +347,29 @@
   let keyAskedAt = 0;
   function askKeyframe() {
     const now = Date.now();
-    if (now - keyAskedAt < 1000) return;
+    if (now - keyAskedAt < 1000) return;      // the watch below asks again if need be
     keyAskedAt = now;
     send({ kind: "keyframe" });
   }
+
+  // Keeping the picture alive. Typing still reached the remote while the
+  // picture stood still: the stream was fine, the decoder was waiting. So:
+  //  * waiting for a keyframe while frames arrive -- ask again every 1.5 s, in
+  //    case a request was held back or the keyframe went astray, rather than
+  //    sit it out until the agent's 30-second safety net;
+  //  * a decoder that takes frames and gives nothing back for two seconds is
+  //    rebuilt (and five rebuilds in half a minute switch to JPEG, as before).
+  setInterval(() => {
+    if (!decoder || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const now = performance.now();
+    const arriving = diag.lastRecv && now - diag.lastRecv < 1000;
+    if (!sawKeyframe && arriving && Date.now() - keyAskedAt >= 1500) askKeyframe();
+    if (sawKeyframe && arriving && fedSinceOutput > 20 && now - lastOutputAt > 2000) {
+      recoverDecoder("decoder stopped producing pictures",
+                     `${fedSinceOutput} frames in, none out for ${Math.round(now - lastOutputAt)} ms, `
+                     + `queue ${decoder.decodeQueueSize}, ${decoder.state}`);
+    }
+  }, 250);
 
   // Falling behind now and then is a busy moment; falling behind again and
   // again means this computer cannot decode this much. Ask for the lighter
