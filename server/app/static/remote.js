@@ -121,6 +121,7 @@
     const now = performance.now();
     if (diag.lastDraw) diag.gapDraw = Math.max(diag.gapDraw, now - diag.lastDraw);
     diag.lastDraw = now; diag.drawn++;
+    if (reconnectAttempts || lastError) reconnected();
     if (diag.frozenAt) {
       const ms = Math.round(now - diag.frozenAt);
       diag.freezeMs = Math.max(diag.freezeMs, ms);
@@ -418,17 +419,29 @@
   let reconnectTimer = null;
   let reconnectAttempts = 0;
   let userClosed = false;       // true once the user deliberately disconnects
-  const MAX_RECONNECT = 8;      // ~30s of trying before we wait for a manual click
+  let lastError = "";           // what the server said before closing, e.g. "Device offline"
+  const MAX_RECONNECT = 8;      // ~20s of trying before we wait for a manual click
+
+  // An attempt only counts as having worked once a picture is on screen. The
+  // server accepts the connection before it knows the device is there -- right
+  // after a server restart, until the agent is back, it says "Device offline"
+  // and closes -- and counting the open as success kept the attempt at (1),
+  // retried every 0.4 s and never gave up.
+  function reconnected() {
+    reconnectAttempts = 0;
+    lastError = "";
+  }
 
   function scheduleReconnect() {
     if (userClosed || reconnectTimer) return;
+    const why = lastError ? ` — ${lastError.charAt(0).toLowerCase()}${lastError.slice(1)}` : "";
     if (reconnectAttempts >= MAX_RECONNECT) {
-      setStatus("bad", "Disconnected — click Reconnect");
+      setStatus("bad", `Disconnected${why} — click Reconnect`);
       return;
     }
     reconnectAttempts++;
     const delay = Math.min(400 * Math.pow(1.7, reconnectAttempts - 1), 5000);
-    setStatus("connecting", `Reconnecting… (${reconnectAttempts})`);
+    setStatus("connecting", `Reconnecting… (${reconnectAttempts})${why}`);
     reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
   }
 
@@ -445,7 +458,7 @@
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
-      reconnectAttempts = 0;      // recovered — reset the backoff
+      // Not recovered yet: see reconnected(). The first picture resets the count.
       // How the previous socket ended can only be told on this one.
       if (lastClose) { report("closed", lastClose); lastClose = null; }
       startCapture();
@@ -464,7 +477,7 @@
             if (typeof m.t === "number") diag.rtts.push(performance.now() - m.t);
             return;
           }
-          if (m.error) setStatus("bad", m.error);
+          if (m.error) { lastError = String(m.error); setStatus("bad", m.error); }
         } catch {}
         return;
       }
