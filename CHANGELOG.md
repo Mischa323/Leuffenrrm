@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **The Docs tab says "archived"** for a machine archived in LeuffenDoc (it said "taken out of use"), the word LeuffenDoc now uses.
+
 ## [1.6.0] - 2026-10-01
 
 The documentation app LeuffenDoc joins the RMM (one-button linking, a Docs tab on every device, sign-in through the RMM); Home Assistant OS servers can be monitored; remote control gets a desktop app; Windows programs can be installed and kept up to date from the RMM; and remote desktop is rebuilt for real links — a steady 30 fps, no more stutter or freezes on a slow upload, and a session log that says where a picture gets stuck. Deploying this server rolls agents out to **v2.2.47**, which the remote-desktop improvements need.

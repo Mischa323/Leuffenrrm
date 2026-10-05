@@ -2042,7 +2042,7 @@ async function loadDocs(id) {
   };
   const head = `<div class="tile doc-head"><span class="os-ico">${ICON.book}</span>
       <div style="flex:1;min-width:0"><div style="font-weight:650">${escapeHtml(d.name || "")}</div>
-        <div class="h-sub">${escapeHtml(d.kind_label || "")}${d.archived ? " · taken out of use" : ""}</div></div>
+        <div class="h-sub">${escapeHtml(d.kind_label || "")}${d.archived ? " · archived" : ""}</div></div>
       ${open(docHref(d, base), "Open in LeuffenDoc", "sm")}</div>`;
   const fields = d.fields.length ? `<div class="sec-label">Documented</div><dl class="inv doc-inv">${d.fields.map((f) => `
       <dt>${escapeHtml(f.label)}</dt>
