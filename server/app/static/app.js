@@ -363,7 +363,7 @@ function buildOrgMenu() {
   if (!buildOrgMenu._doc) { buildOrgMenu._doc = true; document.addEventListener("click", () => { menu.classList.remove("open"); sw.classList.remove("open"); }); }
 }
 async function refreshOrgCaches() {
-  const [devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp, unifi] = await Promise.all([
+  const [devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp, unifi, m365] = await Promise.all([
     api(`/api/orgs/${state.org}/devices`),
     api(`/api/orgs/${state.org}/network/hosts`).catch(() => []),
     api(`/api/orgs/${state.org}/nodes`).catch(() => []),
@@ -375,9 +375,12 @@ async function refreshOrgCaches() {
     api(`/api/orgs/${state.org}/pending`).catch(() => []),
     api(`/api/orgs/${state.org}/snmp/targets`).catch(() => []),
     api(`/api/orgs/${state.org}/unifi/accounts`).catch(() => ({ accounts: [], enabled: true })),
+    api(`/api/orgs/${state.org}/m365/tenants`).catch(() => ({ tenants: [], permissions: [] })),
   ]);
-  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp, unifi: unifi.accounts || [] };
+  state.cache = { devices, hosts, nodes, groups, scripts, schedules, monitors, monitorRules, pending, snmp,
+                  unifi: unifi.accounts || [], m365: m365.tenants || [] };
   state.unifiEnabled = unifi.enabled;
+  state.m365Permissions = m365.permissions || [];
 }
 function buildNav() {
   $("nav-devices-count").textContent = state.cache.devices.length;
@@ -388,6 +391,7 @@ function buildNav() {
   $("nav-monitors-count").textContent = state.cache.monitors.length + state.cache.monitorRules.length;
   if ($("nav-snmp-count")) $("nav-snmp-count").textContent = (state.cache.snmp || []).length;
   if ($("nav-unifi-count")) $("nav-unifi-count").textContent = (state.cache.unifi || []).length;
+  if ($("nav-m365-count")) $("nav-m365-count").textContent = (state.cache.m365 || []).length;
 }
 /* Mobile hamburger: slide the sidebar (nav + groups) in/out over a scrim. */
 function openSidebar() { $("sidebar").classList.add("open"); $("sidebar-scrim").classList.add("open"); }
@@ -412,7 +416,7 @@ function buildGroups() {
 function selectTab(tab) {
   state.tab = tab;
   document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  ["devices", "approvals", "network", "nodes", "snmp", "unifi", "scripts", "monitors", "programs", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  ["devices", "approvals", "network", "nodes", "snmp", "unifi", "m365", "scripts", "monitors", "programs", "downloads"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
   clearRefresh();
   saveView();
   if (tab === "devices") renderDevices();
@@ -421,6 +425,7 @@ function selectTab(tab) {
   else if (tab === "nodes") renderNodes();
   else if (tab === "snmp") renderSNMP();
   else if (tab === "unifi") { renderUnifi(); refreshTab("unifi"); }
+  else if (tab === "m365") { renderM365(); refreshTab("m365"); }
   else if (tab === "scripts") renderScripts();
   else if (tab === "monitors") renderMonitorsTab();
   else if (tab === "programs") renderPrograms();
@@ -439,6 +444,7 @@ async function refreshTab(tab) {
     else if (tab === "network") { state.cache.hosts = await api(`/api/orgs/${state.org}/network/hosts`); buildNav(); renderNetwork(); }
     else if (tab === "nodes") { state.cache.nodes = await api(`/api/orgs/${state.org}/nodes`); buildNav(); renderNodes(); }
     else if (tab === "snmp") { if (state.snmpEditing) return; state.cache.snmp = await api(`/api/orgs/${state.org}/snmp/targets`); buildNav(); renderSNMP(); }
+    else if (tab === "m365") { if (state.m365Editing) return; const r = await api(`/api/orgs/${state.org}/m365/tenants`); state.cache.m365 = r.tenants || []; state.m365Permissions = r.permissions || []; buildNav(); renderM365(); }
     else if (tab === "unifi") { if (state.unifiEditing) return; const r = await api(`/api/orgs/${state.org}/unifi/accounts`); state.cache.unifi = r.accounts || []; state.unifiEnabled = r.enabled; buildNav(); renderUnifi(); }
     else if (tab === "monitors") { state.cache.monitors = await api(`/api/orgs/${state.org}/monitors`); state.cache.monitorRules = await api(`/api/orgs/${state.org}/monitor-rules`); buildNav(); renderMonitorsTab(); }
     else if (tab === "scripts") { state.cache.scripts = await api(`/api/orgs/${state.org}/scripts`); buildNav(); renderScripts(); }
@@ -454,7 +460,7 @@ async function restoreView() {
   if (m) {
     const org = (state.me.orgs || []).find((o) => o.id === m[1]);
     if (org) {
-      const tabs = ["devices", "approvals", "network", "nodes", "snmp", "unifi", "scripts", "monitors", "downloads"];
+      const tabs = ["devices", "approvals", "network", "nodes", "snmp", "unifi", "m365", "scripts", "monitors", "downloads"];
       state.tab = tabs.includes(m[2]) ? m[2] : "devices";
       await showOrg(org.id, org.name);
       return;
@@ -1122,6 +1128,167 @@ function openUnifiForm(a) {
       toast(a ? "Account updated" : "Account added — polling…");
       state.unifiEditing = false; refreshTab("unifi");
     } catch (e) { toast(e.message); }
+  };
+}
+
+/* ---------- Microsoft 365 (Graph) ---------- */
+// For attribute values: names come from the customer's tenant, quotes and all.
+const m365Attr = (v) => escapeHtml(v).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+// Language-neutral values from the server (see m365.py), worded here.
+const M365_STATUS = { Enabled: ["ok", "active"], Warning: ["bad", "lapsing"], Suspended: ["bad", "suspended"],
+                      LockedOut: ["bad", "locked out"], Deleted: ["na", "deleted"] };
+const M365_GROUP = { team: "Team", m365: "Microsoft 365 group", distribution: "Distribution list",
+                     mail_security: "Mail-enabled security group", security: "Security group" };
+const M365_PARTS = { tenant: "Tenant and domains", subscriptions: "Subscriptions", users: "Users",
+                     mailboxes: "Shared mailboxes", groups: "Groups", sites: "SharePoint",
+                     apps: "App registrations", security_defaults: "Security defaults",
+                     conditional_access: "Conditional Access" };
+function m365Status(t) {
+  if (!t.last_poll) return `<span class="badge na">not read yet</span>`;
+  if (t.last_ok) return `<span class="badge ok">connected</span>`;
+  return `<span class="badge bad" title="${m365Attr(t.last_error || "")}">error</span>`;
+}
+function m365Days(date) {
+  if (!date) return null;
+  const d = new Date(date + "T00:00:00"), today = new Date(); today.setHours(0, 0, 0, 0);
+  return Math.round((d - today) / 86400000);
+}
+function m365Expiry(date) {
+  const days = m365Days(date);
+  if (days === null) return "—";
+  const tone = days < 0 ? "bad" : days <= 30 ? "warn" : "";
+  const said = days < 0 ? `expired ${-days}d ago` : days === 0 ? "today" : `in ${days}d`;
+  return `${escapeHtml(date)} ${tone ? `<span class="badge ${tone === "bad" ? "bad" : "na"}" style="${tone === "warn" ? "color:var(--warn)" : ""}">${said}</span>` : ""}`;
+}
+function m365Table(head, rows) {
+  if (!rows.length) return `<div class="h-sub" style="padding:6px 2px">None.</div>`;
+  return `<div style="overflow-x:auto"><table class="grid"><thead><tr>${head.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+}
+function m365Section(title, count, body, open) {
+  return `<details class="m365-sec"${open ? " open" : ""}><summary><b>${escapeHtml(title)}</b> <span class="h-sub">${count}</span></summary>${body}</details>`;
+}
+function m365Card(t) {
+  const s = t.snapshot || {}, sum = t.summary || {};
+  const tenant = s.tenant || {};
+  const meta = [t.last_poll ? `read ${relTime(t.last_poll)}` : "awaiting first read", `tenant <span class="mono">${escapeHtml(t.tenant_id)}</span>`,
+                `secret …${escapeHtml(t.secret_hint || "")}`].join(" · ");
+  const n = (count, one, many) => `<b>${count}</b> ${count === 1 ? one : many}`;
+  const chips = s.users ? `<div class="m365-chips">
+      <span>${n(sum.users, "user", "users")}</span>${sum.guests ? `<span>${n(sum.guests, "guest", "guests")}</span>` : ""}
+      <span><b>${sum.used}</b> of <b>${sum.seats}</b> licences in use</span>
+      <span>${n(sum.shared, "shared mailbox", "shared mailboxes")}</span><span>${n(sum.groups, "group", "groups")}</span>
+      ${sum.expiring ? `<span class="m365-warn"><b>${sum.expiring}</b> app credential${sum.expiring === 1 ? "" : "s"} expiring</span>` : ""}
+      ${s.security_defaults === true ? `<span>security defaults on</span>` : s.security_defaults === false ? `<span>security defaults off</span>` : ""}
+    </div>` : "";
+  const problems = (s.problems || []).length ? `<div class="m365-problems"><b>Not everything could be read.</b><ul>${s.problems.map((p) =>
+      `<li>${escapeHtml(M365_PARTS[p.part] || p.part)}: ${escapeHtml(p.error)}${p.error === "forbidden" ? ` — grant the app <code>${escapeHtml(p.permission)}</code> and admin consent` : ""}</li>`).join("")}</ul></div>` : "";
+  let body = "";
+  if (t.last_poll && !t.last_ok) body += `<div class="h-sub" style="padding:10px 2px;color:var(--bad)">Last read failed: ${escapeHtml(t.last_error || "unknown error")}${s.users ? " — showing the last good reading." : ""}</div>`;
+  if (!t.last_poll) body += `<div class="h-sub" style="padding:10px 2px">Reading the tenant…</div>`;
+  if (s.users || s.subscriptions) {
+    const subs = (s.subscriptions || []).map((x) => { const st = M365_STATUS[x.status] || ["na", x.status || "—"];
+      return `<tr><td>${escapeHtml(x.product)}</td><td>${x.used} / ${x.seats}</td><td>${m365Expiry(x.renews)}</td><td><span class="badge ${st[0]}">${escapeHtml(st[1])}</span></td></tr>`; });
+    const apps = (s.apps || []).map((a) => `<tr><td>${escapeHtml(a.app)}</td><td>${a.kind === "secret" ? "Secret" : "Certificate"}</td><td>${escapeHtml(a.name || "")}</td><td>${m365Expiry(a.expires)}</td></tr>`);
+    const users = (s.users || []).map((u) => `<tr><td>${escapeHtml(u.name)}${u.guest ? ` <span class="badge na">guest</span>` : ""}</td><td class="mono">${escapeHtml(u.upn)}</td><td>${escapeHtml((u.licenses || []).join(", ") || "—")}</td><td>${u.enabled ? "yes" : `<span class="badge na">blocked</span>`}</td></tr>`);
+    const boxes = (s.mailboxes || []).map((m) => `<tr><td class="mono">${escapeHtml(m.address)}</td><td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.kind)}</td></tr>`);
+    const groups = (s.groups || []).map((g) => `<tr><td>${escapeHtml(g.name)}</td><td class="mono">${escapeHtml(g.mail || "")}</td><td>${escapeHtml(M365_GROUP[g.kind] || g.kind)}</td><td title="${m365Attr((g.members || []).join(", "))}">${g.dynamic ? "dynamic" : (g.members || []).length}</td></tr>`);
+    const domains = (tenant.domains || []).map((d) => `<tr><td class="mono">${escapeHtml(d.name)}</td><td>${d.default ? "default" : d.initial ? "initial" : ""}</td></tr>`);
+    const ca = (s.ca || []).map((c) => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.state)}</td></tr>`);
+    body += m365Section("Subscriptions", subs.length, m365Table(["Product", "In use", "Renews", "Status"], subs), true)
+      + m365Section("App registrations — secrets & certificates", apps.length, m365Table(["App", "Kind", "Description", "Expires"], apps), !!sum.expiring)
+      + m365Section("Users", users.length, m365Table(["Name", "Account", "Licences", "Can sign in"], users), false)
+      + m365Section("Shared mailboxes, rooms & equipment", boxes.length, m365Table(["Address", "Name", "Kind"], boxes), false)
+      + m365Section("Groups, Teams & distribution lists", groups.length, m365Table(["Name", "Address", "Kind", "Members"], groups), false)
+      + m365Section("Domains", domains.length, m365Table(["Domain", ""], domains), false)
+      + (s.ca ? m365Section("Conditional Access", ca.length, m365Table(["Policy", "State"], ca), false) : "");
+  }
+  return `<div class="tile" style="margin-bottom:14px" data-tid="${t.id}">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="os-ico">${ICON.cloud}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:650;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${escapeHtml(t.name || tenant.name || tenant.default_domain || t.tenant_id)} ${m365Status(t)} ${t.enabled ? "" : `<span class="badge na">paused</span>`}</div>
+        <div class="h-sub">${meta}</div>
+      </div>
+      <button class="btn ghost sm m365-poll" data-tid="${t.id}">${ICON.refresh} Read now</button>
+      <button class="btn ghost sm m365-edit" data-tid="${t.id}" title="Edit">${ICON.pencil}</button>
+      <button class="btn ghost sm m365-del" data-tid="${t.id}" title="Remove">${ICON.trash}</button>
+    </div>
+    ${chips}${problems}${body}</div>`;
+}
+function m365Help() {
+  const perms = state.m365Permissions || [];
+  return `<details class="m365-sec"><summary><b>What the app registration needs</b></summary>
+    <ol class="m365-steps">
+      <li>In the customer's Entra admin center: <b>App registrations → New registration</b>, this tenant only.</li>
+      <li><b>API permissions → Microsoft Graph → Application permissions</b>:<ul>${perms.map((p) => `<li><code>${escapeHtml(p.name)}</code> — ${escapeHtml(p.for)}</li>`).join("")}</ul></li>
+      <li><b>Grant admin consent</b> for the tenant.</li>
+      <li><b>Certificates &amp; secrets → New client secret</b>. The RMM warns before it expires.</li>
+    </ol>
+    <div class="h-sub">Read-only: nothing is ever written to the tenant. The secret is stored encrypted and never shown again.</div></details>`;
+}
+function renderM365() {
+  state.m365Editing = false;
+  const body = $("m365-body"); if (!body) return;
+  const tenants = state.cache.m365 || [];
+  if ($("m365-sub")) $("m365-sub").textContent = tenants.length
+    ? `${tenants.length} tenant${tenants.length === 1 ? "" : "s"} · read every few hours, documented in LeuffenDoc`
+    : "Users, licences, mailboxes and expiring app secrets via Microsoft Graph";
+  const add = $("m365-add"); if (add) add.onclick = () => openM365Form(null);
+  body.innerHTML = tenants.length ? tenants.map(m365Card).join("")
+    : `<div class="empty"><div class="big">${ICON.cloud}</div>No Microsoft 365 tenant linked yet.<br><span class="muted">Link the customer's tenant with an app registration to see its users, licences, mailboxes and groups — and be warned before an app secret expires.</span></div>${m365Help()}`;
+  body.querySelectorAll(".m365-poll").forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try { await api(`/api/m365/tenants/${b.dataset.tid}/poll`, { method: "POST" }); toast("Read"); refreshTab("m365"); }
+    catch (e) { toast(e.message); b.disabled = false; }
+  });
+  body.querySelectorAll(".m365-edit").forEach((b) => b.onclick = () => openM365Form(tenants.find((x) => String(x.id) === b.dataset.tid)));
+  body.querySelectorAll(".m365-del").forEach((b) => b.onclick = async () => {
+    const t = tenants.find((x) => String(x.id) === b.dataset.tid);
+    if (!confirm(`Unlink Microsoft 365 tenant ${t.name || t.tenant_id}? The secret is deleted; LeuffenDoc keeps what it documented.`)) return;
+    try { await api(`/api/m365/tenants/${b.dataset.tid}`, { method: "DELETE" }); toast("Tenant unlinked"); refreshTab("m365"); }
+    catch (e) { toast(e.message); }
+  });
+}
+function openM365Form(t) {
+  state.m365Editing = true;
+  const body = $("m365-body"); if (!body) return;
+  const hours = t ? Math.round((t.interval || 21600) / 3600) : 6;
+  body.innerHTML = `<div class="tile" style="max-width:620px">
+    <div style="font-weight:650;font-size:14px;margin-bottom:12px">${t ? "Edit Microsoft 365 tenant" : "Link a Microsoft 365 tenant"}</div>
+    <label style="display:block;margin-bottom:10px">Name <span class="h-sub">(optional — the tenant's own name otherwise)</span>
+      <input class="inp" id="mf-name" value="${t ? m365Attr(t.name || "") : ""}" placeholder="Contoso"></label>
+    <label style="display:block;margin-bottom:10px">Tenant id <span class="h-sub">— or its .onmicrosoft.com domain</span>
+      <input class="inp mono" id="mf-tenant" value="${t ? m365Attr(t.tenant_id) : ""}" ${t ? "disabled" : ""} placeholder="00000000-0000-0000-0000-000000000000"></label>
+    <label style="display:block;margin-bottom:10px">Client id of the app registration
+      <input class="inp mono" id="mf-client" value="${t ? m365Attr(t.client_id) : ""}" placeholder="00000000-0000-0000-0000-000000000000"></label>
+    <label style="display:block;margin-bottom:10px">Client secret ${t ? `<span class="h-sub">— leave blank to keep the current one (…${escapeHtml(t.secret_hint || "")})</span>` : ""}
+      <input class="inp mono" id="mf-secret" type="password" autocomplete="off"></label>
+    <div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="mf-enabled" ${(!t || t.enabled) ? "checked" : ""}> Enabled</label>
+      <label style="display:flex;align-items:center;gap:8px">Read every
+        <select class="inp" id="mf-hours" style="width:auto">${[1, 3, 6, 12, 24].map((h) => `<option value="${h}"${h === hours ? " selected" : ""}>${h} hour${h === 1 ? "" : "s"}</option>`).join("")}</select></label>
+    </div>
+    ${m365Help()}
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn" id="mf-save">${ICON.save} ${t ? "Save changes" : "Link and read"}</button>
+      <button class="btn ghost" id="mf-cancel">Cancel</button>
+    </div>
+  </div>`;
+  $("mf-cancel").onclick = () => { state.m365Editing = false; renderM365(); };
+  $("mf-save").onclick = async () => {
+    const payload = { name: $("mf-name").value.trim() || null, client_id: $("mf-client").value.trim(),
+                      enabled: $("mf-enabled").checked, interval: Number($("mf-hours").value) * 3600 };
+    const secret = $("mf-secret").value.trim();
+    if (secret) payload.client_secret = secret;
+    if (!t) payload.tenant_id = $("mf-tenant").value.trim();
+    if (!t && (!payload.tenant_id || !payload.client_id || !secret)) return toast("Tenant id, client id and client secret are all required");
+    const btn = $("mf-save"); btn.disabled = true; btn.textContent = "Signing in and reading…";
+    try {
+      if (t) await api(`/api/m365/tenants/${t.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      else await api(`/api/orgs/${state.org}/m365/tenants`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      toast(t ? "Tenant updated" : "Tenant linked and read");
+      state.m365Editing = false; refreshTab("m365");
+    } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = t ? "Save changes" : "Link and read"; }
   };
 }
 

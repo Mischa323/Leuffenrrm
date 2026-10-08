@@ -27,7 +27,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTe
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import alerts, auth, database as db, graph, mailer, totp, unifi
+from . import alerts, auth, database as db, graph, m365, mailer, secretbox, totp, unifi
 from . import wol as wol_local
 from .manager import manager
 from .models import UnifiAccountRequest
@@ -106,7 +106,7 @@ AGENT_VERSION = _resolve_agent_version()
 # from the shown text) — use it to tag a line more precisely than its logger.
 _LOG_TAG_BY_LOGGER = {
     "rmm.remote": "remote", "rmm.ws": "remote",
-    "rmm.unifi": "unifi", "rmm.update": "update", "rmm.snmp": "snmp",
+    "rmm.unifi": "unifi", "rmm.m365": "m365", "rmm.update": "update", "rmm.snmp": "snmp",
     "rmm.alerts": "alerts", "rmm.mail": "mail", "rmm.mailer": "mail",
     "rmm.health": "health",
     "uvicorn.access": "http", "uvicorn.error": "ws", "uvicorn": "server",
@@ -252,6 +252,7 @@ async def _startup() -> None:
     asyncio.create_task(_schedule_loop())
     asyncio.create_task(_auto_update_loop())
     asyncio.create_task(_unifi_loop())
+    asyncio.create_task(_m365_loop())
     asyncio.create_task(_selfcheck_loop())
     asyncio.create_task(_programs_autoupdate_loop())
 
@@ -391,6 +392,43 @@ async def _unifi_loop() -> None:
             if now - last.get(acct["id"], 0.0) >= interval:
                 last[acct["id"]] = now
                 asyncio.create_task(_poll_unifi_account(acct))
+
+
+async def _poll_m365_tenant(tenant: dict) -> dict:
+    """Read one Microsoft 365 tenant (off the event loop), store the reading
+    and evaluate its alerts."""
+    loop = asyncio.get_event_loop()
+    try:
+        secret = secretbox.unseal(tenant["secret_sealed"])
+        snap = await loop.run_in_executor(None, m365.collect, tenant["tenant_id"], tenant["client_id"], secret)
+    except Exception as exc:
+        log.warning("m365 read failed for tenant %s: %s", tenant.get("id"), exc)
+        snap = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
+    try:
+        db.save_m365_result(tenant["id"], bool(snap.get("ok")), snap.get("error"),
+                            snap if snap.get("ok") else None)
+    except Exception as exc:  # pragma: no cover
+        log.warning("m365 save failed for tenant %s: %s", tenant.get("id"), exc)
+    try:
+        alerts.evaluate_m365_tenant(tenant, snap)
+    except Exception as exc:  # pragma: no cover
+        log.warning("m365 alert eval failed for tenant %s: %s", tenant.get("id"), exc)
+    return snap
+
+
+async def _m365_loop() -> None:
+    """Read each enabled Microsoft 365 tenant at its own interval (six hours
+    by default); a tenant never read is read on the first round."""
+    while True:
+        await asyncio.sleep(60)
+        now = time.time()
+        try:
+            tenants = db.list_m365_tenants_all(enabled_only=True)
+        except Exception:  # pragma: no cover
+            continue
+        for t in tenants:
+            if now - (t.get("last_poll") or 0) >= max(int(t.get("interval") or 21600), 900):
+                asyncio.create_task(_poll_m365_tenant(t))
 
 
 async def _prune_loop() -> None:
@@ -2801,6 +2839,27 @@ def api_v1_network_devices(key: dict = Depends(api_auth)):
     return {"devices": out}
 
 
+@app.get("/api/v1/m365-tenants")
+def api_v1_m365_tenants(key: dict = Depends(api_auth)):
+    """Every customer's Microsoft 365 tenant as its last reading saw it: the
+    domains, subscriptions, users with their licences, shared mailboxes,
+    groups, sites, app credentials and security settings -- for LeuffenDoc to
+    document. Never the client secret."""
+    out = []
+    for oid in _api_scope_orgs(key):
+        org = db.get_org(oid)
+        for t in db.list_m365_tenants(oid):
+            snap = t.get("snapshot") or {}
+            out.append({
+                "id": f"m365:{(t.get('tenant_id') or '').lower()}", "tenant_id": t.get("tenant_id"),
+                "name": t.get("name") or (snap.get("tenant") or {}).get("name") or t.get("tenant_id"),
+                "enabled": bool(t.get("enabled")), "last_poll": t.get("last_poll"),
+                "ok": bool(t.get("last_ok")), "error": t.get("last_error"),
+                "snapshot": {k: v for k, v in snap.items() if k not in ("ok", "error")} if snap else None,
+                "org": {"id": org["id"], "name": org["name"]} if org else None})
+    return {"tenants": out}
+
+
 @app.get("/api/v1/devices/{device_id}")
 def api_v1_device(device_id: str, key: dict = Depends(api_auth)):
     dev = _api_device(device_id, key)
@@ -3740,6 +3799,98 @@ async def poll_unifi_account(account_id: int, user: dict = Depends(auth.current_
     acct = _unifi_account_for_user(account_id, user)
     asyncio.create_task(_poll_unifi_account(acct))
     return {"status": "poll requested"}
+
+
+# --------------------------------------------------------------------------- #
+# Microsoft 365 tenants -- server-read via Microsoft Graph (see m365.py)
+# --------------------------------------------------------------------------- #
+def _m365_tenant_for_user(tenant_row_id: int, user: dict) -> dict:
+    t = db.get_m365_tenant(tenant_row_id, redact=False)
+    if not t:
+        raise HTTPException(status_code=404, detail="Microsoft 365 tenant not found")
+    auth.require_org(user, t["org_id"])
+    return t
+
+
+def _m365_audit(user: dict, org_id: str, action: str, detail: str) -> None:
+    """Who linked or removed a tenant, in the server log (rmm.m365)."""
+    logging.getLogger("rmm.m365").info("%s by %s (org %s): %s", action,
+                                       (user or {}).get("email") or "?", org_id, detail)
+
+
+def _m365_public(t: dict) -> dict:
+    """A tenant as the page shows it: never the sealed secret."""
+    out = {k: v for k, v in t.items() if k != "secret_sealed"}
+    out["summary"] = m365.summary(t.get("snapshot"))
+    return out
+
+
+@app.get("/api/orgs/{org_id}/m365/tenants")
+def list_m365_tenants(org_id: str, user: dict = Depends(auth.current_user)):
+    auth.require_org(user, org_id)
+    return {"tenants": [_m365_public(t) for t in db.list_m365_tenants(org_id)],
+            "permissions": [{"name": n, "for": w} for n, w in m365.PERMISSIONS]}
+
+
+@app.post("/api/orgs/{org_id}/m365/tenants")
+async def create_m365_tenant(org_id: str, request: Request, user: dict = Depends(auth.current_user)):
+    """Link a tenant: check the app registration can sign in before anything is
+    stored, store it with the secret sealed, and read it straight away."""
+    auth.require_org(user, org_id)
+    data = await request.json()
+    tenant_id = (data.get("tenant_id") or "").strip()
+    client_id = (data.get("client_id") or "").strip()
+    secret = (data.get("client_secret") or "").strip()
+    if not (tenant_id and client_id and secret):
+        raise HTTPException(status_code=400, detail="Tenant id, client id and client secret are all required")
+    ok, msg = await asyncio.to_thread(m365.test_credentials, tenant_id, client_id, secret)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Microsoft 365: {msg}")
+    tid = db.add_m365_tenant(org_id, (data.get("name") or "").strip() or None, tenant_id, client_id,
+                             secretbox.seal(secret), secret[-4:],
+                             interval=max(int(data.get("interval") or 21600), 900),
+                             enabled=bool(data.get("enabled", True)))
+    _m365_audit(user, org_id, "m365.add", f"tenant {tenant_id}")
+    await _poll_m365_tenant(db.get_m365_tenant(tid, redact=False))   # the first reading, before the page shows it
+    return _m365_public(db.get_m365_tenant(tid))
+
+
+@app.patch("/api/m365/tenants/{tenant_row_id}")
+async def update_m365_tenant(tenant_row_id: int, request: Request, user: dict = Depends(auth.current_user)):
+    t = _m365_tenant_for_user(tenant_row_id, user)
+    data = await request.json()
+    fields = {k: data[k] for k in ("name", "enabled", "interval", "client_id") if k in data}
+    if "interval" in fields:
+        fields["interval"] = max(int(fields["interval"]), 900)
+    secret = (data.get("client_secret") or "").strip()
+    client_id = (fields.get("client_id") or t["client_id"]).strip()
+    if secret or client_id != t["client_id"]:
+        test_secret = secret or secretbox.unseal(t["secret_sealed"])
+        ok, msg = await asyncio.to_thread(m365.test_credentials, t["tenant_id"], client_id, test_secret)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"Microsoft 365: {msg}")
+    if secret:
+        fields.update(secret_sealed=secretbox.seal(secret), secret_hint=secret[-4:])
+    db.update_m365_tenant(tenant_row_id, fields)
+    t = db.get_m365_tenant(tenant_row_id, redact=False)
+    if t and t.get("enabled") and (secret or "client_id" in fields):
+        await _poll_m365_tenant(t)
+    return _m365_public(db.get_m365_tenant(tenant_row_id))
+
+
+@app.delete("/api/m365/tenants/{tenant_row_id}")
+def delete_m365_tenant(tenant_row_id: int, user: dict = Depends(auth.current_user)):
+    t = _m365_tenant_for_user(tenant_row_id, user)
+    db.delete_m365_tenant(tenant_row_id)
+    _m365_audit(user, t["org_id"], "m365.delete", f"tenant {t['tenant_id']}")
+    return {"ok": True}
+
+
+@app.post("/api/m365/tenants/{tenant_row_id}/poll")
+async def poll_m365_tenant(tenant_row_id: int, user: dict = Depends(auth.current_user)):
+    t = _m365_tenant_for_user(tenant_row_id, user)
+    await _poll_m365_tenant(t)
+    return _m365_public(db.get_m365_tenant(tenant_row_id))
 
 
 # --------------------------------------------------------------------------- #

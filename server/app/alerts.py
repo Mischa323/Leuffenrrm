@@ -511,3 +511,76 @@ def evaluate_unifi_account(acct: dict, snapshot: dict | None) -> None:
                f"{acct_name}: WAN down at {hname}",
                f"The internet (WAN) link on <b>{_esc(hname)}</b> is <b>down</b>.",
                True, "critical", meta)
+
+
+# --------------------------------------------------------------------------- #
+# Microsoft 365 -- what runs out in a tenant. Evaluated after each reading,
+# keyed by synthetic subjects (m365-<id>-...) like UniFi.
+# --------------------------------------------------------------------------- #
+M365_WARN_DAYS = 30
+_SUB_TROUBLE = {"Warning": "is about to lapse", "Suspended": "is suspended", "LockedOut": "is locked out"}
+
+
+def evaluate_m365_tenant(tenant: dict, snapshot: dict | None) -> None:
+    """Raise/clear alerts for one tenant: signing in fails (an expired client
+    secret is the usual cause, and then nothing else is checked any more), an
+    app registration's secret or certificate expires within M365_WARN_DAYS or
+    has, or a subscription is lapsing or suspended. A credential or
+    subscription that is gone clears its alert."""
+    import datetime
+    org_id = tenant.get("org_id")
+    tid = tenant.get("id")
+    label = tenant.get("name") or tenant.get("tenant_id") or "Microsoft 365"
+    recipients = db.alert_config(org_id).get("recipients") or _default_recipients()
+    subject = {"id": f"m365-{tid}-tenant", "hostname": label, "org_id": org_id}
+
+    failed = not snapshot or not snapshot.get("ok")
+    error = (snapshot or {}).get("error") or "unknown error"
+    _apply(subject, "m365_signin", failed, recipients,
+           f"{label}: cannot read Microsoft 365",
+           f"Signing in to the Microsoft 365 tenant <b>{_esc(label)}</b> fails: {_esc(error)}.",
+           True, "warning",
+           {"id": None, "name": f"Microsoft 365 sign-in fails: {label}", "metric": "m365_signin", "detail": error})
+    if failed:
+        return
+
+    today = datetime.date.today()
+    current: set = set()
+    for a in snapshot.get("apps") or []:
+        if not a.get("expires"):
+            continue
+        try:
+            days = (datetime.date.fromisoformat(a["expires"]) - today).days
+        except ValueError:
+            continue
+        rule = f"m365_cred:{a.get('app_id') or a.get('app')}:{a.get('key_id') or a.get('name') or a['expires']}"
+        current.add(rule)
+        what = "secret" if a.get("kind") == "secret" else "certificate"
+        when = f"expired {-days} day{'s' if days != -1 else ''} ago" if days < 0 else (
+            "expires today" if days == 0 else f"expires in {days} day{'s' if days != 1 else ''}")
+        _apply(subject, rule, days <= M365_WARN_DAYS, recipients,
+               f"{label}: {a.get('app')} {what} {when}",
+               f"The {what} <b>{_esc(a.get('name') or '')}</b> of app registration <b>{_esc(a.get('app') or '')}</b> "
+               f"in <b>{_esc(label)}</b> {when} ({_esc(a['expires'])}). Whatever signs in with it stops working then.",
+               True, "critical" if days < 0 else "warning",
+               {"id": None, "name": f"App {what} expiring: {a.get('app')}", "metric": "m365_credential",
+                "detail": f"{a.get('app')} {what} {when}"})
+
+    for s in snapshot.get("subscriptions") or []:
+        rule = f"m365_sub:{s.get('sku') or s.get('product')}"
+        current.add(rule)
+        trouble = _SUB_TROUBLE.get(s.get("status") or "")
+        _apply(subject, rule, bool(trouble), recipients,
+               f"{label}: {s.get('product')} {trouble or 'is active'}",
+               f"The subscription <b>{_esc(s.get('product') or '')}</b> in <b>{_esc(label)}</b> {trouble or 'is active'}"
+               + (f" (renews {_esc(s['renews'])})" if s.get("renews") else "") + ".",
+               True, "warning",
+               {"id": None, "name": f"Subscription {trouble or 'ok'}: {s.get('product')}", "metric": "m365_subscription",
+                "detail": f"{s.get('product')} {trouble or ''}".strip()})
+
+    # A credential that was rotated away, or a subscription that ended: its
+    # alert is over too.
+    for rule in db.raised_alert_keys(subject["id"]):
+        if rule.startswith(("m365_cred:", "m365_sub:")) and rule not in current:
+            _apply(subject, rule, False, recipients, f"{label}: {rule.split(':', 1)[0]}",
+                   "", True, "warning", {"id": None, "name": f"{label} {rule}", "metric": "m365", "detail": "gone"})

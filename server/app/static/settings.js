@@ -361,6 +361,7 @@ function render() {
          <div class="frow"><label>Endpoints</label><div class="code mono" style="white-space:pre-wrap">GET  /api/v1/devices
 GET  /api/v1/devices/{id}
 GET  /api/v1/network-devices
+GET  /api/v1/m365-tenants
 GET  /api/v1/alerts
 POST /api/v1/devices/{id}/run-script
 POST /api/v1/devices/{id}/reboot</div>

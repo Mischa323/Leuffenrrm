@@ -206,6 +206,27 @@ CREATE TABLE IF NOT EXISTS unifi_accounts (
     FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
 
+-- Microsoft 365 tenants, read server-side from Microsoft Graph with an app
+-- registration in the customer's tenant. The client secret is sealed (see
+-- secretbox.py); snapshot_json holds the latest reading (see m365.collect).
+CREATE TABLE IF NOT EXISTS m365_tenants (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id        TEXT NOT NULL,
+    name          TEXT,
+    tenant_id     TEXT NOT NULL,
+    client_id     TEXT NOT NULL,
+    secret_sealed TEXT NOT NULL,
+    secret_hint   TEXT,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    interval      INTEGER NOT NULL DEFAULT 21600,
+    snapshot_json TEXT,
+    last_poll     REAL,
+    last_ok       INTEGER,
+    last_error    TEXT,
+    created_at    REAL,
+    FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS alert_state (
     device_id    TEXT NOT NULL,
     rule         TEXT NOT NULL,
@@ -2337,6 +2358,92 @@ def save_unifi_result(account_id: int, ok: bool, error: str | None,
             conn.execute(
                 "UPDATE unifi_accounts SET last_poll=?, last_ok=?, last_error=? WHERE id=?",
                 (now, 1 if ok else 0, error, account_id))
+
+
+# --------------------------------------------------------------------------- #
+# Microsoft 365 tenants
+# --------------------------------------------------------------------------- #
+def _m365_row(r, redact: bool = True) -> dict:
+    d = dict(r)
+    if redact:
+        d.pop("secret_sealed", None)
+    try:
+        d["snapshot"] = json.loads(d["snapshot_json"]) if d.get("snapshot_json") else None
+    except (ValueError, TypeError):
+        d["snapshot"] = None
+    d.pop("snapshot_json", None)
+    d["enabled"] = bool(d.get("enabled"))
+    return d
+
+
+def add_m365_tenant(org_id: str, name: str | None, tenant_id: str, client_id: str,
+                    secret_sealed: str, secret_hint: str, *, interval: int = 21600,
+                    enabled: bool = True) -> int:
+    with write() as conn:
+        cur = conn.execute(
+            """INSERT INTO m365_tenants (org_id, name, tenant_id, client_id, secret_sealed, secret_hint,
+                   enabled, interval, created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+            (org_id, name, tenant_id, client_id, secret_sealed, secret_hint, 1 if enabled else 0,
+             int(interval), time.time()))
+        return cur.lastrowid
+
+
+def get_m365_tenant(tenant_row_id: int, redact: bool = False) -> dict | None:
+    row = get_conn().execute("SELECT * FROM m365_tenants WHERE id=?", (tenant_row_id,)).fetchone()
+    return _m365_row(row, redact=redact) if row else None
+
+
+def list_m365_tenants(org_id: str) -> list[dict]:
+    return [_m365_row(r) for r in get_conn().execute(
+        "SELECT * FROM m365_tenants WHERE org_id=? ORDER BY name, id", (org_id,)).fetchall()]
+
+
+def list_m365_tenants_all(enabled_only: bool = True) -> list[dict]:
+    """With the sealed secret, for the poller."""
+    q = "SELECT * FROM m365_tenants" + (" WHERE enabled=1" if enabled_only else "")
+    return [_m365_row(r, redact=False) for r in get_conn().execute(q).fetchall()]
+
+
+_M365_FIELDS = {"name", "enabled", "interval", "tenant_id", "client_id", "secret_sealed", "secret_hint"}
+
+
+def update_m365_tenant(tenant_row_id: int, fields: dict) -> None:
+    sets, vals = [], []
+    for k, v in fields.items():
+        if k not in _M365_FIELDS:
+            continue
+        if k == "enabled":
+            v = 1 if v else 0
+        elif k == "interval":
+            v = int(v)
+        sets.append(f"{k}=?")
+        vals.append(v)
+    if not sets:
+        return
+    vals.append(tenant_row_id)
+    with write() as conn:
+        conn.execute(f"UPDATE m365_tenants SET {', '.join(sets)} WHERE id=?", vals)
+
+
+def delete_m365_tenant(tenant_row_id: int) -> None:
+    with write() as conn:
+        conn.execute("DELETE FROM m365_tenants WHERE id=?", (tenant_row_id,))
+        # Its alerts go with it (subjects are m365-<id>-...); the trailing '-'
+        # keeps id 5 from matching id 50.
+        conn.execute("DELETE FROM alert_state WHERE device_id LIKE ?", (f"m365-{tenant_row_id}-%",))
+
+
+def save_m365_result(tenant_row_id: int, ok: bool, error: str | None, snapshot: dict | None) -> None:
+    """A reading: the status always, the snapshot only when signing in worked
+    -- a failed reading keeps the last good one on show."""
+    now = time.time()
+    with write() as conn:
+        if snapshot is not None:
+            conn.execute("UPDATE m365_tenants SET last_poll=?, last_ok=?, last_error=?, snapshot_json=? WHERE id=?",
+                         (now, 1 if ok else 0, error, json.dumps(snapshot), tenant_row_id))
+        else:
+            conn.execute("UPDATE m365_tenants SET last_poll=?, last_ok=?, last_error=? WHERE id=?",
+                         (now, 1 if ok else 0, error, tenant_row_id))
 
 
 # --------------------------------------------------------------------------- #

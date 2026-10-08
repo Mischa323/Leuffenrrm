@@ -74,6 +74,7 @@
               <button data-tab="nodes"><span class="ni" data-i="nodes"></span> Nodes <span class="count" id="nav-nodes-count">0</span></button>
               <button data-tab="snmp"><span class="ni" data-i="radio"></span> SNMP <span class="count" id="nav-snmp-count">0</span></button>
               <button data-tab="unifi"><span class="ni" data-i="wifi"></span> UniFi <span class="count" id="nav-unifi-count">0</span></button>
+              <button data-tab="m365"><span class="ni" data-i="cloud"></span> Microsoft 365 <span class="count" id="nav-m365-count">0</span></button>
               <button data-tab="scripts"><span class="ni" data-i="terminal"></span> Scripts <span class="count" id="nav-scripts-count">0</span></button>
               <button data-tab="monitors"><span class="ni" data-i="shieldCheck"></span> Policies <span class="count" id="nav-monitors-count">0</span></button>
               <button data-tab="programs"><span class="ni" data-i="package"></span> Programs</button>
@@ -129,6 +130,14 @@
                 <div class="panel-head"><h2>UniFi network</h2><span class="sub" id="unifi-sub">Monitor UniFi gateways, switches &amp; APs via the UniFi API</span><div class="spacer"></div>
                   <button class="btn sm" id="unifi-add"><span class="hi" data-i="plus"></span> Add UniFi account</button></div>
                 <div style="padding:18px" id="unifi-body"></div>
+              </div>
+            </div>
+            <!-- Microsoft 365 -->
+            <div id="tab-m365" class="hidden">
+              <div class="panel">
+                <div class="panel-head"><h2>Microsoft 365</h2><span class="sub" id="m365-sub">Users, licences, mailboxes and expiring app secrets via Microsoft Graph</span><div class="spacer"></div>
+                  <button class="btn sm" id="m365-add"><span class="hi" data-i="plus"></span> Link a tenant</button></div>
+                <div style="padding:18px" id="m365-body"></div>
               </div>
             </div>
             <!-- Scripts -->

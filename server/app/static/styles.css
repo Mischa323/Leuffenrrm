@@ -792,3 +792,15 @@ select option { background: var(--surface); color: var(--text); }
 .unifi-wan { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 12px; }
 .unifi-wan-item { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; }
 .unifi-wan-item svg { width: 15px; height: 15px; color: var(--text-dim); flex: none; }
+
+/* ---- Microsoft 365 tab ---- */
+.m365-chips { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 4px; font-size: 12.5px; color: var(--text-dim); }
+.m365-chips b { color: var(--text); }
+.m365-warn, .m365-warn b { color: var(--warn); }
+.m365-problems { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-sm);
+                 font-size: 12.5px; color: var(--text-dim); }
+.m365-problems ul { margin: 6px 0 0; padding-left: 18px; }
+.m365-sec { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+.m365-sec > summary { cursor: pointer; padding: 4px 0; font-size: 13px; }
+.m365-sec code, .m365-problems code { font-size: 11.5px; background: var(--surface-2, rgba(127,127,127,.12)); padding: 0 4px; border-radius: 4px; }
+.m365-steps { margin: 6px 0; padding-left: 20px; font-size: 12.5px; line-height: 1.6; }

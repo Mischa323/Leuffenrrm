@@ -388,6 +388,7 @@ Explicit environment variables always take precedence over wizard-saved values.
 | `RMM_TLS_CERT` / `RMM_TLS_KEY` | `<data>/tls/*` | Cert/key paths (self-signed/file) |
 | `RMM_HOST` / `RMM_PORT` | `0.0.0.0` / `8000` | Bind address/port |
 | `RMM_DB_PATH` | `server/data/rmm.db` | SQLite location (mount a volume) |
+| `RMM_SECRET_KEY` | *(key file)* | Key that encrypts the Microsoft 365 client secrets (base64 of 32 bytes, or a passphrase). Unset, a `secret.key` is made next to the database on first use — back it up with the database, or the secrets cannot be read after a restore. |
 | `RMM_OFFLINE_AFTER` | `120` | Seconds before a device is "offline" |
 | `RMM_METRIC_RETENTION` | `604800` | Metric retention (seconds) |
 | `RMM_ALERT_INTERVAL` | `60` | Alert evaluation interval (seconds) |
@@ -487,7 +488,7 @@ therefore stay here, and so does deciding who sees which organisation.
 |---|---|
 | `RMM_DOC_URL` | LeuffenDoc's address (`https://doc.example.com`). Set it under **Settings → API & webhooks → LeuffenDoc** instead, and no restart is needed. Filling it in puts a **Docs** button in the header and makes that address a permitted hand-off target — an estate without the app leaves it empty and sees neither. |
 | `RMM_SSO_RETURN_URLS` | Further addresses a hand-off may send the browser back to, comma separated. Anything not listed (and not `RMM_DOC_URL`) is refused — otherwise the endpoint would hand a valid ticket to whatever address a link named. |
-| API key | **Settings → API & webhooks**, spanning all organisations. The app uses it to redeem tickets, to read `/api/v1/orgs`, `/api/v1/users`, `/api/v1/devices` and `/api/v1/network-devices` (the UniFi equipment), and to send documentation to `/api/v1/documentation`. |
+| API key | **Settings → API & webhooks**, spanning all organisations. The app uses it to redeem tickets, to read `/api/v1/orgs`, `/api/v1/users`, `/api/v1/devices`, `/api/v1/network-devices` (the UniFi equipment) and `/api/v1/m365-tenants` (the Microsoft 365 tenants), and to send documentation to `/api/v1/documentation`. |
 
 **Linking with one button** does all of this: LeuffenDoc's set-up screen (or
 **Link with LeuffenDoc** here, next to its address) sends a global administrator
