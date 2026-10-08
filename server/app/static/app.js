@@ -977,8 +977,9 @@ function unifiTierMap(snap) {
     { label: "Gateway", nodes: of("gateway") },
     { label: "Switches", nodes: of("switch") },
     { label: "Access Points", nodes: of("ap") },
+    { label: "Cameras", nodes: of("nvr").concat(of("camera")) },
   ];
-  const other = devs.filter((d) => !["gateway", "switch", "ap"].includes(d.type));
+  const other = devs.filter((d) => !["gateway", "switch", "ap", "nvr", "camera"].includes(d.type));
   if (other.length) tiers.push({ label: "Other", nodes: other });
   tiers = tiers.filter((t, i) => i === 0 || t.nodes.length);
   const COLW = 200, ROWH = 66, NW = 158, NH = 50, PAD = 18, LBLH = 26;
@@ -1011,7 +1012,7 @@ function unifiWan(isp) {
 }
 function unifiDeviceRows(devs) {
   if (!devs || !devs.length) return `<div class="h-sub" style="padding:8px 2px">No devices reported.</div>`;
-  const ord = { gateway: 0, switch: 1, ap: 2, other: 3 };
+  const ord = { gateway: 0, switch: 1, ap: 2, nvr: 3, camera: 4, other: 5 };
   const rows = devs.slice().sort((a, b) => (ord[a.type] ?? 9) - (ord[b.type] ?? 9) || (a.name || "").localeCompare(b.name || ""))
     .map((d) => `<tr><td>${unifiPill(d.state)}</td><td>${escapeHtml(d.name || "—")}</td>`
       + `<td><span class="badge na">${escapeHtml(d.type)}</span></td><td class="muted">${escapeHtml(d.model || "—")}</td>`

@@ -19,6 +19,7 @@ from the Connector Proxy → local Network Integration API as a later enhancemen
 from __future__ import annotations
 
 import logging
+import re
 
 import httpx
 
@@ -109,9 +110,21 @@ def _paged(key: str, path: str) -> list:
 # --------------------------------------------------------------------------- #
 # Classification / normalisation
 # --------------------------------------------------------------------------- #
+# UniFi Protect: recorders first ("UNVR Instant" is no camera), then cameras --
+# both before the switch check, which "PoE" in a camera's name would satisfy.
+_NVR = re.compile(r"\b[ue]?nvr\b|unvr")
+_CAMERA = re.compile(r"\buvc\b|uvc[- ]|\bg[3-6][ -]|camera|bullet|\bdome\b|turret|doorbell|\bptz\b"
+                     r"|\bai (pro|360|bullet|theta|dslr|turret|dome|ptz)\b")
+
+
 def _classify(*hints: str) -> str:
     """Map a device's model/product-line/name hints to a role."""
     s = " ".join(h for h in hints if h).lower()
+    product = (hints[1] if len(hints) > 1 else "") or ""
+    if _NVR.search(s):
+        return "nvr"
+    if _CAMERA.search(s) or ("protect" in product.lower() and "cloud key" not in s and "uck" not in s):
+        return "camera"
     if any(t in s for t in ("gateway", "udm", "uxg", "ucg", "ugw", "usg", "dream machine",
                             "dream router", "udr", "uck", "cloud key", "router", "console")):
         # Cloud Key is a controller host, not a router, but it still sits at the top tier.

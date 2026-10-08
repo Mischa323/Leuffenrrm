@@ -5,6 +5,9 @@
 ### Added
 - **UniFi equipment in the API, for LeuffenDoc.** `GET /api/v1/network-devices` lists the gateways, switches and access points of every customer's UniFi accounts as the last poll saw them — each known by its MAC address, with its name, model, type, firmware, management address, status, connected clients, what it hangs on (uplink), its console and the customer. LeuffenDoc documents them as network devices from it; any tool with an API key can read it too. A disabled account's devices are left out; the UniFi API key never is in it.
 
+### Fixed
+- **UniFi Protect cameras showed as switches.** A camera with "PoE" in its name — or any Protect camera the classifier did not know — landed among the switches. Cameras and recorders (UNVR) are now recognised first, by model and product line, and listed as **camera** and **nvr**: last in the device table, and in a **Cameras** column of their own on the network map. The next poll puts existing ones right.
+
 ### Changed
 - **The Docs tab says "archived"** for a machine archived in LeuffenDoc (it said "taken out of use"), the word LeuffenDoc now uses.
 
