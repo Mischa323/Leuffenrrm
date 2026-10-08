@@ -2764,6 +2764,43 @@ def api_v1_devices(key: dict = Depends(api_auth)):
     return {"devices": out}
 
 
+def _canon_mac(mac) -> str:
+    return "".join(c for c in str(mac or "").lower() if c in "0123456789abcdef")
+
+
+@app.get("/api/v1/network-devices")
+def api_v1_network_devices(key: dict = Depends(api_auth)):
+    """The network equipment watched without an agent: the gateways, switches
+    and access points of each customer's UniFi accounts, as the last poll saw
+    them. A device is known by its MAC address, which survives a rename and a
+    re-adoption; a disabled account's devices are not listed, since nothing is
+    watching them any more."""
+    out = []
+    seen = set()
+    for oid in _api_scope_orgs(key):
+        org = db.get_org(oid)
+        for account in db.list_unifi_accounts(oid):        # without the key
+            if not account.get("enabled"):
+                continue
+            snap = account.get("snapshot") or {}
+            consoles = {h.get("id"): h.get("name") for h in snap.get("hosts") or [] if isinstance(h, dict)}
+            for d in snap.get("devices") or []:
+                mac = _canon_mac(d.get("mac")) if isinstance(d, dict) else ""
+                if len(mac) != 12 or mac in seen:
+                    continue
+                seen.add(mac)
+                out.append({
+                    "id": f"unifi:{mac}", "source": "unifi",
+                    "name": d.get("name"), "mac": d.get("mac"), "model": d.get("model"),
+                    "type": d.get("type"), "state": d.get("state"), "firmware": d.get("version"),
+                    "ip": d.get("ip"), "uptime": d.get("uptime"), "clients": d.get("clients"),
+                    "uplink_mac": d.get("uplink_mac"),
+                    "console": d.get("host_name") or consoles.get(d.get("host_id")),
+                    "account": account.get("name"), "seen_at": account.get("last_poll"),
+                    "org": {"id": org["id"], "name": org["name"]} if org else None})
+    return {"devices": out}
+
+
 @app.get("/api/v1/devices/{device_id}")
 def api_v1_device(device_id: str, key: dict = Depends(api_auth)):
     dev = _api_device(device_id, key)

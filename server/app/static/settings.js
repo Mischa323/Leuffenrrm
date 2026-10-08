@@ -360,6 +360,7 @@ function render() {
            <div class="hint">Or <b>Authorization: Bearer lrmm_api_…</b> — whichever your tool sends more easily.</div></div>
          <div class="frow"><label>Endpoints</label><div class="code mono" style="white-space:pre-wrap">GET  /api/v1/devices
 GET  /api/v1/devices/{id}
+GET  /api/v1/network-devices
 GET  /api/v1/alerts
 POST /api/v1/devices/{id}/run-script
 POST /api/v1/devices/{id}/reboot</div>
