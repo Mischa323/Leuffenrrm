@@ -2839,6 +2839,36 @@ def api_v1_network_devices(key: dict = Depends(api_auth)):
     return {"devices": out}
 
 
+@app.get("/api/v1/networks")
+def api_v1_networks(key: dict = Depends(api_auth)):
+    """The networks each customer's UniFi consoles have -- subnet, gateway,
+    VLAN and DHCP -- as the last poll read them, and per console whether it
+    could be read: a console on firmware without networks (before UniFi
+    Network 10) is listed as not read, so nothing is taken as gone."""
+    networks, consoles = [], []
+    for oid in _api_scope_orgs(key):
+        org = db.get_org(oid)
+        here = {"id": org["id"], "name": org["name"]} if org else None
+        for account in db.list_unifi_accounts(oid):        # without the key
+            if not account.get("enabled"):
+                continue
+            snap = account.get("snapshot") or {}
+            names = {h.get("id"): h.get("name") for h in snap.get("hosts") or [] if isinstance(h, dict)}
+            read = set(snap.get("networks_read") or [])
+            listed = list(dict.fromkeys([*(snap.get("networks_read") or []), *(snap.get("networks_unread") or []),
+                                         *(d.get("host_id") for d in snap.get("devices") or []
+                                           if isinstance(d, dict) and d.get("host_id"))]))
+            for cid in listed:
+                consoles.append({"id": cid, "name": names.get(cid) or "", "read": cid in read,
+                                 "account": account.get("name"), "org": here})
+            for n in snap.get("networks") or []:
+                if not isinstance(n, dict) or not n.get("id"):
+                    continue
+                networks.append({**n, "key": f"unifi-net:{n.get('console_id')}:{n['id']}".lower(),
+                                 "account": account.get("name"), "seen_at": account.get("last_poll"), "org": here})
+    return {"networks": networks, "consoles": consoles}
+
+
 @app.get("/api/v1/m365-tenants")
 def api_v1_m365_tenants(key: dict = Depends(api_auth)):
     """Every customer's Microsoft 365 tenant as its last reading saw it: the

@@ -9,7 +9,8 @@ Kept FastAPI-free and defensive so it's unit-testable and tolerant of the
 versioned cloud schema: :func:`collect` normalises whatever the API returns into
 a stable snapshot the dashboard + alerter consume::
 
-    {ok, error, hosts:[...], devices:[...], isp:[...], edges:[...]}
+    {ok, error, hosts:[...], devices:[...], isp:[...], edges:[...],
+     networks:[...], networks_read:[console ids], networks_unread:[console ids]}
 
 The cloud API exposes inventory + ISP metrics but **not** per-port/uplink
 topology, so ``edges`` is empty and the dashboard tiers the network map by device
@@ -18,6 +19,7 @@ from the Connector Proxy → local Network Integration API as a later enhancemen
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 
@@ -29,6 +31,7 @@ SITE_MGR = "https://api.ui.com/v1"
 CONNECTOR = "https://api.ui.com/v1/connector/consoles"   # + /{consoleId}/proxy/network/integration/v1
 _TIMEOUT = 20.0
 _TOPO_MAX_DEVICES = 60   # cap detail calls per console (bounds a poll's proxy calls)
+_NET_MAX_DETAILS = 64    # the same for networks: one detail call each
 
 
 class UnifiError(Exception):
@@ -301,6 +304,12 @@ def collect(key: str, host_ids: list | None = None) -> dict:
         _enrich_topology(key, snap)
     except Exception as exc:  # pragma: no cover - defensive; never fail a poll
         log.info("UniFi topology enrichment skipped: %s", exc)
+    # The networks (subnets, VLANs, DHCP) each console has, the same way: a
+    # console on firmware without them is named as not read, never as empty.
+    try:
+        _read_networks(key, snap)
+    except Exception as exc:  # pragma: no cover - defensive; never fail a poll
+        log.info("UniFi networks skipped: %s", exc)
     snap["ok"] = True
     return snap
 
@@ -425,3 +434,139 @@ def _enrich_topology(key: str, snap: dict) -> None:
                 edges.append({"child_mac": cm, "parent_mac": pm})
     if edges:
         snap["edges"] = edges
+
+
+# --------------------------------------------------------------------------- #
+# Networks (Connector Proxy -> Network Integration API, UniFi Network 10+)
+# --------------------------------------------------------------------------- #
+_MANAGEMENT = {"GATEWAY": "gateway", "SWITCH": "switch", "UNMANAGED": "vlan"}
+
+
+def _strings(v) -> list:
+    return [str(x) for x in v if x] if isinstance(v, list) else []
+
+
+def _norm_network(n: dict, detail: dict | None, site: str, console_id: str, console: str) -> dict:
+    """One network as the RMM keeps it: its subnet as a network address, the
+    gateway's address in it, and how DHCP hands out addresses. ``dhcp`` is
+    ``server``, ``relay`` or ``off``; None when nothing says (a VLAN only, or
+    a detail that could not be read)."""
+    d = detail if isinstance(detail, dict) else n
+    v4 = d.get("ipv4Configuration") if isinstance(d.get("ipv4Configuration"), dict) else None
+    management = str(_first(n, "management") or _first(d, "management") or "")
+    out = {
+        "id": str(_first(n, "id", "_id") or ""), "console_id": console_id, "console": console, "site": site,
+        "name": _first(d, "name") or _first(n, "name") or "",
+        "vlan": _first(d, "vlanId", "vlan"),
+        "management": _MANAGEMENT.get(management.upper(), management.lower()),
+        "enabled": _first(d, "enabled", default=True), "default": bool(_first(d, "default", default=False)),
+        "isolated": _first(d, "isolationEnabled"), "internet": _first(d, "internetAccessEnabled"),
+        "device_id": _first(d, "deviceId"), "detail": isinstance(detail, dict),
+        "gateway": "", "prefix": None, "subnet": "", "extra_subnets": [], "dhcp": None,
+        "dhcp_start": "", "dhcp_stop": "", "lease_seconds": None, "dns": [], "domain": "", "relay_servers": [],
+    }
+    if v4 is None:
+        return out
+    host, prefix = _first(v4, "hostIpAddress"), _first(v4, "prefixLength")
+    out["gateway"] = str(host or "")
+    try:
+        out["prefix"] = int(prefix)
+        out["subnet"] = str(ipaddress.ip_interface(f"{host}/{int(prefix)}").network)
+    except (TypeError, ValueError):
+        pass
+    out["extra_subnets"] = _strings(v4.get("additionalHostIpSubnets"))
+    dhcp = v4.get("dhcpConfiguration") if isinstance(v4.get("dhcpConfiguration"), dict) else None
+    if dhcp is None:
+        # Read in full and no DHCP: addresses are set by hand, or come from elsewhere.
+        out["dhcp"] = "off" if out["detail"] else None
+        return out
+    mode = str(_first(dhcp, "mode") or "").upper()
+    out["dhcp"] = "relay" if mode == "RELAY" else "off" if mode in ("NONE", "DISABLED", "OFF") else "server"
+    rng = dhcp.get("ipAddressRange") if isinstance(dhcp.get("ipAddressRange"), dict) else {}
+    out["dhcp_start"], out["dhcp_stop"] = str(rng.get("start") or ""), str(rng.get("stop") or "")
+    lease = _first(dhcp, "leaseTimeSeconds")
+    out["lease_seconds"] = int(lease) if isinstance(lease, (int, float)) else None
+    out["dns"] = _strings(_first(dhcp, "dnsServerIpAddressesOverride", "dnsServers"))
+    out["domain"] = str(_first(dhcp, "domainName") or "")
+    out["relay_servers"] = _strings(_first(dhcp, "dhcpServerIpAddresses"))
+    return out
+
+
+def _network_detail(key: str, console_id: str, site_id, network_id) -> dict | None:
+    """A network's detail. GET by id answers with the object itself rather
+    than wrapped in ``data``; either is taken."""
+    try:
+        body = _request(key, f"/sites/{site_id}/networks/{network_id}",
+                        base=f"{CONNECTOR}/{console_id}/proxy/network/integration/v1")
+    except UnifiError:
+        return None
+    if isinstance(body.get("data"), dict):
+        return body["data"]
+    return body if ("ipv4Configuration" in body or "management" in body or "vlanId" in body) else None
+
+
+def _console_networks(key: str, console_id: str, console: str) -> list | None:
+    """Every network of one console, with the detail that holds its subnet and
+    DHCP. None when the console does not answer (no proxy, or firmware older
+    than UniFi Network 10, which does not list networks)."""
+    sites = proxy_get(key, console_id, "/sites", params={"limit": 50})
+    if not isinstance(sites, list):
+        return None
+    out, read_any, details = [], False, 0
+    for site in sites:
+        sid = _first(site, "id", "_id") if isinstance(site, dict) else None
+        if not sid:
+            continue
+        nets = proxy_get(key, console_id, f"/sites/{sid}/networks", params={"limit": 200})
+        if not isinstance(nets, list):
+            continue
+        read_any = True
+        site_name = str(_first(site, "name", "internalReference") or "")
+        switch_macs = None
+        for n in nets:
+            nid = _first(n, "id", "_id") if isinstance(n, dict) else None
+            if not nid:
+                continue
+            detail = None
+            # The list leaves the subnet out; a VLAN-only network has none.
+            if str(n.get("management") or "").upper() != "UNMANAGED" and details < _NET_MAX_DETAILS:
+                details += 1
+                detail = _network_detail(key, console_id, sid, nid)
+            net = _norm_network(n, detail, site_name, console_id, console)
+            # A network a switch routes: which switch, by its MAC.
+            if net["device_id"]:
+                if switch_macs is None:
+                    devs = proxy_get(key, console_id, f"/sites/{sid}/devices", params={"limit": 200}) or []
+                    switch_macs = {str(_first(x, "id", "_id")): _canon_mac(_first(x, "macAddress", "mac"))
+                                   for x in devs if isinstance(x, dict)}
+                net["router_mac"] = switch_macs.get(str(net["device_id"])) or ""
+            net.pop("device_id", None)
+            out.append(net)
+    return out if read_any else None
+
+
+def _read_networks(key: str, snap: dict) -> None:
+    """Fill ``snap['networks']`` for every console with devices in the
+    snapshot; ``networks_read`` and ``networks_unread`` say which consoles
+    answered, so a console that could not be read is not taken as empty."""
+    names = {h.get("id"): h.get("name") for h in snap.get("hosts") or [] if isinstance(h, dict)}
+    consoles, gateways = [], {}
+    for d in snap.get("devices") or []:
+        hid = d.get("host_id")
+        if hid and hid not in consoles:
+            consoles.append(hid)
+        # A network the gateway routes hangs on that console's gateway.
+        if hid and d.get("type") == "gateway" and hid not in gateways:
+            gateways[hid] = _canon_mac(d.get("mac"))
+    networks, read, unread = [], [], []
+    for console_id in consoles:
+        nets = _console_networks(key, console_id, names.get(console_id) or "")
+        if nets is None:
+            unread.append(console_id)
+            continue
+        read.append(console_id)
+        for n in nets:
+            if n["management"] == "gateway" and not n.get("router_mac"):
+                n["router_mac"] = gateways.get(console_id, "")
+            networks.append(n)
+    snap["networks"], snap["networks_read"], snap["networks_unread"] = networks, read, unread

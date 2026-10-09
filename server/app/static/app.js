@@ -1026,6 +1026,25 @@ function unifiDeviceRows(devs) {
       + `<td>${d.clients != null ? d.clients : "—"}</td></tr>`).join("");
   return `<div style="overflow-x:auto;margin-top:12px"><table class="grid"><thead><tr><th>Status</th><th>Name</th><th>Type</th><th>Model</th><th>IP</th><th>Firmware</th><th>Clients</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
+// The networks each console has (UniFi Network 10+), and which consoles
+// could not say -- on older firmware the integration API lists none.
+function unifiNetworkRows(snap) {
+  const nets = snap.networks || [];
+  const names = Object.fromEntries((snap.hosts || []).map((h) => [h.id, h.name]));
+  const unread = (snap.networks_unread || []).map((id) => names[id] || id);
+  const note = unread.length
+    ? `<div class="h-sub" style="padding:6px 2px">Networks not read from ${escapeHtml(unread.join(", "))} — that needs UniFi Network 10 or later on the console.</div>` : "";
+  if (!nets.length) return note;
+  const dhcp = (n) => n.dhcp === "server" ? `${escapeHtml(n.dhcp_start || "")}${n.dhcp_stop ? " – " + escapeHtml(n.dhcp_stop) : ""}` || "on"
+    : n.dhcp === "relay" ? `relay${n.relay_servers && n.relay_servers.length ? " → " + escapeHtml(n.relay_servers.join(", ")) : ""}`
+    : n.dhcp === "off" ? "off" : "—";
+  const rows = nets.slice().sort((a, b) => (a.vlan || 0) - (b.vlan || 0) || (a.name || "").localeCompare(b.name || ""))
+    .map((n) => `<tr><td>${escapeHtml(n.name || "—")}${n.enabled === false ? ` <span class="badge na">off</span>` : ""}</td>`
+      + `<td>${n.vlan != null ? n.vlan : "—"}</td><td class="mono">${escapeHtml(n.subnet || "—")}</td>`
+      + `<td class="mono">${escapeHtml(n.gateway || "—")}</td><td class="muted">${dhcp(n)}</td>`
+      + `<td><span class="badge na">${escapeHtml(n.management || "—")}</span></td></tr>`).join("");
+  return `<div style="overflow-x:auto;margin-top:12px"><table class="grid unifi-nets"><thead><tr><th>Network</th><th>VLAN</th><th>Subnet</th><th>Gateway</th><th>DHCP</th><th>Routed by</th></tr></thead><tbody>${rows}</tbody></table></div>` + note;
+}
 function unifiAccountCard(a) {
   const snap = a.snapshot;
   const nDev = snap && snap.devices ? snap.devices.length : 0;
@@ -1037,7 +1056,7 @@ function unifiAccountCard(a) {
   let bodyHtml;
   if (snap && snap.ok) {
     const warn = snap.error ? `<div class="h-sub" style="padding:6px 2px;color:var(--warn)">Partial data: ${escapeHtml(snap.error)}</div>` : "";
-    bodyHtml = warn + unifiWan(snap.isp) + unifiMap(snap) + unifiDeviceRows(snap.devices);
+    bodyHtml = warn + unifiWan(snap.isp) + unifiMap(snap) + unifiDeviceRows(snap.devices) + unifiNetworkRows(snap);
   }
   else if (a.last_poll && !a.last_ok) bodyHtml = `<div class="h-sub" style="padding:10px 2px">Last poll failed: ${escapeHtml(a.last_error || "unknown error")}. Check the API key and its permissions.</div>`;
   else bodyHtml = `<div class="h-sub" style="padding:10px 2px">Waiting for the first poll — this can take up to a minute.</div>`;
