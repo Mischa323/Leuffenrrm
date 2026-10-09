@@ -1142,7 +1142,9 @@ const M365_GROUP = { team: "Team", m365: "Microsoft 365 group", distribution: "D
 const M365_PARTS = { tenant: "Tenant and domains", subscriptions: "Subscriptions", users: "Users",
                      mailboxes: "Shared mailboxes", groups: "Groups", sites: "SharePoint",
                      apps: "App registrations", security_defaults: "Security defaults",
-                     conditional_access: "Conditional Access" };
+                     conditional_access: "Conditional Access", managers: "Managers",
+                     sign_ins: "Last sign-in", mfa: "MFA registration", roles: "Admin roles",
+                     devices: "Intune devices", mailbox_usage: "Mailbox sizes" };
 function m365Status(t) {
   if (!t.last_poll) return `<span class="badge na">not read yet</span>`;
   if (t.last_ok) return `<span class="badge ok">connected</span>`;
@@ -1189,14 +1191,14 @@ function m365Card(t) {
     const subs = (s.subscriptions || []).map((x) => { const st = M365_STATUS[x.status] || ["na", x.status || "—"];
       return `<tr><td>${escapeHtml(x.product)}</td><td>${x.used} / ${x.seats}</td><td>${m365Expiry(x.renews)}</td><td><span class="badge ${st[0]}">${escapeHtml(st[1])}</span></td></tr>`; });
     const apps = (s.apps || []).map((a) => `<tr><td>${escapeHtml(a.app)}</td><td>${a.kind === "secret" ? "Secret" : "Certificate"}</td><td>${escapeHtml(a.name || "")}</td><td>${m365Expiry(a.expires)}</td></tr>`);
-    const users = (s.users || []).map((u) => `<tr><td>${escapeHtml(u.name)}${u.guest ? ` <span class="badge na">guest</span>` : ""}</td><td class="mono">${escapeHtml(u.upn)}</td><td>${escapeHtml((u.licenses || []).join(", ") || "—")}</td><td>${u.enabled ? "yes" : `<span class="badge na">blocked</span>`}</td></tr>`);
+    const users = (s.users || []).map((u) => `<tr><td>${escapeHtml(u.name)}${u.guest ? ` <span class="badge na">guest</span>` : ""}${(u.roles || []).length ? ` <span class="badge bad" title="${m365Attr(u.roles.join(", "))}">admin</span>` : ""}</td><td class="mono">${escapeHtml(u.upn)}</td><td>${escapeHtml(u.department || "")}</td><td>${escapeHtml((u.licenses || []).join(", ") || "—")}</td><td>${u.last_sign_in ? escapeHtml(relTime(Date.parse(u.last_sign_in) / 1000)) : "—"}</td><td>${u.mfa ? (u.mfa.registered ? "yes" : `<span class="badge bad">no</span>`) : "—"}</td><td>${u.enabled ? "yes" : `<span class="badge na">blocked</span>`}</td></tr>`);
     const boxes = (s.mailboxes || []).map((m) => `<tr><td class="mono">${escapeHtml(m.address)}</td><td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.kind)}</td></tr>`);
     const groups = (s.groups || []).map((g) => `<tr><td>${escapeHtml(g.name)}</td><td class="mono">${escapeHtml(g.mail || "")}</td><td>${escapeHtml(M365_GROUP[g.kind] || g.kind)}</td><td title="${m365Attr((g.members || []).join(", "))}">${g.dynamic ? "dynamic" : (g.members || []).length}</td></tr>`);
     const domains = (tenant.domains || []).map((d) => `<tr><td class="mono">${escapeHtml(d.name)}</td><td>${d.default ? "default" : d.initial ? "initial" : ""}</td></tr>`);
     const ca = (s.ca || []).map((c) => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.state)}</td></tr>`);
     body += m365Section("Subscriptions", subs.length, m365Table(["Product", "In use", "Renews", "Status"], subs), true)
       + m365Section("App registrations — secrets & certificates", apps.length, m365Table(["App", "Kind", "Description", "Expires"], apps), !!sum.expiring)
-      + m365Section("Users", users.length, m365Table(["Name", "Account", "Licences", "Can sign in"], users), false)
+      + m365Section("Users", users.length, m365Table(["Name", "Account", "Department", "Licences", "Last sign-in", "MFA", "Can sign in"], users), false)
       + m365Section("Shared mailboxes, rooms & equipment", boxes.length, m365Table(["Address", "Name", "Kind"], boxes), false)
       + m365Section("Groups, Teams & distribution lists", groups.length, m365Table(["Name", "Address", "Kind", "Members"], groups), false)
       + m365Section("Domains", domains.length, m365Table(["Domain", ""], domains), false)

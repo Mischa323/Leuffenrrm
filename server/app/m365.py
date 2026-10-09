@@ -17,7 +17,9 @@ written to the tenant. Values are stored language-neutral (``shared``,
 """
 from __future__ import annotations
 
+import csv
 import datetime
+import io
 import logging
 import os
 
@@ -42,6 +44,10 @@ PERMISSIONS = [
     ("Application.Read.All", "app registrations and when their secrets expire"),
     ("Policy.Read.All", "security defaults and Conditional Access"),
     ("Sites.Read.All", "SharePoint sites (optional)"),
+    ("AuditLog.Read.All", "last sign-in and MFA registration (sign-ins need Entra ID P1)"),
+    ("RoleManagement.Read.Directory", "who holds an admin role"),
+    ("DeviceManagementManagedDevices.Read.All", "each user's devices in Intune (optional)"),
+    ("Reports.Read.All", "mailbox sizes"),
 ]
 
 # The names on the invoice for the subscriptions an MSP meets every day; any
@@ -165,15 +171,16 @@ def _date(value) -> str:
 # --------------------------------------------------------------------------- #
 def collect(tenant_id: str, client_id: str, secret: str) -> dict:
     """A snapshot of the tenant: ``{ok, error, tenant, subscriptions, users,
-    mailboxes, groups, sites, apps, security_defaults, ca, problems,
-    fetched_at}``. ``ok`` is False only when signing in failed."""
+    mailboxes, groups, sites, apps, applications, security_defaults, ca,
+    problems, fetched_at}``. ``ok`` is False only when signing in failed."""
     snap: dict = {"ok": False, "error": None, "problems": []}
     try:
         bearer = token(tenant_id, client_id, secret)
     except GraphError as exc:
         snap["error"] = str(exc)
         return snap
-    with httpx.Client(timeout=_TIMEOUT, headers={"Authorization": f"Bearer {bearer}"}) as client:
+    with httpx.Client(timeout=_TIMEOUT, follow_redirects=True,
+                      headers={"Authorization": f"Bearer {bearer}"}) as client:
         def part(name: str, permission: str, fn) -> None:
             try:
                 fn()
@@ -183,6 +190,8 @@ def collect(tenant_id: str, client_id: str, secret: str) -> dict:
 
         skus: dict = {}
         candidates: list = []
+        people: dict = {}            # user id -> the row, for what is added to it below
+        by_upn: dict = {}            # lower-case UPN -> the row
 
         def tenant() -> None:
             org = (_all(client, "/organization") or [{}])[0]
@@ -207,7 +216,8 @@ def collect(tenant_id: str, client_id: str, secret: str) -> dict:
                 seats = (sku.get("prepaidUnits") or {}).get("enabled") or 0
                 if not seats and not sku.get("consumedUnits"):
                     continue                  # a free offer nobody took
-                rows.append({"sku": sku.get("skuPartNumber") or "", "product": skus[sku.get("skuId")],
+                rows.append({"sku_id": sku.get("skuId") or "", "sku": sku.get("skuPartNumber") or "",
+                             "product": skus[sku.get("skuId")],
                              "seats": seats, "used": sku.get("consumedUnits") or 0,
                              "renews": _date((renewals.get(sku.get("skuId")) or {}).get("nextLifecycleDateTime")),
                              "status": sku.get("capabilityStatus") or ""})
@@ -215,9 +225,7 @@ def collect(tenant_id: str, client_id: str, secret: str) -> dict:
 
         def users() -> None:
             rows = []
-            for u in _all(client, "/users", **{"$select": "id,displayName,userPrincipalName,mail,accountEnabled,"
-                                                         "assignedLicenses,jobTitle,userType",
-                                              "$top": "999"}):
+            for u in _all(client, "/users", **{"$select": _USER_FIELDS, "$top": "999"}):
                 licences = sorted(skus.get(l.get("skuId"), "licence") for l in u.get("assignedLicenses") or [])
                 if not u.get("accountEnabled") and not licences and u.get("mail"):
                     candidates.append(u)        # perhaps a shared mailbox; see below
@@ -236,16 +244,82 @@ def collect(tenant_id: str, client_id: str, secret: str) -> dict:
                         raise
                     continue
                 if purpose in ("shared", "room", "equipment"):
-                    rows.append({"address": u.get("mail") or "", "name": u.get("displayName") or "", "kind": purpose})
+                    rows.append({"id": u.get("id") or "", "address": u.get("mail") or "",
+                                 "name": u.get("displayName") or "", "kind": purpose,
+                                 "aliases": _aliases(u)})
                 else:
                     snap.setdefault("users", []).append(_user(u, []))   # disabled and unlicensed: left
             order = {"shared": 0, "room": 1, "equipment": 2}
             snap["mailboxes"] = sorted(rows, key=lambda r: (order[r["kind"]], r["address"].lower()))
 
+        def index_people() -> None:
+            for row in snap.get("users") or []:
+                people[row["id"]] = row
+                if row.get("upn"):
+                    by_upn[row["upn"].lower()] = row
+
+        def managers() -> None:
+            for u in _all(client, "/users", **{"$select": "id", "$expand": "manager($select=displayName,userPrincipalName)",
+                                              "$top": "999"}):
+                m = u.get("manager") or {}
+                if u.get("id") in people and m.get("displayName"):
+                    people[u["id"]]["manager"] = {"name": m.get("displayName") or "", "upn": m.get("userPrincipalName") or ""}
+
+        def sign_ins() -> None:
+            for u in _all(client, "/users", **{"$select": "id,signInActivity", "$top": "999"}):
+                act = u.get("signInActivity") or {}
+                if u.get("id") in people:
+                    people[u["id"]]["last_sign_in"] = act.get("lastSignInDateTime") or ""
+                    people[u["id"]]["last_sign_in_background"] = act.get("lastNonInteractiveSignInDateTime") or ""
+
+        def mfa() -> None:
+            for r in _all(client, "/reports/authenticationMethods/userRegistrationDetails"):
+                if r.get("id") in people:
+                    people[r["id"]]["mfa"] = {"registered": bool(r.get("isMfaRegistered")),
+                                              "capable": bool(r.get("isMfaCapable")),
+                                              "methods": r.get("methodsRegistered") or [],
+                                              "default": r.get("defaultMfaMethod") or ""}
+
+        def roles() -> None:
+            for role in _all(client, "/directoryRoles", **{"$select": "id,displayName"}):
+                for member in _all(client, f"/directoryRoles/{role['id']}/members", **{"$select": "id"}):
+                    if member.get("id") in people:
+                        people[member["id"]].setdefault("roles", []).append(role.get("displayName") or "")
+
+        def devices() -> None:
+            for d in _all(client, "/deviceManagement/managedDevices", **{"$select": _DEVICE_FIELDS}):
+                row = people.get(d.get("userId")) or by_upn.get((d.get("userPrincipalName") or "").lower())
+                if row is not None:
+                    row.setdefault("devices", []).append({
+                        "name": d.get("deviceName") or "", "os": d.get("operatingSystem") or "",
+                        "os_version": d.get("osVersion") or "", "compliance": d.get("complianceState") or "",
+                        "last_sync": _date(d.get("lastSyncDateTime")), "model": d.get("model") or "",
+                        "manufacturer": d.get("manufacturer") or "", "serial": d.get("serialNumber") or ""})
+
+        def mailbox_usage() -> None:
+            text = _text(client, "/reports/getMailboxUsageDetail(period='D7')")
+            rows = list(csv.DictReader(io.StringIO(text.lstrip("\ufeff"))))
+            boxes = {m["address"].lower(): m for m in snap.get("mailboxes") or [] if m.get("address")}
+            hidden = 0
+            for r in rows:
+                upn = (r.get("User Principal Name") or "").lower()
+                if upn and "@" not in upn:
+                    hidden += 1           # the tenant hides names in its reports
+                    continue
+                usage = {"size": _int(r.get("Storage Used (Byte)")), "items": _int(r.get("Item Count")),
+                         "quota": _int(r.get("Prohibit Send/Receive Quota (Byte)")),
+                         "last_activity": (r.get("Last Activity Date") or "")[:10]}
+                target = by_upn.get(upn) or boxes.get(upn)
+                if target is not None:
+                    target["mailbox"] = usage
+            if hidden and hidden == len(rows):
+                raise GraphError("names are concealed in the reports (Microsoft 365 admin center → Settings → "
+                                 "Org settings → Reports)")
+
         def groups() -> None:
             rows, listed = [], 0
-            for g in _all(client, "/groups", **{"$select": "id,displayName,mail,mailEnabled,securityEnabled,"
-                                                           "groupTypes,resourceProvisioningOptions",
+            for g in _all(client, "/groups", **{"$select": "id,displayName,mail,mailEnabled,securityEnabled,groupTypes,"
+                                                           "resourceProvisioningOptions,description,visibility,createdDateTime",
                                                "$top": "999"}):
                 types = g.get("groupTypes") or []
                 if "Team" in (g.get("resourceProvisioningOptions") or []):
@@ -260,15 +334,31 @@ def collect(tenant_id: str, client_id: str, secret: str) -> dict:
                     kind = "security"
                 dynamic = "DynamicMembership" in types
                 members: list = []
+                owners: list = []
                 # Who is in a list or a team is what gets asked; a security
                 # group's members are a different question, and often many.
                 if kind != "security" and not dynamic and listed < _MAX_MEMBER_LISTS:
                     listed += 1
-                    members = sorted(p.get("displayName") or "" for p in
-                                     _all(client, f"/groups/{g['id']}/members", **{"$select": "displayName", "$top": "999"})
-                                     if p.get("displayName"))
-                rows.append({"name": g.get("displayName") or "", "mail": g.get("mail") or "", "kind": kind,
-                             "dynamic": dynamic, "members": members[:200]})
+                    members = [{"name": p.get("displayName") or "", "upn": p.get("userPrincipalName") or ""}
+                               for p in _all(client, f"/groups/{g['id']}/members",
+                                             **{"$select": "displayName,userPrincipalName", "$top": "999"})
+                               if p.get("displayName")]
+                    if kind in ("team", "m365"):
+                        owners = [p.get("displayName") or "" for p in
+                                  _all(client, f"/groups/{g['id']}/owners", **{"$select": "displayName"})
+                                  if p.get("displayName")]
+                members.sort(key=lambda m: m["name"].lower())
+                rows.append({"id": g.get("id") or "", "name": g.get("displayName") or "", "mail": g.get("mail") or "",
+                             "kind": kind, "dynamic": dynamic, "description": g.get("description") or "",
+                             "visibility": g.get("visibility") or "", "created": _date(g.get("createdDateTime")),
+                             "members": [m["name"] for m in members][:300],
+                             "member_upns": [m["upn"] for m in members if m["upn"]][:300],
+                             "owners": sorted(owners)})
+                # Which groups each person is in, for their own page.
+                for m in members:
+                    person = by_upn.get(m["upn"].lower()) if m["upn"] else None
+                    if person is not None:
+                        person.setdefault("groups", []).append(g.get("displayName") or "")
             order = {"team": 0, "m365": 1, "distribution": 2, "mail_security": 3, "security": 4}
             snap["groups"] = sorted(rows, key=lambda r: (order[r["kind"]], r["name"].lower()))
 
@@ -279,15 +369,25 @@ def collect(tenant_id: str, client_id: str, secret: str) -> dict:
                                    key=lambda r: r["name"].lower())
 
         def apps() -> None:
-            rows = []
-            for a in _all(client, "/applications", **{"$select": "displayName,appId,passwordCredentials,keyCredentials",
+            rows, applications = [], []
+            for a in _all(client, "/applications", **{"$select": "id,displayName,appId,createdDateTime,signInAudience,"
+                                                                 "passwordCredentials,keyCredentials",
                                                      "$top": "999"}):
-                for kind, creds in (("secret", a.get("passwordCredentials")), ("certificate", a.get("keyCredentials"))):
-                    for c in creds or []:
+                creds = []
+                for kind, found in (("secret", a.get("passwordCredentials")), ("certificate", a.get("keyCredentials"))):
+                    for c in found or []:
+                        cred = {"kind": kind, "name": c.get("displayName") or "", "key_id": c.get("keyId") or "",
+                                "expires": _date(c.get("endDateTime"))}
+                        creds.append(cred)
                         rows.append({"app": a.get("displayName") or a.get("appId") or "", "app_id": a.get("appId") or "",
-                                     "kind": kind, "name": c.get("displayName") or "",
-                                     "key_id": c.get("keyId") or "", "expires": _date(c.get("endDateTime"))})
+                                     **cred})
+                applications.append({"id": a.get("id") or "", "app_id": a.get("appId") or "",
+                                     "name": a.get("displayName") or a.get("appId") or "",
+                                     "created": _date(a.get("createdDateTime")),
+                                     "audience": a.get("signInAudience") or "",
+                                     "credentials": sorted(creds, key=lambda c: c["expires"] or "9999")})
             snap["apps"] = sorted(rows, key=lambda r: (r["expires"] or "9999", r["app"].lower()))
+            snap["applications"] = sorted(applications, key=lambda r: r["name"].lower())
 
         def security() -> None:
             snap["security_defaults"] = bool(_get(client, "/policies/identitySecurityDefaultsEnforcementPolicy")
@@ -307,6 +407,14 @@ def collect(tenant_id: str, client_id: str, secret: str) -> dict:
             # Which of them are shared could not be read: listed as what they
             # are for sure -- accounts that cannot sign in.
             snap["users"] = sorted(snap["users"] + [_user(u, []) for u in candidates], key=lambda r: r["name"].lower())
+        index_people()
+        if people:
+            part("managers", "User.Read.All", managers)
+            part("sign_ins", "AuditLog.Read.All + Entra ID P1", sign_ins)
+            part("mfa", "AuditLog.Read.All", mfa)
+            part("roles", "RoleManagement.Read.Directory", roles)
+            part("devices", "DeviceManagementManagedDevices.Read.All", devices)
+        part("mailbox_usage", "Reports.Read.All", mailbox_usage)
         part("groups", "GroupMember.Read.All", groups)
         part("sites", "Sites.Read.All", sites)
         part("apps", "Application.Read.All", apps)
@@ -317,10 +425,58 @@ def collect(tenant_id: str, client_id: str, secret: str) -> dict:
     return snap
 
 
+_USER_FIELDS = ("id,displayName,givenName,surname,userPrincipalName,mail,proxyAddresses,accountEnabled,"
+                "assignedLicenses,jobTitle,department,companyName,officeLocation,businessPhones,mobilePhone,"
+                "city,country,usageLocation,preferredLanguage,userType,createdDateTime,"
+                "lastPasswordChangeDateTime,onPremisesSyncEnabled,employeeId")
+_DEVICE_FIELDS = ("deviceName,userId,userPrincipalName,operatingSystem,osVersion,complianceState,"
+                  "lastSyncDateTime,model,manufacturer,serialNumber")
+
+
+def _aliases(u: dict) -> list:
+    """The other addresses a mailbox receives on (proxyAddresses without the
+    primary one)."""
+    out = []
+    for p in u.get("proxyAddresses") or []:
+        kind, _, address = str(p).partition(":")
+        if kind == "smtp" and address and address.lower() != (u.get("mail") or "").lower():
+            out.append(address)
+    return sorted(out)
+
+
 def _user(u: dict, licences: list) -> dict:
-    return {"name": u.get("displayName") or "", "upn": u.get("userPrincipalName") or "",
-            "licenses": licences, "job": u.get("jobTitle") or "",
+    phones = [{"label": "business", "value": p} for p in u.get("businessPhones") or [] if p]
+    if u.get("mobilePhone"):
+        phones.append({"label": "mobile", "value": u["mobilePhone"]})
+    return {"id": u.get("id") or "", "name": u.get("displayName") or "", "upn": u.get("userPrincipalName") or "",
+            "mail": u.get("mail") or "", "aliases": _aliases(u),
+            "licenses": licences, "job": u.get("jobTitle") or "", "department": u.get("department") or "",
+            "company": u.get("companyName") or "", "office": u.get("officeLocation") or "", "phones": phones,
+            "city": u.get("city") or "", "country": u.get("country") or "", "usage_location": u.get("usageLocation") or "",
+            "employee_id": u.get("employeeId") or "", "created": _date(u.get("createdDateTime")),
+            "password_changed": _date(u.get("lastPasswordChangeDateTime")),
+            "synced": bool(u.get("onPremisesSyncEnabled")),
             "enabled": bool(u.get("accountEnabled")), "guest": u.get("userType") == "Guest"}
+
+
+def _int(value) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _text(client: httpx.Client, path: str) -> str:
+    """A report: Graph answers with a CSV file (after a redirect)."""
+    try:
+        r = client.get(GRAPH + path)
+    except httpx.HTTPError as exc:
+        raise GraphError(f"no answer from Microsoft Graph ({type(exc).__name__})") from exc
+    if r.status_code == 403:
+        raise GraphError("forbidden")
+    if r.status_code >= 400:
+        raise GraphError(f"HTTP {r.status_code}")
+    return r.text
 
 
 def summary(snap: dict | None) -> dict:
