@@ -10,7 +10,12 @@ versioned cloud schema: :func:`collect` normalises whatever the API returns into
 a stable snapshot the dashboard + alerter consume::
 
     {ok, error, hosts:[...], devices:[...], isp:[...], edges:[...],
-     networks:[...], networks_read:[console ids], networks_unread:[console ids]}
+     networks:[...], networks_read:[console ids], networks_unread:[console ids],
+     vpns:[...], vpns_read:[...], vpns_unread:[...], classic_read:[...]}
+
+A switch's or gateway's device carries ``ports``: state, speed and PoE from
+the integration API, and -- where the console's classic API answers through
+the connector too -- each port's name, VLANs and what is plugged into it.
 
 The cloud API exposes inventory + ISP metrics but **not** per-port/uplink
 topology, so ``edges`` is empty and the dashboard tiers the network map by device
@@ -337,6 +342,32 @@ def proxy_get(key: str, console_id: str, path: str, params: dict | None = None):
     return body.get("data") if isinstance(body, dict) else None
 
 
+def proxy_one(key: str, console_id: str, path: str) -> dict | None:
+    """One object from a console's integration API: GET by id answers with the
+    object itself rather than wrapped in ``data``; either is taken."""
+    try:
+        body = _request(key, path, base=f"{CONNECTOR}/{console_id}/proxy/network/integration/v1")
+    except UnifiError:
+        return None
+    data = body.get("data")
+    if isinstance(data, dict):
+        return data
+    return body if data is None and any(k in body for k in ("id", "macAddress", "management", "vlanId")) else None
+
+
+def classic_get(key: str, console_id: str, site_ref: str, path: str) -> list | None:
+    """GET from a console's classic Network API (``/api/s/<site>/...``) through
+    the connector. What it says that the integration API does not -- a port's
+    VLANs, what is plugged into it, a VPN's settings -- is a bonus: None when
+    the console or the connector does not let it through."""
+    try:
+        body = _request(key, path, base=f"{CONNECTOR}/{console_id}/proxy/network/api/s/{site_ref}")
+    except UnifiError:
+        return None
+    data = body.get("data")
+    return data if isinstance(data, list) else None
+
+
 def _clients_of(d: dict):
     return _first(d, "numClients", "clientCount", "num_sta", "connectedClients",
                   "numberOfConnectedClients", "clients")
@@ -387,11 +418,13 @@ def _console_topology(key: str, console_id: str, macs_wanted: set) -> dict:
             if count >= _TOPO_MAX_DEVICES:
                 break
             count += 1
-            # The list item may already carry uplink; else fetch device detail.
-            detail = d if isinstance(d.get("uplink"), dict) else (
-                proxy_get(key, console_id, f"/sites/{sid}/devices/{did}") or d)
+            # The list item may already carry uplink and ports; else fetch the
+            # device's detail, which has both.
+            ready = isinstance(d.get("uplink"), dict) and isinstance(d.get("interfaces"), dict)
+            detail = d if ready else (proxy_one(key, console_id, f"/sites/{sid}/devices/{did}") or d)
             up = _uplink_mac(detail, id_to_mac)
-            out["by_mac"][cm] = {"uplink_mac": up, "clients": _clients_of(detail)}
+            out["by_mac"][cm] = {"uplink_mac": up, "clients": _clients_of(detail),
+                                 "ports": _integration_ports(detail)}
             if up and up != cm:
                 out["edges"].append({"child_mac": cm, "parent_mac": up})
     return out
@@ -427,6 +460,8 @@ def _enrich_topology(key: str, snap: dict) -> None:
                 d["uplink_mac"] = canon2mac.get(info["uplink_mac"]) or d.get("uplink_mac")
             if info.get("clients") is not None:
                 d["clients"] = info["clients"]
+            if info.get("ports") and d.get("type") in ("gateway", "switch"):
+                d["ports"] = info["ports"]
         for e in topo["edges"]:
             cm, pm = canon2mac.get(e["child_mac"]), canon2mac.get(e["parent_mac"])
             if cm and pm and cm != pm and (cm, pm) not in seen:
@@ -505,18 +540,20 @@ def _network_detail(key: str, console_id: str, site_id, network_id) -> dict | No
     return body if ("ipv4Configuration" in body or "management" in body or "vlanId" in body) else None
 
 
-def _console_networks(key: str, console_id: str, console: str) -> list | None:
-    """Every network of one console, with the detail that holds its subnet and
-    DHCP. None when the console does not answer (no proxy, or firmware older
-    than UniFi Network 10, which does not list networks)."""
+def _sites(key: str, console_id: str) -> list | None:
     sites = proxy_get(key, console_id, "/sites", params={"limit": 50})
     if not isinstance(sites, list):
         return None
+    return [x for x in sites if isinstance(x, dict) and _first(x, "id", "_id")]
+
+
+def _console_networks(key: str, console_id: str, console: str, sites: list) -> list | None:
+    """Every network of one console, with the detail that holds its subnet and
+    DHCP. None when the console does not answer (no proxy, or firmware older
+    than UniFi Network 10, which does not list networks)."""
     out, read_any, details = [], False, 0
     for site in sites:
-        sid = _first(site, "id", "_id") if isinstance(site, dict) else None
-        if not sid:
-            continue
+        sid = _first(site, "id", "_id")
         nets = proxy_get(key, console_id, f"/sites/{sid}/networks", params={"limit": 200})
         if not isinstance(nets, list):
             continue
@@ -545,28 +582,340 @@ def _console_networks(key: str, console_id: str, console: str) -> list | None:
     return out if read_any else None
 
 
+# --------------------------------------------------------------------------- #
+# Ports
+# --------------------------------------------------------------------------- #
+def _integration_ports(detail) -> list:
+    """A device's ports as the integration API has them: up or down, speed, PoE."""
+    ifs = detail.get("interfaces") if isinstance(detail, dict) else None
+    out = []
+    for p in (ifs.get("ports") if isinstance(ifs, dict) else None) or []:
+        if not isinstance(p, dict) or p.get("idx") is None:
+            continue
+        poe = p.get("poe") if isinstance(p.get("poe"), dict) else None
+        try:
+            idx = int(p["idx"])
+        except (TypeError, ValueError):
+            continue
+        out.append({"idx": idx, "up": str(p.get("state") or "").upper() == "UP",
+                    "speed": p.get("speedMbps"), "max_speed": p.get("maxSpeedMbps"),
+                    "connector": p.get("connector") or "",
+                    "poe": bool(poe.get("enabled")) if poe else None,
+                    "poe_on": str(poe.get("state") or "").upper() in ("UP", "LIMITED") if poe else False})
+    return out
+
+
+_VLAN_PURPOSES = ("corporate", "guest", "vlan-only")
+
+
+def _classic_vlans(confs: list) -> dict:
+    """The networks that can ride a port, by their classic id: name and VLAN
+    (an untagged network is VLAN 1)."""
+    nets = {}
+    for n in confs or []:
+        if not isinstance(n, dict) or n.get("purpose") not in _VLAN_PURPOSES or not n.get("_id"):
+            continue
+        vlan = n.get("vlan") if (n.get("vlan_enabled") or n.get("purpose") == "vlan-only") else None
+        try:
+            vlan = int(vlan) if vlan not in (None, "") else 1
+        except (TypeError, ValueError):
+            vlan = 1
+        nets[str(n["_id"])] = {"name": str(n.get("name") or ""), "vlan": vlan}
+    return nets
+
+
+def _vlan_label(net: dict) -> str:
+    return f"{net['name']} ({net['vlan']})"
+
+
+def _port_vlans(entry: dict, override: dict, profiles: dict, nets: dict) -> dict:
+    """Which VLANs a port carries: its native (untagged) network, and the tagged
+    ones -- ``all``, a list, or none. A port profile decides when the port has
+    one; otherwise what is set on the port itself."""
+    prof = profiles.get(str(override.get("portconf_id") or entry.get("portconf_id") or "")) or {}
+    srcs = [prof, override, entry] if prof else [override, entry]
+
+    def pick(k):
+        return next((x[k] for x in srcs if x.get(k) not in (None, "")), None)
+
+    forward = str(pick("forward") or "")
+    if forward == "disabled":
+        return {"disabled": True, "native": "", "tagged": [], "profile": prof.get("name") or ""}
+    native_id = str(pick("native_networkconf_id") or "")
+    native = nets.get(native_id) or next((n for n in nets.values() if n["vlan"] == 1), None)
+    mgmt = str(pick("tagged_vlan_mgmt") or "")
+    excluded = {str(x) for x in pick("excluded_networkconf_ids") or []}
+    ordered = sorted(nets.items(), key=lambda kv: (kv[1]["vlan"], kv[1]["name"]))
+    if mgmt == "block_all" or forward == "native":
+        tagged = []
+    elif forward == "customize" and not mgmt:
+        wanted = {str(x) for x in pick("tagged_networkconf_ids") or []}
+        tagged = [_vlan_label(n) for i, n in ordered if i in wanted]
+    elif mgmt == "custom" or excluded:
+        tagged = [_vlan_label(n) for i, n in ordered if i not in excluded and n is not native]
+    else:
+        tagged = "all"
+    return {"disabled": False, "native": _vlan_label(native) if native else "", "tagged": tagged,
+            "profile": prof.get("name") or ""}
+
+
+def _num(v):
+    try:
+        return float(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _classic_ports(dev: dict, profiles: dict, nets: dict, clients: dict, below: dict) -> dict:
+    """A device's ports as the classic API has them, by number: name, VLANs,
+    PoE draw, and what is plugged in -- a UniFi device below it, or clients."""
+    cm = _canon_mac(dev.get("mac"))
+    overrides = {}
+    for o in dev.get("port_overrides") or []:
+        try:
+            overrides[int(o["port_idx"])] = o
+        except (KeyError, TypeError, ValueError):
+            continue
+    out = {}
+    for e in dev.get("port_table") or []:
+        try:
+            idx = int(e["port_idx"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        o = overrides.get(idx, {})
+        poe_mode = str(e.get("poe_mode") or "")
+        out[idx] = {"name": str(o.get("name") or e.get("name") or ""), "up": bool(e.get("up")),
+                    "speed": e.get("speed") if e.get("up") else None, "uplink": bool(e.get("is_uplink")),
+                    "media": str(e.get("media") or ""),
+                    "poe": (poe_mode not in ("", "off")) if e.get("port_poe") else None,
+                    "poe_watts": _num(e.get("poe_power")) if e.get("port_poe") else None,
+                    "mode": "" if str(e.get("op_mode") or "switch") == "switch" else str(e["op_mode"]),
+                    "lag": bool(e.get("aggregated_by")),
+                    **_port_vlans(e, o, profiles, nets),
+                    "clients": clients.get((cm, idx), [])[:20], "device_mac": below.get((cm, idx), "")}
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# VPN
+# --------------------------------------------------------------------------- #
+_VPN_PURPOSE = {"site-vpn": "site-to-site", "remote-user-vpn": "remote-access", "vpn-client": "client"}
+
+
+def _protocol(text) -> str:
+    low = str(text or "").lower()
+    for word in ("ipsec", "wireguard", "openvpn", "l2tp", "teleport", "uid"):
+        if word in low:
+            return word
+    return low
+
+
+def _new_vpn(vid, name, kind, protocol, enabled) -> dict:
+    return {"id": str(vid), "name": str(name or ""), "kind": kind, "protocol": protocol,
+            "enabled": enabled is not False, "peer": "", "local_ip": "", "local_nets": [], "remote_nets": [],
+            "client_pool": "", "port": None, "settings": "", "interface": "", "detail": False}
+
+
+def _cidr_or(text) -> str:
+    try:
+        return str(ipaddress.ip_interface(str(text)).network)
+    except ValueError:
+        return str(text or "")
+
+
+def _ipsec_settings(n: dict) -> str:
+    """IKE and ESP as they must match at the other end: IKEv2 · IKE AES256/SHA256,
+    DH 14 · ESP AES256/SHA256, PFS · route-based."""
+    def up(*keys):
+        return "/".join(str(n[k]).upper() for k in keys if n.get(k))
+    parts = []
+    if n.get("ipsec_key_exchange"):
+        parts.append(str(n["ipsec_key_exchange"]).upper().replace("IKEV", "IKEv"))
+    ike = [x for x in (up("ipsec_ike_encryption", "ipsec_ike_hash"),
+                       f"DH {n['ipsec_ike_dh_group']}" if n.get("ipsec_ike_dh_group") else "",
+                       f"{n['ipsec_ike_lifetime']} s" if n.get("ipsec_ike_lifetime") else "") if x]
+    if ike:
+        parts.append("IKE " + ", ".join(ike))
+    esp = [x for x in (up("ipsec_esp_encryption", "ipsec_esp_hash"),
+                       f"DH {n['ipsec_esp_dh_group']}" if n.get("ipsec_esp_dh_group") else "",
+                       "PFS" if n.get("ipsec_pfs") else "",
+                       f"{n['ipsec_esp_lifetime']} s" if n.get("ipsec_esp_lifetime") else "") if x]
+    if esp:
+        parts.append("ESP " + ", ".join(esp))
+    if n.get("ipsec_dynamic_routing") is not None:
+        parts.append("route-based" if n.get("ipsec_dynamic_routing") else "policy-based")
+    return " · ".join(parts)
+
+
+def _classic_vpn(n: dict) -> dict:
+    """A VPN as the classic API keeps it, among the networks. Its keys and
+    secrets (``x_...``) are never taken."""
+    vpn = _new_vpn(n.get("_id"), n.get("name"), _VPN_PURPOSE.get(n.get("purpose"), "site-to-site"),
+                   _protocol(n.get("vpn_type")), n.get("enabled"))
+    vpn["detail"] = True
+    vpn["peer"] = str(_first(n, "ipsec_peer_ip", "openvpn_remote_host", "openvpn_remote_address",
+                             "wireguard_client_peer_ip", "remote_host", default="") or "")
+    vpn["local_ip"] = str(_first(n, "ipsec_local_ip", "ipsec_local_identifier", "openvpn_local_address",
+                                 default="") or "")
+    remote = _first(n, "remote_vpn_subnets", "ipsec_remote_subnets", "remote_subnets", default=[])
+    vpn["remote_nets"] = [str(x) for x in remote if x] if isinstance(remote, list) else []
+    local = _first(n, "ipsec_local_subnets", "local_vpn_subnets", default=[])
+    vpn["local_nets"] = [str(x) for x in local if x] if isinstance(local, list) else []
+    if vpn["kind"] == "remote-access" and n.get("ip_subnet"):
+        vpn["client_pool"] = _cidr_or(n["ip_subnet"])
+    port = _first(n, "local_port", "openvpn_local_port", "wireguard_local_port", "wireguard_client_peer_port",
+                  "openvpn_remote_port")
+    try:
+        vpn["port"] = int(port) if port not in (None, "") else None
+    except (TypeError, ValueError):
+        vpn["port"] = None
+    vpn["interface"] = str(_first(n, "ipsec_interface", "wireguard_interface", "l2tp_interface",
+                                  "openvpn_interface", default="") or "")
+    vpn["settings"] = _ipsec_settings(n) if vpn["protocol"] == "ipsec" else ""
+    return vpn
+
+
+def _console_vpns(key: str, console_id: str, sites: list, classic: dict) -> list | None:
+    """The VPN servers and site-to-site tunnels a console has, as the
+    integration API lists them (name, kind, on or off) -- with their settings
+    where the classic API gives them. None when neither answers."""
+    out, by_name, read = [], {}, False
+    for site in sites:
+        sid = _first(site, "id", "_id")
+        for path, kind in ((f"/sites/{sid}/vpn/servers", "remote-access"),
+                           (f"/sites/{sid}/vpn/site-to-site-tunnels", "site-to-site")):
+            rows = proxy_get(key, console_id, path, params={"limit": 200})
+            if not isinstance(rows, list):
+                continue
+            read = True
+            for r in rows:
+                if isinstance(r, dict) and r.get("id"):
+                    vpn = _new_vpn(r["id"], r.get("name"), kind, _protocol(r.get("type")), r.get("enabled"))
+                    out.append(vpn)
+                    by_name[vpn["name"].strip().lower()] = vpn
+    confs = classic.get("networkconf")
+    if confs is not None:
+        read = True
+        for n in confs:
+            if not isinstance(n, dict) or n.get("purpose") not in _VPN_PURPOSE:
+                continue
+            extra = _classic_vpn(n)
+            listed = by_name.get(extra["name"].strip().lower())
+            if listed:
+                # Known by its integration id; the classic API adds the settings.
+                listed.update({k: v for k, v in extra.items() if k not in ("id", "name", "kind")}
+                              | ({"kind": extra["kind"]} if extra["kind"] == "client" else {}))
+            else:
+                out.append(extra)
+    return out if read else None
+
+
+# --------------------------------------------------------------------------- #
+# Per console: networks, VPN, and what the classic API adds to the ports
+# --------------------------------------------------------------------------- #
+def _classic_of(key: str, console_id: str, sites: list) -> dict:
+    """The classic API's networks, port profiles, devices and wired clients of
+    a console's sites, as far as they answer."""
+    got = {"networkconf": None, "portconf": None, "device": None, "sta": None}
+    for site in sites:
+        ref = str(_first(site, "internalReference", default="") or "")
+        if not ref:
+            continue
+        for name, path in (("networkconf", "/rest/networkconf"), ("portconf", "/rest/portconf"),
+                           ("device", "/stat/device"), ("sta", "/stat/sta")):
+            rows = classic_get(key, console_id, ref, path)
+            if rows is not None:
+                got[name] = (got[name] or []) + [r for r in rows if isinstance(r, dict)]
+    return got
+
+
+def _apply_classic_ports(devices: list, classic: dict) -> bool:
+    """Lay the classic API's port detail over the devices' ports. False when
+    it gave none."""
+    if classic.get("device") is None:
+        return False
+    nets = _classic_vlans(classic.get("networkconf") or [])
+    profiles = {str(p.get("_id")): p for p in classic.get("portconf") or [] if p.get("_id")}
+    clients: dict = {}
+    for c in classic.get("sta") or []:
+        if not c.get("is_wired") or not c.get("sw_mac") or c.get("sw_port") is None:
+            continue
+        try:
+            spot = (_canon_mac(c["sw_mac"]), int(c["sw_port"]))
+        except (TypeError, ValueError):
+            continue
+        clients.setdefault(spot, []).append({"mac": str(c.get("mac") or ""), "name": str(_first(
+            c, "name", "hostname", default="") or ""), "ip": str(c.get("ip") or "")})
+    below: dict = {}
+    for dev in classic["device"]:
+        up = dev.get("uplink") if isinstance(dev.get("uplink"), dict) else dev.get("last_uplink")
+        if isinstance(up, dict) and up.get("uplink_mac") and up.get("uplink_remote_port") is not None:
+            try:
+                below[(_canon_mac(up["uplink_mac"]), int(up["uplink_remote_port"]))] = _canon_mac(dev.get("mac"))
+            except (TypeError, ValueError):
+                pass
+    by_mac = {_canon_mac(dev.get("mac")): dev for dev in classic["device"]}
+    for d in devices:
+        if d.get("type") not in ("gateway", "switch"):
+            continue
+        dev = by_mac.get(_canon_mac(d.get("mac")))
+        if not dev:
+            continue
+        extra = _classic_ports(dev, profiles, nets, clients, below)
+        ports = {p["idx"]: p for p in d.get("ports") or []}
+        for idx, more in extra.items():
+            port = ports.setdefault(idx, {"idx": idx, "up": more["up"], "speed": more["speed"],
+                                          "max_speed": None, "connector": more["media"], "poe": more["poe"],
+                                          "poe_on": bool(more["poe_watts"])})
+            port.update({k: v for k, v in more.items() if k not in ("up", "speed", "poe")})
+        d["ports"] = [ports[i] for i in sorted(ports)]
+        d["ports_vlans"] = True
+    return True
+
+
 def _read_networks(key: str, snap: dict) -> None:
-    """Fill ``snap['networks']`` for every console with devices in the
-    snapshot; ``networks_read`` and ``networks_unread`` say which consoles
-    answered, so a console that could not be read is not taken as empty."""
+    """Per console with devices in the snapshot: its networks, its VPNs, and
+    what the classic API adds to the ports. ``*_read`` and ``*_unread`` say
+    which consoles answered, so one that could not be read is not taken as
+    having none."""
     names = {h.get("id"): h.get("name") for h in snap.get("hosts") or [] if isinstance(h, dict)}
     consoles, gateways = [], {}
     for d in snap.get("devices") or []:
         hid = d.get("host_id")
         if hid and hid not in consoles:
             consoles.append(hid)
-        # A network the gateway routes hangs on that console's gateway.
+        # A network the gateway routes, and a VPN, hang on that console's gateway.
         if hid and d.get("type") == "gateway" and hid not in gateways:
             gateways[hid] = _canon_mac(d.get("mac"))
     networks, read, unread = [], [], []
+    vpns, vpn_read, vpn_unread, classic_read = [], [], [], []
     for console_id in consoles:
-        nets = _console_networks(key, console_id, names.get(console_id) or "")
+        console = names.get(console_id) or ""
+        sites = _sites(key, console_id)
+        if sites is None:
+            unread.append(console_id)
+            vpn_unread.append(console_id)
+            continue
+        nets = _console_networks(key, console_id, console, sites)
         if nets is None:
             unread.append(console_id)
+        else:
+            read.append(console_id)
+            for n in nets:
+                if n["management"] == "gateway" and not n.get("router_mac"):
+                    n["router_mac"] = gateways.get(console_id, "")
+                networks.append(n)
+        classic = _classic_of(key, console_id, sites)
+        if _apply_classic_ports([d for d in snap.get("devices") or [] if d.get("host_id") == console_id], classic):
+            classic_read.append(console_id)
+        found = _console_vpns(key, console_id, sites, classic)
+        if found is None:
+            vpn_unread.append(console_id)
             continue
-        read.append(console_id)
-        for n in nets:
-            if n["management"] == "gateway" and not n.get("router_mac"):
-                n["router_mac"] = gateways.get(console_id, "")
-            networks.append(n)
+        vpn_read.append(console_id)
+        for v in found:
+            vpns.append({**v, "console_id": console_id, "console": console,
+                         "router_mac": gateways.get(console_id, "")})
     snap["networks"], snap["networks_read"], snap["networks_unread"] = networks, read, unread
+    snap["vpns"], snap["vpns_read"], snap["vpns_unread"] = vpns, vpn_read, vpn_unread
+    snap["classic_read"] = classic_read

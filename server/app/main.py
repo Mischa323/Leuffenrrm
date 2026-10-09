@@ -2833,6 +2833,9 @@ def api_v1_network_devices(key: dict = Depends(api_auth)):
                     "type": d.get("type"), "state": d.get("state"), "firmware": d.get("version"),
                     "ip": d.get("ip"), "uptime": d.get("uptime"), "clients": d.get("clients"),
                     "uplink_mac": d.get("uplink_mac"),
+                    # Its ports: up or down, speed, PoE -- and, where the
+                    # console's classic API answered, name, VLANs and what is on it.
+                    "ports": d.get("ports") or [], "ports_vlans": bool(d.get("ports_vlans")),
                     "console": d.get("host_name") or consoles.get(d.get("host_id")),
                     "account": account.get("name"), "seen_at": account.get("last_poll"),
                     "org": {"id": org["id"], "name": org["name"]} if org else None})
@@ -2842,10 +2845,11 @@ def api_v1_network_devices(key: dict = Depends(api_auth)):
 @app.get("/api/v1/networks")
 def api_v1_networks(key: dict = Depends(api_auth)):
     """The networks each customer's UniFi consoles have -- subnet, gateway,
-    VLAN and DHCP -- as the last poll read them, and per console whether it
-    could be read: a console on firmware without networks (before UniFi
-    Network 10) is listed as not read, so nothing is taken as gone."""
-    networks, consoles = [], []
+    VLAN and DHCP -- and their VPN servers and tunnels, as the last poll read
+    them, and per console whether each could be read: a console on firmware
+    without them (before UniFi Network 10) is listed as not read, so nothing
+    is taken as gone. A VPN's keys are never read."""
+    networks, consoles, vpns = [], [], []
     for oid in _api_scope_orgs(key):
         org = db.get_org(oid)
         here = {"id": org["id"], "name": org["name"]} if org else None
@@ -2855,18 +2859,24 @@ def api_v1_networks(key: dict = Depends(api_auth)):
             snap = account.get("snapshot") or {}
             names = {h.get("id"): h.get("name") for h in snap.get("hosts") or [] if isinstance(h, dict)}
             read = set(snap.get("networks_read") or [])
+            vpn_read = set(snap.get("vpns_read") or [])
             listed = list(dict.fromkeys([*(snap.get("networks_read") or []), *(snap.get("networks_unread") or []),
                                          *(d.get("host_id") for d in snap.get("devices") or []
                                            if isinstance(d, dict) and d.get("host_id"))]))
             for cid in listed:
                 consoles.append({"id": cid, "name": names.get(cid) or "", "read": cid in read,
-                                 "account": account.get("name"), "org": here})
+                                 "vpn_read": cid in vpn_read, "account": account.get("name"), "org": here})
             for n in snap.get("networks") or []:
                 if not isinstance(n, dict) or not n.get("id"):
                     continue
                 networks.append({**n, "key": f"unifi-net:{n.get('console_id')}:{n['id']}".lower(),
                                  "account": account.get("name"), "seen_at": account.get("last_poll"), "org": here})
-    return {"networks": networks, "consoles": consoles}
+            for v in snap.get("vpns") or []:
+                if not isinstance(v, dict) or not v.get("id"):
+                    continue
+                vpns.append({**v, "key": f"unifi-vpn:{v.get('console_id')}:{v['id']}".lower(),
+                             "account": account.get("name"), "seen_at": account.get("last_poll"), "org": here})
+    return {"networks": networks, "vpns": vpns, "consoles": consoles}
 
 
 @app.get("/api/v1/m365-tenants")

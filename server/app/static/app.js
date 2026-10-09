@@ -1045,6 +1045,44 @@ function unifiNetworkRows(snap) {
       + `<td><span class="badge na">${escapeHtml(n.management || "—")}</span></td></tr>`).join("");
   return `<div style="overflow-x:auto;margin-top:12px"><table class="grid unifi-nets"><thead><tr><th>Network</th><th>VLAN</th><th>Subnet</th><th>Gateway</th><th>DHCP</th><th>Routed by</th></tr></thead><tbody>${rows}</tbody></table></div>` + note;
 }
+// Each switch's and gateway's ports at a glance: up or down, PoE, and on
+// hover what the port is -- its speed, VLANs and what is plugged into it.
+function unifiPortRows(snap) {
+  const devs = (snap.devices || []).filter((d) => (d.ports || []).length);
+  if (!devs.length) return "";
+  const names = Object.fromEntries((snap.devices || []).map((d) => [String(d.mac || "").toLowerCase().replace(/[^0-9a-f]/g, ""), d.name]));
+  const speed = (m) => (m >= 1000 ? `${m / 1000}G` : m ? `${m}M` : "");
+  const tip = (p) => [
+    `Port ${p.idx}${p.name && !/^port \d+$/i.test(p.name) ? ` · ${p.name}` : ""}`,
+    p.disabled ? "disabled" : p.up ? `up ${speed(p.speed)}` : "down",
+    p.poe_watts ? `PoE ${p.poe_watts} W` : p.poe_on ? "PoE" : "",
+    p.uplink ? "uplink" : "",
+    p.native ? `native ${p.native}` : "",
+    p.tagged === "all" ? "tagged: all" : (p.tagged || []).length ? `tagged: ${p.tagged.join(", ")}` : "",
+    p.profile ? `profile ${p.profile}` : "",
+    p.device_mac && names[p.device_mac] ? `→ ${names[p.device_mac]}` : "",
+    (p.clients || []).length ? (p.clients.length === 1 ? `→ ${p.clients[0].name || p.clients[0].mac}` : `${p.clients.length} clients`) : "",
+  ].filter(Boolean).join("\n");
+  const rows = devs.map((d) => {
+    const up = d.ports.filter((p) => p.up).length;
+    const boxes = d.ports.map((p) => `<span class="uport ${p.disabled ? "off" : p.up ? "up" : "down"}${p.poe_on ? " poe" : ""}" title="${escapeHtml(tip(p))}">${p.idx}</span>`).join("");
+    return `<div class="uport-row"><div class="uport-name">${escapeHtml(d.name || "—")}<span class="muted"> · ${up} of ${d.ports.length} up</span></div><div class="uport-grid">${boxes}</div></div>`;
+  }).join("");
+  const vlans = devs.some((d) => d.ports_vlans) ? "" : `<div class="h-sub" style="padding:6px 2px">Port VLANs and what is plugged in need the console's classic API through the connector, which did not answer.</div>`;
+  return `<div class="unifi-ports" style="margin-top:12px">${rows}</div>${vlans}`;
+}
+// The VPN servers and site-to-site tunnels a console has.
+function unifiVpnRows(snap) {
+  const vpns = snap.vpns || [];
+  if (!vpns.length) return "";
+  const kind = { "site-to-site": "site-to-site", "remote-access": "remote access", client: "client" };
+  const rows = vpns.map((v) => `<tr><td>${escapeHtml(v.name || "—")}${v.enabled === false ? ` <span class="badge na">off</span>` : ""}</td>`
+    + `<td>${escapeHtml(kind[v.kind] || v.kind || "—")}</td><td><span class="badge na">${escapeHtml(v.protocol || "—")}</span></td>`
+    + `<td class="mono">${escapeHtml(v.peer || v.client_pool || "—")}</td>`
+    + `<td class="mono">${escapeHtml((v.remote_nets || []).join(", ") || "—")}</td>`
+    + `<td class="muted">${escapeHtml(v.settings || (v.detail ? "" : "name and type only"))}</td></tr>`).join("");
+  return `<div style="overflow-x:auto;margin-top:12px"><table class="grid unifi-vpns"><thead><tr><th>VPN</th><th>Kind</th><th>Protocol</th><th>Peer / clients</th><th>Remote networks</th><th>Settings</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
 function unifiAccountCard(a) {
   const snap = a.snapshot;
   const nDev = snap && snap.devices ? snap.devices.length : 0;
@@ -1056,7 +1094,8 @@ function unifiAccountCard(a) {
   let bodyHtml;
   if (snap && snap.ok) {
     const warn = snap.error ? `<div class="h-sub" style="padding:6px 2px;color:var(--warn)">Partial data: ${escapeHtml(snap.error)}</div>` : "";
-    bodyHtml = warn + unifiWan(snap.isp) + unifiMap(snap) + unifiDeviceRows(snap.devices) + unifiNetworkRows(snap);
+    bodyHtml = warn + unifiWan(snap.isp) + unifiMap(snap) + unifiDeviceRows(snap.devices) + unifiPortRows(snap)
+      + unifiNetworkRows(snap) + unifiVpnRows(snap);
   }
   else if (a.last_poll && !a.last_ok) bodyHtml = `<div class="h-sub" style="padding:10px 2px">Last poll failed: ${escapeHtml(a.last_error || "unknown error")}. Check the API key and its permissions.</div>`;
   else bodyHtml = `<div class="h-sub" style="padding:10px 2px">Waiting for the first poll — this can take up to a minute.</div>`;
